@@ -8,7 +8,6 @@ platform.db-journal
 dashboard/.env
 .data/
 .claude/
-dashboard/dist/
 .DS_Store
 .vscode/
 .idea/
