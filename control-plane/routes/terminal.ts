@@ -1,0 +1,153 @@
+import type { FastifyInstance } from "fastify";
+import { findEnvById, checkAccess } from "../db/client.js";
+import { inspectVM } from "../services/firecracker.js";
+import { execInVM } from "../services/vsock-ssh.js";
+import { createTerminal } from "../terminal/pty-handler.js";
+import { ensureVMRunning } from "../services/wake.js";
+
+export interface TmuxSession {
+  name: string;
+  windows: number;
+  created: number;
+  attached: boolean;
+}
+
+export function registerTerminalRoutes(app: FastifyInstance) {
+  // WebSocket terminal — now accepts ?session=<name> query param
+  app.get(
+    "/envs/:id/terminal",
+    { websocket: true },
+    async (socket, request) => {
+      const { id } = request.params as { id: string };
+
+      const role = checkAccess(id, request.userId);
+      if (!role) {
+        socket.close(4003, "No access to this environment");
+        return;
+      }
+
+      const env = findEnvById(id);
+      if (!env || !env.vm_ip) {
+        socket.close(4004, "Environment not found or no VM");
+        return;
+      }
+
+      // Auto-wake snapshotted VMs before opening terminal
+      try {
+        await ensureVMRunning(env.id);
+      } catch (err: any) {
+        request.log.error({ err, envId: id }, "Failed to wake VM for terminal");
+        socket.close(4005, "VM is not running");
+        return;
+      }
+
+      try {
+        const status = await inspectVM(env.id);
+        if (!status.running) {
+          socket.close(4005, "VM is not running");
+          return;
+        }
+      } catch {
+        socket.close(4005, "VM not available");
+        return;
+      }
+
+      const query = request.query as {
+        cols?: string;
+        rows?: string;
+        session?: string;
+      };
+      const cols = query.cols ? parseInt(query.cols, 10) : 80;
+      const rows = query.rows ? parseInt(query.rows, 10) : 24;
+      const sessionName = query.session || "main";
+
+      createTerminal({
+        vmIp: env.vm_ip,
+        ws: socket,
+        envId: env.id,
+        cols: isNaN(cols) ? 80 : cols,
+        rows: isNaN(rows) ? 24 : rows,
+        sessionName,
+      });
+    }
+  );
+
+  // List tmux sessions inside the VM
+  app.get("/envs/:id/terminal/sessions", async (request, reply) => {
+    const { id } = request.params as { id: string };
+
+    const role = checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this environment" });
+    }
+
+    const env = findEnvById(id);
+    if (!env || !env.vm_ip) {
+      return reply.status(404).send({ error: "Environment not found" });
+    }
+
+    try {
+      const output = await execInVM(env.vm_ip, [
+        "bash", "-c",
+        "tmux list-sessions -F '#{session_name}:#{session_windows}:#{session_created}:#{session_attached}' 2>/dev/null || true",
+      ]);
+
+      const sessions: TmuxSession[] = output
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [name, windows, created, attached] = line.split(":");
+          return {
+            name,
+            windows: parseInt(windows, 10) || 1,
+            created: parseInt(created, 10) || 0,
+            attached: attached === "1",
+          };
+        });
+
+      return { sessions };
+    } catch {
+      return { sessions: [] };
+    }
+  });
+
+  // Kill a tmux session
+  app.delete(
+    "/envs/:id/terminal/sessions/:name",
+    async (request, reply) => {
+      const { id, name } = request.params as { id: string; name: string };
+
+      const role = checkAccess(id, request.userId);
+      if (!role) {
+        return reply
+          .status(403)
+          .send({ error: "No access to this environment" });
+      }
+
+      const env = findEnvById(id);
+      if (!env || !env.vm_ip) {
+        return reply.status(404).send({ error: "Environment not found" });
+      }
+
+      // Validate session name to prevent injection
+      if (!/^[\w-]+$/.test(name)) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid session name" });
+      }
+
+      try {
+        await execInVM(env.vm_ip, [
+          "bash", "-c",
+          `tmux kill-session -t ${name} 2>/dev/null || true`,
+        ]);
+        return { ok: true };
+      } catch {
+        return reply
+          .status(500)
+          .send({ error: "Failed to kill terminal session" });
+      }
+    }
+  );
+}
