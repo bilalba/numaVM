@@ -3,6 +3,7 @@ import { getUsedPorts, getUsedCids } from "../db/client.js";
 const APP_PORT_BASE = 10001;
 const SSH_PORT_BASE = 20001;
 const OPENCODE_PORT_BASE = 30001;
+const PAGES_PORT_BASE = 40001;
 const PORT_RANGE = 999;
 
 // Vsock CIDs: 0-2 are reserved, start from 3
@@ -20,17 +21,19 @@ function nextAvailable(used: Set<number>, base: number): number {
   throw new Error(`No available ports in range ${base}-${max}`);
 }
 
-export function allocatePorts(): { appPort: number; sshPort: number; opencodePort: number } {
+export function allocatePorts(): { appPort: number; sshPort: number; opencodePort: number; pagesPort: number } {
   const rows = getUsedPorts();
 
   const usedApp = new Set(rows.map((r) => r.app_port));
   const usedSsh = new Set(rows.map((r) => r.ssh_port));
   const usedOpencode = new Set(rows.map((r) => r.opencode_port));
+  const usedPages = new Set(rows.map((r) => r.pages_port).filter((p): p is number => p != null));
 
   return {
     appPort: nextAvailable(usedApp, APP_PORT_BASE),
     sshPort: nextAvailable(usedSsh, SSH_PORT_BASE),
     opencodePort: nextAvailable(usedOpencode, OPENCODE_PORT_BASE),
+    pagesPort: nextAvailable(usedPages, PAGES_PORT_BASE),
   };
 }
 

@@ -162,6 +162,15 @@ export function EnvList() {
                 <span className="capitalize">{env.role}</span>
                 <span>{relativeTime(env.created_at)}</span>
               </div>
+              <a
+                href={env.pages_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="mt-3 inline-block text-xs underline underline-offset-4 text-neutral-600 transition-opacity hover:opacity-60"
+              >
+                Visit Page
+              </a>
             </Link>
           ))}
         </div>

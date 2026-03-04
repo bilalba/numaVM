@@ -106,6 +106,15 @@ export function EnvDetail() {
           </a>
           <span className="text-neutral-400">|</span>
           <a
+            href={env.pages_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-4 transition-opacity hover:opacity-60"
+          >
+            Pages
+          </a>
+          <span className="text-neutral-400">|</span>
+          <a
             href={env.repo_url}
             target="_blank"
             rel="noopener noreferrer"

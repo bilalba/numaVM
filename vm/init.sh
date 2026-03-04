@@ -161,6 +161,58 @@ if command -v opencode &>/dev/null && [ -n "${OPENCODE_PASSWORD}" ]; then
   echo "[init] OpenCode server started on port 5000"
 fi
 
+# --- Start Pages server ---
+
+# Create pages directory with a default index if it doesn't exist
+if [ ! -d /data/pages ]; then
+  mkdir -p /data/pages
+  cat > /data/pages/index.html <<'PAGEEOF'
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Pages</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 4rem auto; padding: 0 2rem; background: #0a0a0a; color: #e5e5e5; }
+    h1 { color: #fff; }
+    code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; }
+    a { color: #6366f1; }
+  </style>
+</head>
+<body>
+  <h1>Your Pages site</h1>
+  <p>This is the default page. Edit files in <code>~/pages/</code> to customize.</p>
+  <p>You can serve static HTML, markdown, or run your own server on port 3000.</p>
+</body>
+</html>
+PAGEEOF
+  chown -R dev:dev /data/pages
+fi
+
+ln -sf /data/pages /home/dev/pages 2>/dev/null || true
+
+# Start a simple static file server on port 3000
+if command -v node &>/dev/null; then
+  nohup su - dev -c 'node -e "
+    const http = require(\"http\");
+    const fs = require(\"fs\");
+    const path = require(\"path\");
+    const dir = \"/data/pages\";
+    const types = {html:\"text/html\",css:\"text/css\",js:\"application/javascript\",json:\"application/json\",png:\"image/png\",jpg:\"image/jpeg\",svg:\"image/svg+xml\",ico:\"image/x-icon\"};
+    http.createServer((req, res) => {
+      let p = path.join(dir, decodeURIComponent(req.url.split(\"?\")[0]));
+      if (fs.existsSync(p) && fs.statSync(p).isDirectory()) p = path.join(p, \"index.html\");
+      if (!fs.existsSync(p)) { res.writeHead(404); res.end(\"Not found\"); return; }
+      const ext = path.extname(p).slice(1);
+      res.writeHead(200, {\"Content-Type\": types[ext] || \"application/octet-stream\"});
+      fs.createReadStream(p).pipe(res);
+    }).listen(3000, \"0.0.0.0\");
+  "' > /tmp/pages-server.log 2>&1 &
+  echo "[init] Pages server started on port 3000"
+elif command -v python3 &>/dev/null; then
+  nohup su - dev -c 'cd /data/pages && python3 -m http.server 3000 --bind 0.0.0.0' > /tmp/pages-server.log 2>&1 &
+  echo "[init] Pages server (Python) started on port 3000"
+fi
+
 # --- Start user app (best-effort) ---
 
 cd /data/repo 2>/dev/null || true

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS envs (
   ssh_port          INTEGER UNIQUE,
   opencode_port     INTEGER UNIQUE,
   opencode_password TEXT,
+  pages_port        INTEGER UNIQUE,
   status            TEXT NOT NULL DEFAULT 'creating'
                     CHECK(status IN ('creating', 'running', 'stopped', 'paused', 'snapshotted', 'error')),
   created_at        DATETIME DEFAULT CURRENT_TIMESTAMP

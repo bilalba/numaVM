@@ -100,6 +100,7 @@ async function doWake(envId: string, env: ReturnType<typeof findEnvById>): Promi
         env.app_port,
         env.ssh_port,
         env.opencode_port,
+        env.pages_port || 0,
       );
       console.log(`[wake] VM ${envId} restored successfully`);
     } else {
@@ -152,6 +153,7 @@ async function createFreshVM(
     appPort: env.app_port,
     sshPort: env.ssh_port,
     opencodePort: env.opencode_port,
+    pagesPort: env.pages_port || 0,
     ghRepo: envConfig.gh_repo || "",
     ghToken: envConfig.gh_token || "",
     sshKeys: envConfig.ssh_keys || "",

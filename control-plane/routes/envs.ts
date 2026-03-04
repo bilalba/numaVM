@@ -38,7 +38,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
     }
 
     const slug = `env-${generateSlug()}`;
-    const { appPort, sshPort, opencodePort } = allocatePorts();
+    const { appPort, sshPort, opencodePort, pagesPort } = allocatePorts();
     const vsockCid = allocateCid();
     const vmIp = cidToVmIp(vsockCid);
 
@@ -82,6 +82,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
       ssh_port: sshPort,
       opencode_port: opencodePort,
       opencode_password: opencodePassword,
+      pages_port: pagesPort,
       status: "creating",
     });
 
@@ -95,6 +96,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
         appPort,
         sshPort,
         opencodePort,
+        pagesPort,
         ghRepo: repoFullName,
         ghToken,
         sshKeys,
@@ -126,6 +128,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
       id: slug,
       name: body.name,
       url: `http://${slug}.${baseDomain}`,
+      pages_url: `http://${slug}-pages.${baseDomain}`,
       repo_url: `https://github.com/${repoFullName}`,
       ssh_command: `ssh dev@${baseDomain} -p ${sshPort}`,
       ssh_port: sshPort,
@@ -143,6 +146,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
         status: e.status,
         role: e.role,
         url: `http://${e.id}.${baseDomain}`,
+        pages_url: `http://${e.id}-pages.${baseDomain}`,
         repo_url: `https://github.com/${e.gh_repo}`,
         created_at: e.created_at,
       })),
@@ -183,11 +187,13 @@ export function registerEnvRoutes(app: FastifyInstance) {
       name: env.name,
       status: env.status,
       url: `http://${env.id}.${baseDomain}`,
+      pages_url: `http://${env.id}-pages.${baseDomain}`,
       repo_url: `https://github.com/${env.gh_repo}`,
       ssh_command: `ssh dev@${baseDomain} -p ${env.ssh_port}`,
       ssh_port: env.ssh_port,
       app_port: env.app_port,
       opencode_port: env.opencode_port,
+      pages_port: env.pages_port,
       vm_status: vmStatus,
       role,
       created_at: env.created_at,
@@ -215,6 +221,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
         env.app_port,
         env.ssh_port,
         env.opencode_port,
+        env.pages_port || 0,
       );
     } catch { /* may already be stopped/removed */ }
 
