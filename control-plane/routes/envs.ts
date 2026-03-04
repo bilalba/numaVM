@@ -243,6 +243,36 @@ export function registerEnvRoutes(app: FastifyInstance) {
     const status = env?.status || "unknown";
     const name = env?.name || id;
 
+    const pageStyle = `
+    body { font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Courier New', monospace; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #faf7f2; color: #171717; }
+    .card { text-align: center; padding: 3rem; border: 1px solid #e5e5e5; max-width: 420px; background: #fcfaf7; }
+    h2 { margin: 0 0 0.5rem; font-size: 1.125rem; font-weight: 600; }
+    p { color: #737373; margin: 0; font-size: 0.75rem; }
+    code { background: #f5f5f5; padding: 2px 6px; border: 1px solid #e5e5e5; font-size: 0.75rem; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #e5e5e5; border-top-color: #171717; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 1rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }`;
+
+    // VM is running but the port isn't responding — show "nothing here" page
+    if (status === "running") {
+      const html = `<!DOCTYPE html>
+<html>
+<head>
+  <title>${name} — Nothing here</title>
+  <meta http-equiv="refresh" content="5">
+  <style>${pageStyle}</style>
+</head>
+<body>
+  <div class="card">
+    <h2>Nothing here yet</h2>
+    <p style="margin-top: 0.75rem;">Ask your agent to serve on port <code>3000</code></p>
+    <p style="margin-top: 1rem;">Or place files in <code>~/pages/</code></p>
+    <p style="margin-top: 1.5rem; font-size: 0.625rem; color: #a3a3a3;">This page refreshes automatically.</p>
+  </div>
+</body>
+</html>`;
+      return reply.type("text/html").send(html);
+    }
+
     let statusMessage: string;
     switch (status) {
       case "creating":
@@ -261,7 +291,6 @@ export function registerEnvRoutes(app: FastifyInstance) {
 
     // If snapshotted, trigger a wake in the background
     if (env && (status === "snapshotted" || status === "paused")) {
-      // Import wake service dynamically to avoid circular deps
       import("../services/wake.js").then(({ ensureVMRunning }) => {
         ensureVMRunning(id).catch((err) => {
           request.log.error({ err, id }, "Failed to wake VM from status page");
@@ -274,21 +303,14 @@ export function registerEnvRoutes(app: FastifyInstance) {
 <head>
   <title>${name} — ${statusMessage.charAt(0).toUpperCase() + statusMessage.slice(1)}</title>
   <meta http-equiv="refresh" content="3">
-  <style>
-    body { font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #0a0a0a; color: #e5e5e5; }
-    .card { text-align: center; padding: 3rem; border: 1px solid #333; border-radius: 12px; max-width: 400px; }
-    .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #555; border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 1rem; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    h2 { margin: 0 0 0.5rem; }
-    p { color: #999; margin: 0; }
-  </style>
+  <style>${pageStyle}</style>
 </head>
 <body>
   <div class="card">
     <div class="spinner"></div>
     <h2>${name}</h2>
     <p>Environment is ${statusMessage}...</p>
-    <p style="margin-top: 1rem; font-size: 0.875rem;">This page refreshes automatically.</p>
+    <p style="margin-top: 1rem;">This page refreshes automatically.</p>
   </div>
 </body>
 </html>`;
