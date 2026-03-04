@@ -469,9 +469,9 @@ export async function snapshotVM(vmId: string): Promise<void> {
   const snapshotPath = join(snapshotDir, "vmstate");
   const memPath = join(snapshotDir, "memory");
 
-  // 1. Pause the VM
-  await fcApi(vm.socketPath, "PUT", "/actions", {
-    action_type: "Pause",
+  // 1. Pause the VM (PATCH /vm with state: Paused)
+  await fcApi(vm.socketPath, "PATCH", "/vm", {
+    state: "Paused",
   });
 
   // Small delay to let Firecracker fully quiesce before snapshotting
@@ -549,9 +549,9 @@ export async function restoreVM(
     },
   });
 
-  // 4. Resume VM
-  await fcApi(socketPath, "PUT", "/actions", {
-    action_type: "Resume",
+  // 4. Resume VM (PATCH /vm with state: Resumed)
+  await fcApi(socketPath, "PATCH", "/vm", {
+    state: "Resumed",
   });
 
   // 5. Re-add DNAT rules
