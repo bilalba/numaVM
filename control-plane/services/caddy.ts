@@ -15,19 +15,20 @@ function getDashboardPort(): string {
   return process.env.DASHBOARD_PORT || "4002";
 }
 
-interface RunningEnv {
+interface EnvRoute {
   id: string;
   app_port: number;
   pages_port: number | null;
+  status: string;
 }
 
-function getRunningEnvs(): RunningEnv[] {
+function getAllEnvs(): EnvRoute[] {
   return db
-    .prepare("SELECT id, app_port, pages_port FROM envs WHERE status = 'running'")
-    .all() as RunningEnv[];
+    .prepare("SELECT id, app_port, pages_port, status FROM envs WHERE status NOT IN ('error')")
+    .all() as EnvRoute[];
 }
 
-function generateCaddyfile(envs: RunningEnv[]): string {
+function generateCaddyfile(envs: EnvRoute[]): string {
   const domain = getBaseDomain();
   const authPort = getAuthPort();
   const cpPort = getControlPlanePort();
@@ -72,11 +73,9 @@ http://${domain} {
 }
 `;
 
-  // Dynamic env routes — each with forward_auth
+  // Dynamic env routes — ALL envs get routes (not just running) so auth + status page work
   for (const env of envs) {
-    config += `
-# Environment: ${env.id}
-http://${env.id}.${domain} {
+    const forwardAuth = `
     forward_auth localhost:${authPort} {
         uri /verify
         copy_headers X-User-Id X-User-Email
@@ -84,7 +83,13 @@ http://${env.id}.${domain} {
         handle_response @unauthorized {
             redir ${authLoginUrl}
         }
-    }
+    }`;
+
+    if (env.status === "running") {
+      // Running: proxy to VM with error fallback to status page
+      config += `
+# Environment: ${env.id}
+http://${env.id}.${domain} {${forwardAuth}
     handle_errors {
         rewrite * /envs/${env.id}/status-page
         reverse_proxy localhost:${cpPort}
@@ -92,20 +97,10 @@ http://${env.id}.${domain} {
     reverse_proxy localhost:${env.app_port}
 }
 `;
-
-    // Pages subdomain (if pages_port is allocated)
-    if (env.pages_port) {
-      config += `
+      if (env.pages_port) {
+        config += `
 # Pages: ${env.id}
-http://${env.id}-pages.${domain} {
-    forward_auth localhost:${authPort} {
-        uri /verify
-        copy_headers X-User-Id X-User-Email
-        @unauthorized status 401 403
-        handle_response @unauthorized {
-            redir ${authLoginUrl}
-        }
-    }
+http://${env.id}-pages.${domain} {${forwardAuth}
     handle_errors {
         rewrite * /envs/${env.id}/status-page
         reverse_proxy localhost:${cpPort}
@@ -113,6 +108,25 @@ http://${env.id}-pages.${domain} {
     reverse_proxy localhost:${env.pages_port}
 }
 `;
+      }
+    } else {
+      // Not running: auth-gate then always show status page (triggers wake)
+      config += `
+# Environment: ${env.id} (${env.status})
+http://${env.id}.${domain} {${forwardAuth}
+    rewrite * /envs/${env.id}/status-page
+    reverse_proxy localhost:${cpPort}
+}
+`;
+      if (env.pages_port) {
+        config += `
+# Pages: ${env.id} (${env.status})
+http://${env.id}-pages.${domain} {${forwardAuth}
+    rewrite * /envs/${env.id}/status-page
+    reverse_proxy localhost:${cpPort}
+}
+`;
+      }
     }
   }
 
@@ -124,7 +138,7 @@ http://${env.id}-pages.${domain} {
  * This replaces Caddy's entire config, ensuring all routes have forward_auth.
  */
 export async function reloadCaddyConfig(): Promise<void> {
-  const envs = getRunningEnvs();
+  const envs = getAllEnvs();
   const caddyfile = generateCaddyfile(envs);
 
   const res = await fetch(`${caddyAdmin}/load`, {
@@ -141,7 +155,8 @@ export async function reloadCaddyConfig(): Promise<void> {
     throw new Error(`Caddy config reload failed (${res.status}): ${body}`);
   }
 
-  console.log(`[caddy] Config reloaded with ${envs.length} env route(s)`);
+  const running = envs.filter(e => e.status === "running").length;
+  console.log(`[caddy] Config reloaded with ${envs.length} env route(s) (${running} running)`);
 }
 
 /**
