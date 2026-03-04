@@ -1,9 +1,17 @@
 import { config } from "dotenv";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: join(__dirname, "..", ".env") });
+
+let deployVersion: Record<string, string> = {};
+try {
+  deployVersion = JSON.parse(
+    readFileSync(join(__dirname, "..", "version.json"), "utf-8")
+  );
+} catch {}
 
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
@@ -77,7 +85,10 @@ app.addHook("preHandler", async (request, reply) => {
 });
 
 // Health check
-app.get("/health", async () => getHealthStats());
+app.get("/health", async () => {
+  const stats = await getHealthStats();
+  return { ...stats, version: deployVersion };
+});
 
 // Register route modules
 registerEnvRoutes(app);
@@ -93,6 +104,11 @@ app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => 
   reply.status(error.statusCode || 500).send({
     error: error.message || "Internal Server Error",
   });
+});
+
+// Log unhandled rejections (aids debugging background promise failures)
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[unhandledRejection]", reason);
 });
 
 // Graceful shutdown
@@ -125,3 +141,6 @@ if (baseDomain !== "localhost") {
 const port = parseInt(process.env.CONTROL_PLANE_PORT || "4001", 10);
 await app.listen({ port, host: "0.0.0.0" });
 console.log(`Control plane listening on http://localhost:${port}`);
+if (deployVersion.commit) {
+  console.log(`Version: ${deployVersion.commit} (${deployVersion.branch}) deployed ${deployVersion.timestamp}`);
+}

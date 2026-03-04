@@ -29,8 +29,11 @@ const pendingWakes = new Map<string, Promise<void>>();
  * Coalesces concurrent wake requests for the same env.
  */
 export async function ensureVMRunning(envId: string): Promise<void> {
-  // Check if already running
+  console.log(`[wake] ensureVMRunning called for ${envId}`);
+
+  // Check if already running in memory
   if (isVmRunning(envId)) {
+    console.log(`[wake] ${envId} already running in memory, skipping`);
     resetIdleTimer(envId);
     return;
   }
@@ -38,7 +41,9 @@ export async function ensureVMRunning(envId: string): Promise<void> {
   const env = findEnvById(envId);
   if (!env) throw new Error("Environment not found");
 
-  // Already running according to DB
+  console.log(`[wake] ${envId} DB status=${env.status}, vmIp=${env.vm_ip}, vsockCid=${env.vsock_cid}`);
+
+  // Already running according to DB and memory
   if (env.status === "running" && isVmRunning(envId)) {
     resetIdleTimer(envId);
     return;
@@ -47,19 +52,22 @@ export async function ensureVMRunning(envId: string): Promise<void> {
   // Not snapshotted — can't wake
   if (env.status !== "snapshotted" && env.status !== "paused") {
     if (env.status === "running") {
-      // DB says running but VM is gone — this is stale state
-      // Let the caller handle it
+      // DB says running but VM process is gone — stale state
+      console.warn(`[wake] ${envId} DB says running but VM not in memory (stale state)`);
       return;
     }
+    console.warn(`[wake] ${envId} cannot wake from status: ${env.status}`);
     throw new Error(`Cannot wake VM in state: ${env.status}`);
   }
 
   // Coalesce concurrent wake requests
   const existing = pendingWakes.get(envId);
   if (existing) {
+    console.log(`[wake] ${envId} already waking, coalescing request`);
     return existing;
   }
 
+  console.log(`[wake] ${envId} starting wake...`);
   const wakePromise = doWake(envId, env);
   pendingWakes.set(envId, wakePromise);
 

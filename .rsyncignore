@@ -1,0 +1,14 @@
+node_modules/
+.git/
+platform.db
+platform.db-wal
+platform.db-shm
+platform.db-journal
+.env
+dashboard/.env
+.data/
+.claude/
+dashboard/dist/
+.DS_Store
+.vscode/
+.idea/

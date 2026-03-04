@@ -1,0 +1,19 @@
+[Unit]
+Description=DeployMagi Auth Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/deploymagi
+ExecStart=/usr/bin/node --import tsx auth/server.ts
+EnvironmentFile=/home/ubuntu/deploymagi/.env
+Restart=on-failure
+RestartSec=5
+SyslogIdentifier=deploymagi-auth
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
