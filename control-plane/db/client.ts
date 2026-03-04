@@ -20,9 +20,10 @@ const envColumns = db.pragma("table_info(envs)") as { name: string }[];
 const colNames = new Set(envColumns.map((c) => c.name));
 if (!colNames.has("pages_port")) {
   // Add pages_port column for the Pages feature
-  try {
-    db.exec("ALTER TABLE envs ADD COLUMN pages_port INTEGER UNIQUE");
-  } catch { /* column may already exist */ }
+  // SQLite ALTER TABLE ADD COLUMN doesn't support UNIQUE constraint directly,
+  // so add column first, then create a unique index
+  db.exec("ALTER TABLE envs ADD COLUMN pages_port INTEGER");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_envs_pages_port ON envs(pages_port)");
 }
 
 if (!colNames.has("vm_ip")) {
