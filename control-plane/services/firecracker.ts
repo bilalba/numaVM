@@ -85,11 +85,13 @@ export function getInternalSshKeyPath(): string {
 async function fcApi(socketPath: string, method: string, path: string, body?: any): Promise<any> {
   // Firecracker uses a Unix socket HTTP API
   // We use curl since Node's fetch doesn't support Unix sockets natively
+  // Append HTTP status code on a separate line via -w so we can detect 4xx/5xx errors
   const args = [
     "--unix-socket", socketPath,
     "-s", "-S",
     "-X", method,
     "-H", "Content-Type: application/json",
+    "-w", "\n%{http_code}",
   ];
 
   if (body) {
@@ -106,13 +108,30 @@ async function fcApi(socketPath: string, method: string, path: string, body?: an
     proc.stderr.on("data", (d) => { stderr += d; });
     proc.on("close", (code) => {
       if (code !== 0) {
-        reject(new Error(`Firecracker API ${method} ${path} failed (${code}): ${stderr}`));
+        reject(new Error(`Firecracker API ${method} ${path} failed (curl ${code}): ${stderr}`));
         return;
       }
+
+      // Parse HTTP status code from the last line (added by -w)
+      const lines = stdout.trimEnd().split("\n");
+      const httpStatus = parseInt(lines.pop() || "0", 10);
+      const responseBody = lines.join("\n");
+
+      if (httpStatus >= 400) {
+        // Extract error message from Firecracker JSON error response
+        let errMsg = responseBody;
+        try {
+          const parsed = JSON.parse(responseBody);
+          errMsg = parsed.fault_message || parsed.message || responseBody;
+        } catch { /* use raw body */ }
+        reject(new Error(`Firecracker API ${method} ${path} returned ${httpStatus}: ${errMsg}`));
+        return;
+      }
+
       try {
-        resolve(stdout ? JSON.parse(stdout) : null);
+        resolve(responseBody ? JSON.parse(responseBody) : null);
       } catch {
-        resolve(stdout);
+        resolve(responseBody);
       }
     });
   });
@@ -455,6 +474,9 @@ export async function snapshotVM(vmId: string): Promise<void> {
     action_type: "Pause",
   });
 
+  // Small delay to let Firecracker fully quiesce before snapshotting
+  await sleep(200);
+
   // 2. Create snapshot
   await fcApi(vm.socketPath, "PUT", "/snapshot/create", {
     snapshot_path: snapshotPath,
@@ -462,15 +484,20 @@ export async function snapshotVM(vmId: string): Promise<void> {
     snapshot_type: "Full",
   });
 
-  // 3. Kill Firecracker process
+  // 3. Verify snapshot files were actually written
+  if (!existsSync(snapshotPath) || !existsSync(memPath)) {
+    throw new Error(`Snapshot files not found after create for VM ${vmId}`);
+  }
+
+  // 4. Kill Firecracker process
   if (vm.process && !vm.process.killed) {
     vm.process.kill("SIGTERM");
   }
 
-  // 4. Clean up TAP device and DNAT rules (caller handles DNAT)
+  // 5. Clean up TAP device and DNAT rules (caller handles DNAT)
   destroyTap(vm.tapDev);
 
-  // 5. Clean up sockets
+  // 6. Clean up sockets
   if (existsSync(vm.socketPath)) unlinkSync(vm.socketPath);
   const vsockSocket = join(getSocketDir(), `fc-${vmId}-vsock.sock`);
   if (existsSync(vsockSocket)) try { unlinkSync(vsockSocket); } catch { /* ok */ }
