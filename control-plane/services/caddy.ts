@@ -85,6 +85,10 @@ http://${env.id}.${domain} {
             redir ${authLoginUrl}
         }
     }
+    handle_errors {
+        rewrite * /envs/${env.id}/status-page
+        reverse_proxy localhost:${cpPort}
+    }
     reverse_proxy localhost:${env.app_port}
 }
 `;
@@ -101,6 +105,10 @@ http://${env.id}-pages.${domain} {
         handle_response @unauthorized {
             redir ${authLoginUrl}
         }
+    }
+    handle_errors {
+        rewrite * /envs/${env.id}/status-page
+        reverse_proxy localhost:${cpPort}
     }
     reverse_proxy localhost:${env.pages_port}
 }
