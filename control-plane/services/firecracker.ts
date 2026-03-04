@@ -20,6 +20,7 @@ export interface CreateVMParams {
   appPort: number;
   sshPort: number;
   opencodePort: number;
+  pagesPort: number;
   ghRepo: string;
   ghToken: string;
   sshKeys: string;
@@ -185,7 +186,7 @@ function removeDnat(hostPort: number, vmIp: string, vmPort: number): void {
 
 export async function createAndStartVM(params: CreateVMParams): Promise<string> {
   const {
-    slug, appPort, sshPort, opencodePort,
+    slug, appPort, sshPort, opencodePort, pagesPort,
     ghRepo, ghToken, sshKeys, opencodePassword,
     openaiApiKey, anthropicApiKey,
     vsockCid, vmIp,
@@ -337,6 +338,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   addDnat(appPort, vmIp, 4000);    // app port
   addDnat(sshPort, vmIp, 22);      // SSH port
   addDnat(opencodePort, vmIp, 5000); // OpenCode port
+  addDnat(pagesPort, vmIp, 3000);  // pages port
 
   const startedAt = new Date().toISOString();
 
@@ -417,6 +419,7 @@ export async function removeVMFull(
   appPort: number,
   sshPort: number,
   opencodePort: number,
+  pagesPort: number,
 ): Promise<void> {
   await removeVM(vmId);
 
@@ -424,6 +427,7 @@ export async function removeVMFull(
   removeDnat(appPort, vmIp, 4000);
   removeDnat(sshPort, vmIp, 22);
   removeDnat(opencodePort, vmIp, 5000);
+  removeDnat(pagesPort, vmIp, 3000);
 }
 
 export async function inspectVM(vmId: string): Promise<VMStatus> {
@@ -512,6 +516,7 @@ export async function restoreVM(
   appPort: number,
   sshPort: number,
   opencodePort: number,
+  pagesPort: number,
 ): Promise<void> {
   const snapshotDir = join(getDataDir(), vmId, "snapshot");
   const snapshotPath = join(snapshotDir, "vmstate");
@@ -558,6 +563,7 @@ export async function restoreVM(
   addDnat(appPort, vmIp, 4000);
   addDnat(sshPort, vmIp, 22);
   addDnat(opencodePort, vmIp, 5000);
+  addDnat(pagesPort, vmIp, 3000);
 
   const startedAt = new Date().toISOString();
 

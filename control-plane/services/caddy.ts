@@ -18,11 +18,12 @@ function getDashboardPort(): string {
 interface RunningEnv {
   id: string;
   app_port: number;
+  pages_port: number | null;
 }
 
 function getRunningEnvs(): RunningEnv[] {
   return db
-    .prepare("SELECT id, app_port FROM envs WHERE status = 'running'")
+    .prepare("SELECT id, app_port, pages_port FROM envs WHERE status = 'running'")
     .all() as RunningEnv[];
 }
 
@@ -87,6 +88,24 @@ http://${env.id}.${domain} {
     reverse_proxy localhost:${env.app_port}
 }
 `;
+
+    // Pages subdomain (if pages_port is allocated)
+    if (env.pages_port) {
+      config += `
+# Pages: ${env.id}
+http://${env.id}-pages.${domain} {
+    forward_auth localhost:${authPort} {
+        uri /verify
+        copy_headers X-User-Id X-User-Email
+        @unauthorized status 401 403
+        handle_response @unauthorized {
+            redir ${authLoginUrl}
+        }
+    }
+    reverse_proxy localhost:${env.pages_port}
+}
+`;
+    }
   }
 
   return config;

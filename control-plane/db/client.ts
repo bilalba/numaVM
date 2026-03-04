@@ -18,6 +18,13 @@ db.exec(schema);
 // Migrate existing envs table: add Firecracker columns + update CHECK constraint
 const envColumns = db.pragma("table_info(envs)") as { name: string }[];
 const colNames = new Set(envColumns.map((c) => c.name));
+if (!colNames.has("pages_port")) {
+  // Add pages_port column for the Pages feature
+  try {
+    db.exec("ALTER TABLE envs ADD COLUMN pages_port INTEGER UNIQUE");
+  } catch { /* column may already exist */ }
+}
+
 if (!colNames.has("vm_ip")) {
   // Need to recreate table to add columns AND update the status CHECK constraint
   // (SQLite doesn't support ALTER COLUMN or modifying constraints)
@@ -72,6 +79,7 @@ export interface Env {
   ssh_port: number;
   opencode_port: number;
   opencode_password: string | null;
+  pages_port: number | null;
   status: string;
   created_at: string;
 }
@@ -94,15 +102,15 @@ export interface User {
 // --- Env CRUD ---
 
 const insertEnvStmt = db.prepare(`
-  INSERT INTO envs (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO envs (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, pages_port, status)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 export function insertEnv(env: Omit<Env, "created_at">): void {
   insertEnvStmt.run(
     env.id, env.name, env.owner_id, env.gh_repo, env.gh_token,
     env.container_id, env.vm_ip, env.vsock_cid, env.vm_pid, env.snapshot_path,
     env.app_port, env.ssh_port, env.opencode_port,
-    env.opencode_password, env.status
+    env.opencode_password, env.pages_port, env.status
   );
 }
 
@@ -160,10 +168,10 @@ export function deleteEnv(id: string): void {
 // --- Port allocation ---
 
 const getUsedPortsStmt = db.prepare(
-  "SELECT app_port, ssh_port, opencode_port FROM envs WHERE status != 'error'"
+  "SELECT app_port, ssh_port, opencode_port, pages_port FROM envs WHERE status != 'error'"
 );
-export function getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[] {
-  return getUsedPortsStmt.all() as { app_port: number; ssh_port: number; opencode_port: number }[];
+export function getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number; pages_port: number | null }[] {
+  return getUsedPortsStmt.all() as { app_port: number; ssh_port: number; opencode_port: number; pages_port: number | null }[];
 }
 
 // --- Access control ---
