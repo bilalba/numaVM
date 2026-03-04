@@ -37,7 +37,9 @@ const loginHtml = readFileSync(
 );
 
 app.get("/login", async (request, reply) => {
-  const redirect = (request.query as Record<string, string>).redirect || "/";
+  const query = request.query as Record<string, string>;
+  const cliRedirect = query.cli_redirect;
+  const redirect = cliRedirect || query.redirect || "/";
   const redirectParam =
     redirect !== "/" ? `?redirect=${encodeURIComponent(redirect)}` : "";
 

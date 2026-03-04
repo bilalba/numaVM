@@ -11,6 +11,15 @@ interface UseTerminalOptions {
   session?: string;
 }
 
+// Filter mouse escape sequences to prevent flooding when an app exits without
+// disabling mouse tracking (e.g., opencode killed mid-session)
+const MOUSE_SGR_RE = /\x1b\[<[\d;]+[Mm]/g;
+const MOUSE_X10_RE = /\x1b\[M[\s\S]{3}/g;
+
+function stripMouseEvents(data: string): string {
+  return data.replace(MOUSE_SGR_RE, "").replace(MOUSE_X10_RE, "");
+}
+
 export function useTerminal({ envId, containerRef, enabled, session }: UseTerminalOptions) {
   const stateRef = useRef<{
     term: Terminal;
@@ -65,7 +74,8 @@ export function useTerminal({ envId, containerRef, enabled, session }: UseTermin
 
       ws.onopen = () => {
         retryDelay = 1000; // Reset backoff on success
-        // Don't clear — tmux will redraw the screen with scrollback
+        // Clear any stale mouse tracking modes left by a killed process
+        term.write("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
         term.focus();
       };
 
@@ -90,8 +100,9 @@ export function useTerminal({ envId, containerRef, enabled, session }: UseTermin
       // Single input listener per connection
       state.inputDisposable?.dispose();
       state.inputDisposable = term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "input", data }));
+        const filtered = stripMouseEvents(data);
+        if (filtered && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "input", data: filtered }));
         }
       });
 

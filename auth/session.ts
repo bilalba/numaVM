@@ -65,3 +65,25 @@ export async function getSessionFromRequest(
   if (!token) return null;
   return verifySessionJWT(token);
 }
+
+/**
+ * Check if a redirect URL is a CLI callback (localhost with /callback path).
+ * If so, redirect with ?token=JWT instead of setting a cookie.
+ */
+export function isCliRedirect(redirect: string): boolean {
+  try {
+    const url = new URL(redirect);
+    return (
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1") &&
+      url.pathname === "/callback"
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function buildCliRedirectUrl(redirect: string, jwt: string): string {
+  const url = new URL(redirect);
+  url.searchParams.set("token", jwt);
+  return url.toString();
+}

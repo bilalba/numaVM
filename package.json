@@ -2,5 +2,5 @@
   "name": "deploymagi",
   "version": "0.1.0",
   "private": true,
-  "workspaces": ["auth", "control-plane", "dashboard"]
+  "workspaces": ["auth", "control-plane", "dashboard", "cli"]
 }

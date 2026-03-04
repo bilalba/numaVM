@@ -23,6 +23,7 @@ import {
   getInternalSshPubKey,
 } from "../services/firecracker.js";
 import { createRepo, fetchSshKeys } from "../services/github.js";
+import { execInVM } from "../services/vsock-ssh.js";
 import { addRoute, removeRoute } from "../services/caddy.js";
 import { ensureVMRunning } from "../services/wake.js";
 
@@ -56,12 +57,17 @@ export function registerEnvRoutes(app: FastifyInstance) {
       repoFullName = repo.fullName;
     }
 
-    // Fetch user's GitHub SSH keys
+    // Fetch user's SSH keys (GitHub + custom)
     const user = findUserById(request.userId);
-    let sshKeys = "";
+    const keyParts: string[] = [];
     if (user?.github_username) {
-      sshKeys = await fetchSshKeys(user.github_username);
+      const ghKeys = await fetchSshKeys(user.github_username);
+      if (ghKeys) keyParts.push(ghKeys);
     }
+    if (user?.ssh_public_keys) {
+      keyParts.push(user.ssh_public_keys);
+    }
+    const sshKeys = keyParts.join("\n");
 
     // Generate per-env OpenCode password
     const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
@@ -342,5 +348,52 @@ export function registerEnvRoutes(app: FastifyInstance) {
 </html>`;
 
     reply.type("text/html").send(html);
+  });
+
+  // Sync SSH keys to a running VM
+  app.post("/envs/:id/sync-ssh-keys", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const env = findEnvById(id);
+    if (!env) {
+      return reply.status(404).send({ error: "Environment not found" });
+    }
+
+    const role = checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this environment" });
+    }
+
+    if (env.status !== "running" || !env.vm_ip) {
+      return reply.status(400).send({ error: "Environment is not running" });
+    }
+
+    // Gather all keys: user's GitHub keys + custom keys + internal key
+    const user = findUserById(request.userId);
+    const parts: string[] = [];
+
+    if (user?.github_username) {
+      const ghKeys = await fetchSshKeys(user.github_username);
+      if (ghKeys) parts.push(ghKeys);
+    }
+    if (user?.ssh_public_keys) {
+      parts.push(user.ssh_public_keys);
+    }
+
+    // Always include the internal key
+    parts.push(getInternalSshPubKey());
+
+    const allKeys = parts.join("\n");
+    const keysB64 = Buffer.from(allKeys).toString("base64");
+
+    try {
+      await execInVM(env.vm_ip, [
+        "sh", "-c",
+        `echo '${keysB64}' | base64 -d > /home/dev/.ssh/authorized_keys && chmod 600 /home/dev/.ssh/authorized_keys`,
+      ]);
+      return { ok: true, message: "SSH keys synced to environment" };
+    } catch (err: any) {
+      request.log.error({ err, id }, "Failed to sync SSH keys");
+      return reply.status(500).send({ error: "Failed to sync SSH keys", details: err.message });
+    }
   });
 }

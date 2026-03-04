@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { api, type AgentSession, type AgentMessage } from "../lib/api";
 import { useAgentSocket, type AgentEvent } from "../hooks/useAgentSocket";
-import { ChatMessage, StreamingMessage } from "./ChatMessage";
+import { ChatMessage, StreamingMessage, StreamingReasoning } from "./ChatMessage";
 import { ApprovalCard } from "./ApprovalCard";
 import { useToast } from "./Toast";
 import { relativeTime } from "../lib/time";
@@ -23,6 +23,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
+  const [reasoningText, setReasoningText] = useState("");
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(false);
@@ -98,20 +99,44 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
           setStreamingText((prev) => prev + (event.text || ""));
           break;
 
+        case "reasoning.delta":
+          setReasoningText((prev) => prev + (event.text || ""));
+          break;
+
+        case "reasoning.completed":
+          // Finalize reasoning — keep it available until turn ends
+          setReasoningText(event.text || "");
+          break;
+
         case "message.completed":
           if (event.role === "assistant") {
+            // Add reasoning + assistant in a single atomic update to guarantee order
+            setReasoningText((prevReasoning) => {
+              setMessages((msgs) => {
+                const newMsgs = [...msgs];
+                if (prevReasoning) {
+                  newMsgs.push({
+                    id: `reasoning-${Date.now()}`,
+                    session_id: activeSessionId!,
+                    role: "reasoning" as const,
+                    content: prevReasoning,
+                    metadata: null,
+                    created_at: new Date().toISOString(),
+                  });
+                }
+                newMsgs.push({
+                  id: `live-${Date.now() + 1}`,
+                  session_id: activeSessionId!,
+                  role: "assistant",
+                  content: event.text || "",
+                  metadata: null,
+                  created_at: new Date().toISOString(),
+                });
+                return newMsgs;
+              });
+              return "";
+            });
             setStreamingText("");
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `live-${Date.now()}`,
-                session_id: activeSessionId!,
-                role: "assistant",
-                content: event.text || "",
-                metadata: null,
-                created_at: new Date().toISOString(),
-              },
-            ]);
           }
           break;
 
@@ -136,6 +161,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
         case "turn.completed":
           setSessionStatus("idle");
           setStreamingText("");
+          setReasoningText("");
           break;
 
         case "approval.requested":
@@ -164,7 +190,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText, approvals]);
+  }, [messages, streamingText, reasoningText, approvals]);
 
   const handleCreateSession = async () => {
     setLoading(true);
@@ -174,6 +200,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
       setActiveSessionId(session.id);
       setMessages([]);
       setStreamingText("");
+      setReasoningText("");
       setApprovals([]);
       setSessionStatus("idle");
       setModelInfo(null);
@@ -490,7 +517,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
             <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Loading messages...
             </div>
-          ) : messages.length === 0 && !streamingText ? (
+          ) : messages.length === 0 && !streamingText && !reasoningText ? (
             <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Send a message to start the conversation
             </div>
@@ -499,6 +526,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
               {messages.map((msg) => (
                 <ChatMessage key={msg.id} message={msg} />
               ))}
+              {reasoningText && <StreamingReasoning text={reasoningText} />}
               {streamingText && <StreamingMessage text={streamingText} />}
               {approvals
                 .filter((a) => !a.responded)

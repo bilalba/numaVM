@@ -2,7 +2,12 @@ import * as arctic from "arctic";
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
 import { upsertUserFromGoogle } from "../db/client.js";
-import { createSessionJWT, setSessionCookie } from "../session.js";
+import {
+  createSessionJWT,
+  setSessionCookie,
+  isCliRedirect,
+  buildCliRedirectUrl,
+} from "../session.js";
 
 const google = new arctic.Google(
   process.env.GOOGLE_CLIENT_ID!,
@@ -73,12 +78,17 @@ export function registerGoogleRoutes(app: FastifyInstance) {
     });
 
     const jwt = await createSessionJWT(user.id, user.email);
-    setSessionCookie(reply, jwt);
 
     reply.clearCookie("oauth_state", { path: "/" });
     reply.clearCookie("oauth_code_verifier", { path: "/" });
     reply.clearCookie("oauth_redirect", { path: "/" });
 
+    // CLI auth: redirect with token in query param instead of setting cookie
+    if (isCliRedirect(redirect)) {
+      return reply.redirect(buildCliRedirectUrl(redirect, jwt));
+    }
+
+    setSessionCookie(reply, jwt);
     return reply.redirect(redirect);
   });
 }

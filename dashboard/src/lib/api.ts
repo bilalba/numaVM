@@ -69,7 +69,7 @@ export interface AgentSession {
 export interface AgentMessage {
   id: string;
   session_id: string;
-  role: "user" | "assistant" | "system" | "tool";
+  role: "user" | "assistant" | "system" | "tool" | "reasoning";
   content: string;
   metadata: string | null;
   created_at: string;
@@ -194,6 +194,21 @@ export const api = {
   deleteTerminalSession: (envId: string, name: string) =>
     apiFetch<{ ok: boolean }>(`/envs/${envId}/terminal/sessions/${encodeURIComponent(name)}`, {
       method: "DELETE",
+    }),
+
+  // SSH keys
+  getSshKeys: () =>
+    apiFetch<{ keys: string; github_keys: string }>("/me/ssh-keys"),
+
+  saveSshKeys: (keys: string) =>
+    apiFetch<{ ok: boolean }>("/me/ssh-keys", {
+      method: "PUT",
+      body: JSON.stringify({ keys }),
+    }),
+
+  syncSshKeys: (envId: string) =>
+    apiFetch<{ ok: boolean; message: string }>(`/envs/${envId}/sync-ssh-keys`, {
+      method: "POST",
     }),
 
   // Access control

@@ -1,6 +1,9 @@
 export function relativeTime(dateStr: string): string {
   const now = Date.now();
-  const date = new Date(dateStr).getTime();
+  // SQLite CURRENT_TIMESTAMP returns UTC as "YYYY-MM-DD HH:MM:SS" (no timezone).
+  // Browsers parse this as local time, so append "Z" to force UTC interpretation.
+  const normalized = dateStr.includes("T") || dateStr.includes("Z") ? dateStr : dateStr.replace(" ", "T") + "Z";
+  const date = new Date(normalized).getTime();
   const diff = now - date;
 
   const minutes = Math.floor(diff / 60000);

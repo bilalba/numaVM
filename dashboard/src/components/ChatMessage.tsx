@@ -32,6 +32,21 @@ export function ChatMessage({ message }: ChatMessageProps) {
     );
   }
 
+  if (message.role === "reasoning") {
+    return (
+      <div className="mb-3 ml-2">
+        <details className="border border-neutral-200 overflow-hidden">
+          <summary className="px-3 py-2 text-xs text-neutral-500 cursor-pointer transition-opacity hover:opacity-60">
+            Thinking
+          </summary>
+          <div className="px-3 py-2 text-xs text-neutral-600 whitespace-pre-wrap border-t border-neutral-100 max-h-64 overflow-y-auto bg-white">
+            {message.content}
+          </div>
+        </details>
+      </div>
+    );
+  }
+
   if (message.role === "system") {
     return (
       <div className="mb-3 text-center">
@@ -96,6 +111,24 @@ export function StreamingMessage({ text }: StreamingMessageProps) {
         {text}
         <span className="inline-block w-1.5 h-3.5 bg-black ml-0.5 animate-[pulseDot_1s_ease-in-out_infinite]" />
       </div>
+    </div>
+  );
+}
+
+export function StreamingReasoning({ text }: StreamingMessageProps) {
+  if (!text) return null;
+
+  return (
+    <div className="mb-3 ml-2">
+      <details open className="border border-neutral-200 overflow-hidden">
+        <summary className="px-3 py-2 text-xs text-neutral-500 cursor-pointer transition-opacity hover:opacity-60">
+          Thinking
+          <span className="inline-block w-1 h-2.5 bg-neutral-400 ml-1 animate-[pulseDot_1s_ease-in-out_infinite]" />
+        </summary>
+        <div className="px-3 py-2 text-xs text-neutral-600 whitespace-pre-wrap border-t border-neutral-100 max-h-48 overflow-y-auto bg-white">
+          {text}
+        </div>
+      </details>
     </div>
   );
 }

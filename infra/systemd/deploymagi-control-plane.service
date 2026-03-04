@@ -11,6 +11,7 @@ ExecStart=/usr/bin/node --import tsx control-plane/server.ts
 EnvironmentFile=/home/ubuntu/deploymagi/.env
 Restart=on-failure
 RestartSec=5
+KillMode=process
 SyslogIdentifier=deploymagi-cp
 StandardOutput=journal
 StandardError=journal

@@ -6,6 +6,8 @@ export type AgentEvent =
   | { type: "turn.completed"; turnId: string; status: string }
   | { type: "message.delta"; text: string }
   | { type: "message.completed"; text: string; role: "assistant" | "system" }
+  | { type: "reasoning.delta"; text: string }
+  | { type: "reasoning.completed"; text: string }
   | { type: "tool.started"; tool: string; input: unknown }
   | { type: "tool.output.delta"; text: string }
   | { type: "tool.completed"; tool: string; result: unknown }

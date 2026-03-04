@@ -146,6 +146,7 @@ export GH_REPO="${GH_REPO}"
 export GH_TOKEN="${GH_TOKEN}"
 export OPENAI_API_KEY="${DM_openai_api_key:-}"
 export ANTHROPIC_API_KEY="${DM_anthropic_api_key:-}"
+export OPENCODE_SERVER_PASSWORD="${DM_opencode_password:-}"
 EOF
 
 # Source .env in bashrc if not already
@@ -154,15 +155,7 @@ grep -q 'source ~/.env' /home/dev/.bashrc 2>/dev/null || {
 }
 chown dev:dev /home/dev/.env /home/dev/.bashrc
 
-# --- Start OpenCode server ---
-
-OPENCODE_PASSWORD="${DM_opencode_password:-}"
-if command -v opencode &>/dev/null && [ -n "${OPENCODE_PASSWORD}" ]; then
-  echo "[init] Starting OpenCode server..."
-  export OPENCODE_SERVER_PASSWORD="${OPENCODE_PASSWORD}"
-  nohup su - dev -c "OPENCODE_SERVER_PASSWORD='${OPENCODE_PASSWORD}' opencode serve --port 5000 --hostname 0.0.0.0" > /tmp/opencode.log 2>&1 &
-  echo "[init] OpenCode server started on port 5000"
-fi
+# OpenCode server is started on-demand by the control plane (not at boot)
 
 # --- Start user app (best-effort) ---
 

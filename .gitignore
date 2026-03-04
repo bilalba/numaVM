@@ -10,3 +10,4 @@ dist/
 .claude/
 version.json
 INTERNAL.md
+opencode/

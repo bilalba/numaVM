@@ -639,7 +639,13 @@ export async function reconcileRunningVMs(): Promise<void> {
         tapDev,
         startedAt: new Date().toISOString(), // approximate
       });
-      console.log(`[reconcile] Re-adopted VM ${env.id} (PID ${pid})`);
+
+      // Re-establish iptables DNAT rules (idempotent — addDnat skips if already present)
+      addDnat(env.app_port, env.vm_ip, 3000);
+      addDnat(env.ssh_port, env.vm_ip, 22);
+      addDnat(env.opencode_port, env.vm_ip, 5000);
+
+      console.log(`[reconcile] Re-adopted VM ${env.id} (PID ${pid}), DNAT rules restored`);
     } else {
       // Process is dead — mark as stopped
       const { updateEnvStatus } = await import("../db/client.js");

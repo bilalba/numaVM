@@ -173,7 +173,7 @@ export function EnvDetail() {
           )}
           {activeTab === "files" && <FilesTab envId={env.id} />}
           {activeTab === "access" && (
-            <AccessPanel envId={env.id} currentUserRole={env.role} />
+            <AccessPanel envId={env.id} currentUserRole={env.role} sshCommand={env.ssh_command} />
           )}
         </div>
       </div>

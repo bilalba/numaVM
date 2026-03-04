@@ -22,6 +22,7 @@ import { registerTerminalRoutes } from "./routes/terminal.js";
 import { registerClaudeRoutes } from "./routes/claude.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerFileRoutes } from "./routes/files.js";
+import { registerUserRoutes } from "./routes/user.js";
 import { destroyAllTerminals } from "./terminal/pty-handler.js";
 import { agentManager } from "./agents/manager.js";
 import { getHealthStats } from "./services/health.js";
@@ -56,7 +57,27 @@ await app.register(cors, {
   credentials: true,
 });
 
-// Extract auth headers set by Caddy forward_auth
+// JWT verification for CLI Bearer tokens
+const JWT_SECRET = new TextEncoder().encode(
+  process.env.JWT_SECRET || "change-me-to-a-random-string"
+);
+
+async function verifyBearerToken(
+  authHeader: string
+): Promise<{ userId: string; userEmail: string } | null> {
+  const token = authHeader.replace(/^Bearer\s+/i, "");
+  if (!token) return null;
+  try {
+    const { jwtVerify } = await import("jose");
+    const { payload } = await jwtVerify(token, JWT_SECRET);
+    if (!payload.sub || !payload.email) return null;
+    return { userId: payload.sub, userEmail: payload.email as string };
+  } catch {
+    return null;
+  }
+}
+
+// Extract auth headers set by Caddy forward_auth (or Bearer token from CLI)
 app.addHook("preHandler", async (request, reply) => {
   // Skip auth for health check and status pages
   if (request.url === "/health" || request.url.endsWith("/status-page")) return;
@@ -64,8 +85,27 @@ app.addHook("preHandler", async (request, reply) => {
   const userId = request.headers["x-user-id"] as string | undefined;
   const userEmail = request.headers["x-user-email"] as string | undefined;
 
+  // Try Caddy forward_auth headers first
+  if (userId && userEmail) {
+    request.userId = userId;
+    request.userEmail = userEmail;
+    return;
+  }
+
+  // Try Authorization: Bearer <jwt> (CLI auth)
+  const authHeader = request.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) {
+    const claims = await verifyBearerToken(authHeader);
+    if (claims) {
+      request.userId = claims.userId;
+      request.userEmail = claims.userEmail;
+      return;
+    }
+    return reply.status(401).send({ error: "Invalid token" });
+  }
+
   // Dev mode: fake auth when no Caddy is running
-  if (!userId && (baseDomain === "localhost" || process.env.DEV_MODE === "true")) {
+  if (baseDomain === "localhost" || process.env.DEV_MODE === "true") {
     // Ensure dev user exists in shared DB
     const { db } = await import("./db/client.js");
     db.prepare(
@@ -76,18 +116,25 @@ app.addHook("preHandler", async (request, reply) => {
     return;
   }
 
-  if (!userId || !userEmail) {
-    return reply.status(401).send({ error: "Unauthorized" });
-  }
-
-  request.userId = userId;
-  request.userEmail = userEmail;
+  return reply.status(401).send({ error: "Unauthorized" });
 });
 
 // Health check
 app.get("/health", async () => {
   const stats = await getHealthStats();
   return { ...stats, version: deployVersion };
+});
+
+// Current user (for CLI `numavm auth whoami`)
+app.get("/me", async (request) => {
+  const { db } = await import("./db/client.js");
+  const user = db
+    .prepare("SELECT id, email, name, avatar_url FROM users WHERE id = ?")
+    .get(request.userId) as { id: string; email: string; name: string; avatar_url: string } | undefined;
+  if (!user) {
+    return { id: request.userId, email: request.userEmail };
+  }
+  return user;
 });
 
 // Register route modules
@@ -97,6 +144,7 @@ registerTerminalRoutes(app);
 registerClaudeRoutes(app);
 registerAgentRoutes(app);
 registerFileRoutes(app);
+registerUserRoutes(app);
 
 // Global error handler
 app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {

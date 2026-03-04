@@ -2,7 +2,12 @@ import { SignJWT, jwtVerify } from "jose";
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
 import { upsertUserFromEmail } from "../db/client.js";
-import { createSessionJWT, setSessionCookie } from "../session.js";
+import {
+  createSessionJWT,
+  setSessionCookie,
+  isCliRedirect,
+  buildCliRedirectUrl,
+} from "../session.js";
 
 const JWT_SECRET = new TextEncoder().encode(
   process.env.JWT_SECRET || "change-me-to-a-random-string"
@@ -111,8 +116,13 @@ export function registerEmailRoutes(app: FastifyInstance) {
     });
 
     const jwt = await createSessionJWT(user.id, user.email);
-    setSessionCookie(reply, jwt);
 
+    // CLI auth: redirect with token in query param instead of setting cookie
+    if (isCliRedirect(redirect)) {
+      return reply.redirect(buildCliRedirectUrl(redirect, jwt));
+    }
+
+    setSessionCookie(reply, jwt);
     return reply.redirect(redirect);
   });
 }

@@ -139,9 +139,10 @@ chroot "${MOUNTDIR}" npm install -g @anthropic-ai/claude-code || {
 chroot "${MOUNTDIR}" sh -c 'curl -fsSL https://opencode.ai/install | bash' || {
   echo "WARNING: Failed to install OpenCode" >&2
 }
-# Ensure opencode is in PATH
+# Copy opencode binary to PATH (not symlink — dev user can't access /root/)
 if [ -f "${MOUNTDIR}/root/.opencode/bin/opencode" ]; then
-  ln -sf /root/.opencode/bin/opencode "${MOUNTDIR}/usr/local/bin/opencode"
+  cp "${MOUNTDIR}/root/.opencode/bin/opencode" "${MOUNTDIR}/usr/local/bin/opencode"
+  chmod 755 "${MOUNTDIR}/usr/local/bin/opencode"
 fi
 
 # PM2 process manager

@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { api, type AccessEntry } from "../lib/api";
 import { useToast } from "./Toast";
+import { SshKeysPanel } from "./SshKeysPanel";
 
 interface AccessPanelProps {
   envId: string;
   currentUserRole: string;
+  sshCommand?: string;
 }
 
-export function AccessPanel({ envId, currentUserRole }: AccessPanelProps) {
+export function AccessPanel({ envId, currentUserRole, sshCommand }: AccessPanelProps) {
   const [access, setAccess] = useState<AccessEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState("");
@@ -68,6 +70,11 @@ export function AccessPanel({ envId, currentUserRole }: AccessPanelProps) {
 
   return (
     <div className="max-w-2xl">
+      {/* SSH access */}
+      <div className="mb-6">
+        <SshKeysPanel envId={envId} sshCommand={sshCommand} />
+      </div>
+
       {/* Invite form (owner only) */}
       {isOwner && (
         <form onSubmit={handleInvite} className="mb-6 bg-panel-chat border border-neutral-200 p-4">

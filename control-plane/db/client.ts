@@ -88,7 +88,15 @@ export interface User {
   github_username: string | null;
   google_id: string | null;
   avatar_url: string | null;
+  ssh_public_keys: string | null;
   created_at: string;
+}
+
+const updateUserSshKeysStmt = db.prepare(
+  "UPDATE users SET ssh_public_keys = ? WHERE id = ?"
+);
+export function updateUserSshKeys(userId: string, keys: string | null): void {
+  updateUserSshKeysStmt.run(keys, userId);
 }
 
 // --- Env CRUD ---

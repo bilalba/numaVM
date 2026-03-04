@@ -17,6 +17,7 @@ db.exec(schema);
 
 // Column migrations (ALTER TABLE doesn't support IF NOT EXISTS in SQLite)
 try { db.exec("ALTER TABLE users ADD COLUMN github_username TEXT"); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE users ADD COLUMN ssh_public_keys TEXT"); } catch { /* already exists */ }
 
 export { db };
 
@@ -30,7 +31,15 @@ export interface User {
   github_username: string | null;
   google_id: string | null;
   avatar_url: string | null;
+  ssh_public_keys: string | null;
   created_at: string;
+}
+
+const updateUserSshKeysStmt = db.prepare(
+  "UPDATE users SET ssh_public_keys = ? WHERE id = ?"
+);
+export function updateUserSshKeys(userId: string, keys: string | null): void {
+  updateUserSshKeysStmt.run(keys, userId);
 }
 
 const findUserByEmailStmt = db.prepare("SELECT * FROM users WHERE email = ?");

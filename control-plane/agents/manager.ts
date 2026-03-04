@@ -72,7 +72,7 @@ class AgentManager {
     if (agentType === "codex") {
       bridge = new CodexBridge();
     } else {
-      bridge = new OpenCodeBridge(env.opencode_port, env.opencode_password || "");
+      bridge = new OpenCodeBridge(env.opencode_port, env.opencode_password || "", env.vm_ip!);
     }
 
     // Insert DB record early
@@ -166,8 +166,9 @@ class AgentManager {
     const bridge = active.bridge;
     if (bridge instanceof CodexBridge) {
       bridge.respondToApproval(approvalId, decision);
+    } else if (bridge instanceof OpenCodeBridge) {
+      await bridge.respondToApproval(approvalId, decision);
     }
-    // OpenCode approval responses would go through HTTP if supported
   }
 
   listSessions(envId: string, agentType: AgentType): AgentSession[] {

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type EnvSummary } from "../lib/api";
 import { useToast } from "../components/Toast";
+import { SshKeysPanel } from "../components/SshKeysPanel";
 import { relativeTime } from "../lib/time";
 
 const statusColors: Record<string, string> = {
@@ -21,6 +22,7 @@ export function EnvList() {
   const [newName, setNewName] = useState("");
   const [ghRepo, setGhRepo] = useState("");
   const [creating, setCreating] = useState(false);
+  const [showSshKeys, setShowSshKeys] = useState(false);
   const { toast } = useToast();
 
   const loadEnvs = () => {
@@ -59,13 +61,27 @@ export function EnvList() {
     <div className="max-w-5xl mx-auto px-6 py-8">
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-2xl font-semibold">Environments</h1>
-        <button
-          onClick={() => setShowCreate(!showCreate)}
-          className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
-        >
-          {showCreate ? "Cancel" : "New Environment"}
-        </button>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setShowSshKeys(!showSshKeys)}
+            className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
+          >
+            {showSshKeys ? "Close" : "SSH Keys"}
+          </button>
+          <button
+            onClick={() => setShowCreate(!showCreate)}
+            className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
+          >
+            {showCreate ? "Cancel" : "New Environment"}
+          </button>
+        </div>
       </div>
+
+      {showSshKeys && (
+        <div className="mb-6">
+          <SshKeysPanel />
+        </div>
+      )}
 
       {showCreate && (
         <form

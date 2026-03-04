@@ -1,10 +1,13 @@
 import type { AgentBridge, AgentEvent, AgentType } from "./types.js";
+import { execInVM } from "../services/vsock-ssh.js";
 
 /**
- * OpenCode bridge — HTTP REST + SSE to container's OpenCode server.
+ * OpenCode bridge — HTTP REST + SSE to VM's OpenCode server.
  *
- * The OpenCode server runs inside the container on port 5000 (mapped to
- * the host's opencode_port). Auth via HTTP basic auth with the per-env password.
+ * OpenCode is started on-demand via SSH exec when the first session is created.
+ * Auth via HTTP basic auth with the per-env password.
+ *
+ * API reference: https://github.com/anomalyco/opencode
  */
 export class OpenCodeBridge implements AgentBridge {
   readonly agentType: AgentType = "opencode";
@@ -14,10 +17,15 @@ export class OpenCodeBridge implements AgentBridge {
   private opencodeSessionId: string | null = null;
   private listeners: ((event: AgentEvent) => void)[] = [];
   private abortController: AbortController | null = null;
+  // Track message roles by messageID to filter out user message echoes
+  private messageRoles = new Map<string, "user" | "assistant">();
+  // Track reasoning part IDs to route deltas correctly
+  private reasoningParts = new Set<string>();
 
   constructor(
     private opencodePort: number,
     private opencodePassword: string,
+    private vmIp: string,
   ) {
     this.baseUrl = `http://localhost:${opencodePort}`;
     this.authHeader = "Basic " + Buffer.from(`opencode:${opencodePassword}`).toString("base64");
@@ -29,6 +37,82 @@ export class OpenCodeBridge implements AgentBridge {
 
   private emit(event: AgentEvent): void {
     for (const l of this.listeners) l(event);
+  }
+
+  /**
+   * Ensure the OpenCode server is running inside the VM.
+   * Checks via HTTP, starts via SSH if not running, polls until ready.
+   */
+  async ensureRunning(): Promise<void> {
+    // Fast path: already running and responding
+    try {
+      await this.httpRequest("GET", "/session");
+      return;
+    } catch {
+      // Not responding — need to check/start
+    }
+
+    // Check if process exists but not yet ready
+    let processRunning = false;
+    try {
+      const out = await execInVM(this.vmIp, ["pgrep", "-f", "opencode serve"], { timeoutMs: 5000 });
+      processRunning = !!out.trim();
+    } catch {
+      // Not running
+    }
+
+    if (!processRunning) {
+      // Verify opencode is installed
+      try {
+        const which = await execInVM(this.vmIp, ["which", "opencode"], { timeoutMs: 5000 });
+        if (!which.trim()) throw new Error("not found");
+      } catch {
+        throw new Error(
+          "OpenCode is not installed in this VM. Rebuild the rootfs or create a new environment.",
+        );
+      }
+
+      // Start OpenCode server (SSH connects as dev by default)
+      // Must cd to repo dir — opencode needs a project directory
+      // disown prevents bash from sending SIGHUP when SSH session ends
+      await execInVM(
+        this.vmIp,
+        [
+          "bash", "-c",
+          `cd ~/repo 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
+        ],
+        { timeoutMs: 5000 },
+      );
+    }
+
+    // Poll until the server is ready (up to 15s)
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        await this.httpRequest("GET", "/session");
+        return;
+      } catch {
+        // Check if process died during startup
+        if (!processRunning) {
+          try {
+            const out = await execInVM(this.vmIp, ["pgrep", "-f", "opencode serve"], { timeoutMs: 3000 });
+            if (!out.trim()) {
+              let log = "";
+              try {
+                log = await execInVM(this.vmIp, ["tail", "-20", "/tmp/opencode.log"], { timeoutMs: 3000 });
+              } catch { /* ignore */ }
+              throw new Error(`OpenCode process exited during startup${log ? `: ${log.trim()}` : ""}`);
+            }
+            processRunning = true;
+          } catch (e: any) {
+            if (e.message.includes("OpenCode process exited")) throw e;
+          }
+        }
+      }
+    }
+
+    throw new Error("OpenCode server failed to start within 15s");
   }
 
   private async httpRequest(method: string, path: string, body?: any): Promise<any> {
@@ -54,6 +138,9 @@ export class OpenCodeBridge implements AgentBridge {
   }
 
   async start(envSlug: string, options?: { model?: string }): Promise<string> {
+    // Ensure server is running before creating a session
+    await this.ensureRunning();
+
     const result = await this.httpRequest("POST", "/session", {});
     this.opencodeSessionId = result.id || result.sessionId || "";
 
@@ -72,10 +159,16 @@ export class OpenCodeBridge implements AgentBridge {
   }
 
   async interrupt(): Promise<void> {
-    // OpenCode doesn't have an explicit interrupt endpoint —
-    // cancelling the SSE connection and reconnecting is the closest equivalent
-    this.abortController?.abort();
-    this.connectSSE();
+    if (!this.opencodeSessionId) return;
+
+    // Use the proper abort endpoint instead of just killing SSE
+    try {
+      await this.httpRequest("POST", `/session/${this.opencodeSessionId}/abort`);
+    } catch {
+      // Fall back to SSE reconnect if abort fails
+      this.abortController?.abort();
+      this.connectSSE();
+    }
   }
 
   async destroy(): Promise<void> {
@@ -91,6 +184,21 @@ export class OpenCodeBridge implements AgentBridge {
 
   async getSession(sessionId: string): Promise<any> {
     return this.httpRequest("GET", `/session/${sessionId}`);
+  }
+
+  /**
+   * Respond to a permission/approval request.
+   * OpenCode uses: "once" (allow this time), "always" (allow permanently), "reject" (deny).
+   */
+  async respondToApproval(approvalId: string, decision: "accept" | "decline"): Promise<void> {
+    if (!this.opencodeSessionId) throw new Error("No active session");
+
+    const response = decision === "accept" ? "once" : "reject";
+    await this.httpRequest(
+      "POST",
+      `/session/${this.opencodeSessionId}/permissions/${approvalId}`,
+      { response },
+    );
   }
 
   private connectSSE(): void {
@@ -164,6 +272,11 @@ export class OpenCodeBridge implements AgentBridge {
   }
 
   private handleSSEEvent(eventType: string, dataStr: string): void {
+    // Ignore heartbeats and connection events
+    if (eventType === "server.heartbeat" || eventType === "server.connected") {
+      return;
+    }
+
     let data: any;
     try {
       data = JSON.parse(dataStr);
@@ -173,33 +286,52 @@ export class OpenCodeBridge implements AgentBridge {
 
     switch (eventType) {
       case "message.part.delta": {
-        // Streaming text delta — {delta: "text", field: "text"}
         if (data.field === "text" && data.delta) {
-          this.emit({ type: "message.delta", text: data.delta });
+          // Skip deltas for user messages
+          const msgRole = this.messageRoles.get(data.messageID);
+          if (msgRole === "user") break;
+
+          // Route to reasoning or message delta based on part type
+          if (this.reasoningParts.has(data.partID)) {
+            this.emit({ type: "reasoning.delta", text: data.delta });
+          } else {
+            this.emit({ type: "message.delta", text: data.delta });
+          }
         }
         break;
       }
 
       case "message.part.updated": {
-        const partType = data.part?.type || data.type;
-        if (partType === "text" && data.part?.text) {
-          // Final text part — emit as completed
+        const part = data.part || data;
+        const partType = part.type;
+
+        // Skip updates for user messages
+        const msgRole = this.messageRoles.get(part.messageID);
+        if (msgRole === "user") break;
+
+        if (partType === "reasoning") {
+          // Track this part ID as reasoning
+          this.reasoningParts.add(part.id);
+          if (part.text) {
+            this.emit({ type: "reasoning.completed", text: part.text });
+          }
+        } else if (partType === "text" && part.text) {
           this.emit({
             type: "message.completed",
-            text: data.part.text,
+            text: part.text,
             role: "assistant",
           });
         } else if (partType === "tool-invocation" || partType === "tool_use") {
           this.emit({
             type: "tool.started",
-            tool: data.part?.toolName || data.toolName || "tool",
-            input: data.part?.args || data.args || data.input || {},
+            tool: part.toolName || data.toolName || "tool",
+            input: part.args || data.args || data.input || {},
           });
         } else if (partType === "tool-result" || partType === "tool_result") {
           this.emit({
             type: "tool.completed",
-            tool: data.part?.toolName || data.toolName || "tool",
-            result: data.part?.result || data.result || "",
+            tool: part.toolName || data.toolName || "tool",
+            result: part.result || data.result || "",
           });
         }
         break;
@@ -207,6 +339,10 @@ export class OpenCodeBridge implements AgentBridge {
 
       case "message.updated": {
         const info = data.info || data;
+        // Track message role for filtering user echoes
+        if (info.id && info.role) {
+          this.messageRoles.set(info.id, info.role);
+        }
         // Emit model info when we see it
         if (info.modelID || info.providerID) {
           this.emit({
@@ -229,7 +365,7 @@ export class OpenCodeBridge implements AgentBridge {
       }
 
       case "session.updated":
-        // Session metadata update — ignore for now
+        // Session metadata update — ignore
         break;
 
       case "permission.asked":
