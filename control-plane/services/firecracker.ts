@@ -1,0 +1,629 @@
+import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+
+// --- Config (lazy reads for ESM import hoisting) ---
+
+function getFcBin() { return process.env.FC_BIN || "/opt/firecracker/bin/firecracker"; }
+function getKernelPath() { return process.env.FC_KERNEL || "/opt/firecracker/kernel/vmlinux"; }
+function getRootfsPath() { return process.env.FC_ROOTFS || "/opt/firecracker/rootfs/base.ext4"; }
+function getDataDir() { return process.env.DATA_DIR || "/data/envs"; }
+function getSocketDir() { return process.env.FC_SOCKET_DIR || "/tmp"; }
+function getVmGateway() { return process.env.VM_GATEWAY || "172.16.0.1"; }
+function getDefaultVcpu() { return parseInt(process.env.VM_VCPU_COUNT || "2", 10); }
+function getDefaultMem() { return parseInt(process.env.VM_MEM_SIZE_MIB || "512", 10); }
+
+// --- Types ---
+
+export interface CreateVMParams {
+  slug: string;
+  appPort: number;
+  sshPort: number;
+  opencodePort: number;
+  ghRepo: string;
+  ghToken: string;
+  sshKeys: string;
+  opencodePassword: string;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  vsockCid: number;
+  vmIp: string;
+  vcpuCount?: number;
+  memSizeMib?: number;
+}
+
+export interface VMStatus {
+  running: boolean;
+  status: "running" | "paused" | "stopped" | "snapshotted";
+  startedAt: string | null;
+  vsockCid: number;
+}
+
+// Track running Firecracker processes in memory
+const runningVMs = new Map<string, {
+  process: ChildProcess;
+  socketPath: string;
+  vsockCid: number;
+  vmIp: string;
+  tapDev: string;
+  startedAt: string;
+}>();
+
+// --- Internal SSH key for vsock exec ---
+
+let internalSshKeyPath: string | null = null;
+let internalSshPubKey: string | null = null;
+
+/**
+ * Get or generate the internal SSH keypair used for vsock exec.
+ * This key is injected into every VM alongside user keys.
+ */
+export function getInternalSshPubKey(): string {
+  if (internalSshPubKey) return internalSshPubKey;
+
+  const keyDir = join(getDataDir(), ".ssh");
+  const keyPath = join(keyDir, "deploymagi_internal");
+  const pubPath = keyPath + ".pub";
+
+  if (!existsSync(pubPath)) {
+    mkdirSync(keyDir, { recursive: true });
+    execSync(`ssh-keygen -t ed25519 -f "${keyPath}" -N "" -C "deploymagi-internal"`, { stdio: "pipe" });
+  }
+
+  internalSshKeyPath = keyPath;
+  internalSshPubKey = readFileSync(pubPath, "utf-8").trim();
+  return internalSshPubKey;
+}
+
+export function getInternalSshKeyPath(): string {
+  if (!internalSshKeyPath) getInternalSshPubKey(); // ensures key is generated
+  return internalSshKeyPath!;
+}
+
+// --- Firecracker REST API helpers ---
+
+async function fcApi(socketPath: string, method: string, path: string, body?: any): Promise<any> {
+  // Firecracker uses a Unix socket HTTP API
+  // We use curl since Node's fetch doesn't support Unix sockets natively
+  const args = [
+    "--unix-socket", socketPath,
+    "-s", "-S",
+    "-X", method,
+    "-H", "Content-Type: application/json",
+  ];
+
+  if (body) {
+    args.push("-d", JSON.stringify(body));
+  }
+
+  args.push(`http://localhost${path}`);
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn("curl", args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => { stdout += d; });
+    proc.stderr.on("data", (d) => { stderr += d; });
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`Firecracker API ${method} ${path} failed (${code}): ${stderr}`));
+        return;
+      }
+      try {
+        resolve(stdout ? JSON.parse(stdout) : null);
+      } catch {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
+// --- Networking helpers ---
+
+function createTap(tapName: string, vmIp: string): void {
+  const tapCreate = process.env.TAP_CREATE || "/opt/firecracker/bin/create-tap";
+  if (existsSync(tapCreate)) {
+    execSync(`"${tapCreate}" "${tapName}" "${vmIp}"`, { stdio: "pipe" });
+  } else {
+    // Inline TAP creation
+    try { execSync(`ip link delete "${tapName}" 2>/dev/null`, { stdio: "pipe" }); } catch { /* ok */ }
+    execSync(`ip tuntap add dev "${tapName}" mode tap`, { stdio: "pipe" });
+    execSync(`ip link set "${tapName}" master ${process.env.BRIDGE_IF || "br0"}`, { stdio: "pipe" });
+    execSync(`ip link set "${tapName}" up`, { stdio: "pipe" });
+  }
+}
+
+function destroyTap(tapName: string): void {
+  const tapDestroy = process.env.TAP_DESTROY || "/opt/firecracker/bin/destroy-tap";
+  if (existsSync(tapDestroy)) {
+    try { execSync(`"${tapDestroy}" "${tapName}"`, { stdio: "pipe" }); } catch { /* ok */ }
+  } else {
+    try { execSync(`ip link delete "${tapName}" 2>/dev/null`, { stdio: "pipe" }); } catch { /* ok */ }
+  }
+}
+
+function addDnat(hostPort: number, vmIp: string, vmPort: number): void {
+  const dnatAdd = process.env.DNAT_ADD || "/opt/firecracker/bin/add-dnat";
+  if (existsSync(dnatAdd)) {
+    execSync(`"${dnatAdd}" "${hostPort}" "${vmIp}" "${vmPort}"`, { stdio: "pipe" });
+  } else {
+    execSync(`iptables -t nat -A PREROUTING -p tcp --dport ${hostPort} -j DNAT --to-destination ${vmIp}:${vmPort}`, { stdio: "pipe" });
+    execSync(`iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport ${hostPort} -j DNAT --to-destination ${vmIp}:${vmPort}`, { stdio: "pipe" });
+  }
+}
+
+function removeDnat(hostPort: number, vmIp: string, vmPort: number): void {
+  const dnatRemove = process.env.DNAT_REMOVE || "/opt/firecracker/bin/remove-dnat";
+  if (existsSync(dnatRemove)) {
+    try { execSync(`"${dnatRemove}" "${hostPort}" "${vmIp}" "${vmPort}"`, { stdio: "pipe" }); } catch { /* ok */ }
+  } else {
+    try { execSync(`iptables -t nat -D PREROUTING -p tcp --dport ${hostPort} -j DNAT --to-destination ${vmIp}:${vmPort}`, { stdio: "pipe" }); } catch { /* ok */ }
+    try { execSync(`iptables -t nat -D OUTPUT -p tcp -d 127.0.0.1 --dport ${hostPort} -j DNAT --to-destination ${vmIp}:${vmPort}`, { stdio: "pipe" }); } catch { /* ok */ }
+  }
+}
+
+// --- Lifecycle ---
+
+export async function createAndStartVM(params: CreateVMParams): Promise<string> {
+  const {
+    slug, appPort, sshPort, opencodePort,
+    ghRepo, ghToken, sshKeys, opencodePassword,
+    openaiApiKey, anthropicApiKey,
+    vsockCid, vmIp,
+    vcpuCount = getDefaultVcpu(),
+    memSizeMib = getDefaultMem(),
+  } = params;
+
+  const socketPath = join(getSocketDir(), `fc-${slug}.sock`);
+  const tapDev = `tap-${slug}`;
+  const dataDir = join(getDataDir(), slug);
+  const overlayDir = join(dataDir, "overlay");
+  const snapshotDir = join(dataDir, "snapshot");
+
+  // Clean up any stale socket
+  if (existsSync(socketPath)) unlinkSync(socketPath);
+
+  // Create per-env directories
+  mkdirSync(overlayDir, { recursive: true });
+  mkdirSync(snapshotDir, { recursive: true });
+
+  // Create writable rootfs overlay (copy-on-write via Firecracker's overlay support)
+  // Firecracker doesn't natively support overlayfs for rootfs, so we use a per-VM
+  // writable copy. The base rootfs is shared read-only; we create a thin writable layer.
+  const vmRootfs = join(dataDir, "rootfs.ext4");
+  if (!existsSync(vmRootfs)) {
+    // Create a sparse copy — uses reflinks on supported filesystems, falls back to cp
+    try {
+      execSync(`cp --reflink=auto "${getRootfsPath()}" "${vmRootfs}"`, { stdio: "pipe" });
+    } catch {
+      execSync(`cp "${getRootfsPath()}" "${vmRootfs}"`, { stdio: "pipe" });
+    }
+  }
+
+  // Create TAP device
+  createTap(tapDev, vmIp);
+
+  // Write env config to a file that init.sh can read
+  const envConfig = {
+    gh_repo: ghRepo,
+    gh_token: ghToken,
+    ssh_keys: sshKeys,
+    internal_ssh_key: getInternalSshPubKey(),
+    opencode_password: opencodePassword,
+    openai_api_key: openaiApiKey || "",
+    anthropic_api_key: anthropicApiKey || "",
+  };
+  writeFileSync(join(dataDir, "env.json"), JSON.stringify(envConfig));
+
+  // Build kernel cmdline with dm.* params
+  // Base64-encode SSH keys to avoid whitespace issues in cmdline
+  const sshKeysB64 = Buffer.from(
+    sshKeys + "\n" + getInternalSshPubKey()
+  ).toString("base64");
+
+  const kernelArgs = [
+    "console=ttyS0",
+    "reboot=k",
+    "panic=1",
+    "pci=off",
+    "nomodules",
+    "random.trust_cpu=on",
+    "i8042.noaux",
+    "init=/sbin/deploymagi-init",
+    `dm.ip=${vmIp}`,
+    `dm.gateway=${getVmGateway()}`,
+    `dm.dns=8.8.8.8`,
+    `dm.vsock_cid=${vsockCid}`,
+    `dm.ssh_keys=${sshKeysB64}`,
+    `dm.gh_repo=${ghRepo}`,
+    `dm.gh_token=${ghToken}`,
+    `dm.opencode_password=${opencodePassword}`,
+    `dm.openai_api_key=${openaiApiKey || ""}`,
+    `dm.anthropic_api_key=${anthropicApiKey || ""}`,
+  ].join(" ");
+
+  // Spawn Firecracker process with log file
+  const fcLogPath = join(dataDir, "firecracker.log");
+  const fcLogFd = (await import("node:fs")).openSync(fcLogPath, "w");
+  const fcProc = spawn(getFcBin(), [
+    "--api-sock", socketPath,
+    "--log-path", fcLogPath,
+    "--level", "Debug",
+  ], {
+    stdio: ["pipe", fcLogFd, fcLogFd],
+    detached: true,
+  });
+
+  // Log early exit
+  fcProc.on("exit", (code, signal) => {
+    console.error(`[firecracker] VM ${slug} exited: code=${code} signal=${signal}`);
+  });
+
+  // Wait for socket to be ready
+  await waitForSocket(socketPath, 5000);
+
+  // Configure VM via REST API
+  // 1. Machine config
+  await fcApi(socketPath, "PUT", "/machine-config", {
+    vcpu_count: vcpuCount,
+    mem_size_mib: memSizeMib,
+  });
+
+  // 2. Kernel
+  await fcApi(socketPath, "PUT", "/boot-source", {
+    kernel_image_path: getKernelPath(),
+    boot_args: kernelArgs,
+  });
+
+  // 3. Rootfs
+  await fcApi(socketPath, "PUT", "/drives/rootfs", {
+    drive_id: "rootfs",
+    path_on_host: vmRootfs,
+    is_root_device: true,
+    is_read_only: false,
+  });
+
+  // 4. Data volume (persistent storage)
+  const dataVolume = join(dataDir, "data.ext4");
+  if (!existsSync(dataVolume)) {
+    // Create a 10GB sparse data volume
+    execSync(`dd if=/dev/zero of="${dataVolume}" bs=1 count=0 seek=10G 2>/dev/null`, { stdio: "pipe" });
+    execSync(`mkfs.ext4 -F -q "${dataVolume}"`, { stdio: "pipe" });
+  }
+  await fcApi(socketPath, "PUT", "/drives/data", {
+    drive_id: "data",
+    path_on_host: dataVolume,
+    is_root_device: false,
+    is_read_only: false,
+  });
+
+  // 5. Network
+  await fcApi(socketPath, "PUT", "/network-interfaces/eth0", {
+    iface_id: "eth0",
+    host_dev_name: tapDev,
+  });
+
+  // 6. Vsock
+  await fcApi(socketPath, "PUT", "/vsock", {
+    guest_cid: vsockCid,
+    uds_path: join(getSocketDir(), `fc-${slug}-vsock.sock`),
+  });
+
+  // 7. Start the VM
+  await fcApi(socketPath, "PUT", "/actions", {
+    action_type: "InstanceStart",
+  });
+
+  // Set up iptables DNAT for port forwarding
+  addDnat(appPort, vmIp, 4000);    // app port
+  addDnat(sshPort, vmIp, 22);      // SSH port
+  addDnat(opencodePort, vmIp, 5000); // OpenCode port
+
+  const startedAt = new Date().toISOString();
+
+  // Track the running VM
+  runningVMs.set(slug, {
+    process: fcProc,
+    socketPath,
+    vsockCid,
+    vmIp,
+    tapDev,
+    startedAt,
+  });
+
+  // Handle process exit
+  fcProc.on("exit", (code) => {
+    runningVMs.delete(slug);
+  });
+
+  // Wait for VM to be ready (SSH accessible over bridge network)
+  await waitForVmSsh(vmIp, 30000);
+
+  return slug;
+}
+
+export async function stopVM(vmId: string): Promise<void> {
+  const vm = runningVMs.get(vmId);
+  if (!vm) return;
+
+  try {
+    // Send CtrlAltDel to gracefully shut down
+    await fcApi(vm.socketPath, "PUT", "/actions", {
+      action_type: "SendCtrlAltDel",
+    });
+    // Wait a moment for graceful shutdown
+    await sleep(2000);
+  } catch { /* ignore */ }
+
+  // Force kill if still running
+  if (vm.process && !vm.process.killed) {
+    vm.process.kill("SIGTERM");
+    await sleep(500);
+    if (!vm.process.killed) vm.process.kill("SIGKILL");
+  }
+
+  runningVMs.delete(vmId);
+}
+
+export async function removeVM(vmId: string): Promise<void> {
+  const vm = runningVMs.get(vmId);
+
+  // Stop if running
+  if (vm) {
+    await stopVM(vmId);
+  }
+
+  // Look up VM info from DB if not in memory
+  // The caller should pass the env record for cleanup
+  // For now, clean up what we can
+  const tapDev = `tap-${vmId}`;
+  const socketPath = join(getSocketDir(), `fc-${vmId}.sock`);
+  const vsockSocket = join(getSocketDir(), `fc-${vmId}-vsock.sock`);
+
+  // Clean up TAP device
+  destroyTap(tapDev);
+
+  // Clean up sockets
+  if (existsSync(socketPath)) unlinkSync(socketPath);
+  if (existsSync(vsockSocket)) try { unlinkSync(vsockSocket); } catch { /* ok */ }
+}
+
+/**
+ * Remove VM and clean up iptables DNAT rules.
+ * Call this instead of removeVM when you have the port/IP info.
+ */
+export async function removeVMFull(
+  vmId: string,
+  vmIp: string,
+  appPort: number,
+  sshPort: number,
+  opencodePort: number,
+): Promise<void> {
+  await removeVM(vmId);
+
+  // Clean up DNAT rules
+  removeDnat(appPort, vmIp, 4000);
+  removeDnat(sshPort, vmIp, 22);
+  removeDnat(opencodePort, vmIp, 5000);
+}
+
+export async function inspectVM(vmId: string): Promise<VMStatus> {
+  const vm = runningVMs.get(vmId);
+
+  if (vm) {
+    return {
+      running: true,
+      status: "running",
+      startedAt: vm.startedAt,
+      vsockCid: vm.vsockCid,
+    };
+  }
+
+  // Check if there's a snapshot
+  const snapshotPath = join(getDataDir(), vmId, "snapshot", "vmstate");
+  if (existsSync(snapshotPath)) {
+    return {
+      running: false,
+      status: "snapshotted",
+      startedAt: null,
+      vsockCid: 0,
+    };
+  }
+
+  return {
+    running: false,
+    status: "stopped",
+    startedAt: null,
+    vsockCid: 0,
+  };
+}
+
+// --- Snapshot / Restore ---
+
+export async function snapshotVM(vmId: string): Promise<void> {
+  const vm = runningVMs.get(vmId);
+  if (!vm) throw new Error(`VM ${vmId} is not running`);
+
+  const snapshotDir = join(getDataDir(), vmId, "snapshot");
+  mkdirSync(snapshotDir, { recursive: true });
+
+  const snapshotPath = join(snapshotDir, "vmstate");
+  const memPath = join(snapshotDir, "memory");
+
+  // 1. Pause the VM
+  await fcApi(vm.socketPath, "PUT", "/actions", {
+    action_type: "Pause",
+  });
+
+  // 2. Create snapshot
+  await fcApi(vm.socketPath, "PUT", "/snapshot/create", {
+    snapshot_path: snapshotPath,
+    mem_file_path: memPath,
+    snapshot_type: "Full",
+  });
+
+  // 3. Kill Firecracker process
+  if (vm.process && !vm.process.killed) {
+    vm.process.kill("SIGTERM");
+  }
+
+  // 4. Clean up TAP device and DNAT rules (caller handles DNAT)
+  destroyTap(vm.tapDev);
+
+  // 5. Clean up sockets
+  if (existsSync(vm.socketPath)) unlinkSync(vm.socketPath);
+  const vsockSocket = join(getSocketDir(), `fc-${vmId}-vsock.sock`);
+  if (existsSync(vsockSocket)) try { unlinkSync(vsockSocket); } catch { /* ok */ }
+
+  runningVMs.delete(vmId);
+}
+
+export async function restoreVM(
+  vmId: string,
+  vsockCid: number,
+  vmIp: string,
+  appPort: number,
+  sshPort: number,
+  opencodePort: number,
+): Promise<void> {
+  const snapshotDir = join(getDataDir(), vmId, "snapshot");
+  const snapshotPath = join(snapshotDir, "vmstate");
+  const memPath = join(snapshotDir, "memory");
+
+  if (!existsSync(snapshotPath) || !existsSync(memPath)) {
+    throw new Error(`No snapshot found for VM ${vmId}`);
+  }
+
+  const socketPath = join(getSocketDir(), `fc-${vmId}.sock`);
+  const tapDev = `tap-${vmId}`;
+
+  // Clean up stale socket
+  if (existsSync(socketPath)) unlinkSync(socketPath);
+
+  // 1. Create TAP device
+  createTap(tapDev, vmIp);
+
+  // 2. Spawn new Firecracker process
+  const fcProc = spawn(getFcBin(), [
+    "--api-sock", socketPath,
+  ], {
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
+  });
+
+  await waitForSocket(socketPath, 5000);
+
+  // 3. Load snapshot
+  await fcApi(socketPath, "PUT", "/snapshot/load", {
+    snapshot_path: snapshotPath,
+    mem_backend: {
+      backend_path: memPath,
+      backend_type: "File",
+    },
+  });
+
+  // 4. Resume VM
+  await fcApi(socketPath, "PUT", "/actions", {
+    action_type: "Resume",
+  });
+
+  // 5. Re-add DNAT rules
+  addDnat(appPort, vmIp, 4000);
+  addDnat(sshPort, vmIp, 22);
+  addDnat(opencodePort, vmIp, 5000);
+
+  const startedAt = new Date().toISOString();
+
+  // Track the restored VM
+  runningVMs.set(vmId, {
+    process: fcProc,
+    socketPath,
+    vsockCid,
+    vmIp,
+    tapDev,
+    startedAt,
+  });
+
+  fcProc.on("exit", () => {
+    runningVMs.delete(vmId);
+  });
+
+  // Wait for SSH over bridge network
+  await waitForVmSsh(vmIp, 15000);
+
+  // Clean up snapshot files after successful restore
+  try {
+    unlinkSync(snapshotPath);
+    unlinkSync(memPath);
+  } catch { /* ok */ }
+}
+
+// --- Utilities ---
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function waitForSocket(socketPath: string, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (existsSync(socketPath)) return;
+    await sleep(50);
+  }
+  throw new Error(`Firecracker socket ${socketPath} not ready after ${timeoutMs}ms`);
+}
+
+async function waitForVmSsh(vmIp: string, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  const keyPath = getInternalSshKeyPath();
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      execSync(
+        `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ` +
+        `-o ConnectTimeout=2 -o LogLevel=ERROR ` +
+        `-i "${keyPath}" dev@${vmIp} echo ok`,
+        { stdio: "pipe", timeout: 5000 },
+      );
+      return; // SSH is ready
+    } catch {
+      await sleep(500);
+    }
+  }
+  // Don't throw — VM may still be booting but SSH not ready yet
+  console.warn(`[firecracker] VM ${vmIp}: SSH not ready after ${timeoutMs}ms (continuing anyway)`);
+}
+
+/**
+ * Get the vsock CID for a running VM. Returns 0 if not running.
+ */
+export function getVsockCid(vmId: string): number {
+  return runningVMs.get(vmId)?.vsockCid || 0;
+}
+
+/**
+ * Get the VM IP for a running VM. Returns empty string if not running.
+ */
+export function getVmIp(vmId: string): string {
+  return runningVMs.get(vmId)?.vmIp || "";
+}
+
+/**
+ * Check if a VM is currently running (in-memory).
+ */
+export function isVmRunning(vmId: string): boolean {
+  return runningVMs.has(vmId);
+}
+
+/**
+ * Destroy all running VMs (for graceful shutdown).
+ */
+export async function destroyAllVMs(): Promise<void> {
+  for (const [vmId] of runningVMs) {
+    try {
+      await stopVM(vmId);
+      destroyTap(`tap-${vmId}`);
+    } catch { /* best effort */ }
+  }
+  runningVMs.clear();
+}

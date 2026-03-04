@@ -1,0 +1,181 @@
+import type { FastifyInstance } from "fastify";
+import { findEnvById, checkAccess } from "../db/client.js";
+import { execInVM } from "../services/vsock-ssh.js";
+
+export interface FileEntry {
+  name: string;
+  type: "file" | "dir" | "symlink";
+  size: number;
+  modified: string;
+}
+
+function sanitizePath(raw: string): string {
+  // Normalize and strip traversal attempts
+  const parts = raw.split("/").filter((p) => p !== ".." && p !== "");
+  return "/" + parts.join("/");
+}
+
+function parseLsLine(line: string): FileEntry | null {
+  // Parse `ls -la --time-style=long-iso` output
+  const match = line.match(
+    /^([dlcbsp-])([rwxsStT-]{9})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s+(.+)$/
+  );
+  if (!match) return null;
+
+  const typeChar = match[1];
+  const size = parseInt(match[3], 10);
+  const modified = match[4];
+  let name = match[5];
+
+  // Skip . and .. entries
+  if (name === "." || name === "..") return null;
+
+  let type: FileEntry["type"] = "file";
+  if (typeChar === "d") {
+    type = "dir";
+  } else if (typeChar === "l") {
+    type = "symlink";
+    const arrowIdx = name.indexOf(" -> ");
+    if (arrowIdx !== -1) name = name.substring(0, arrowIdx);
+  }
+
+  return { name, type, size, modified };
+}
+
+export function registerFileRoutes(app: FastifyInstance) {
+  app.get("/envs/:id/files", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = request.query as { path?: string };
+
+    const role = checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this environment" });
+    }
+
+    const env = findEnvById(id);
+    if (!env || !env.vm_ip) {
+      return reply.status(404).send({ error: "Environment not found" });
+    }
+
+    const dirPath = sanitizePath(query.path || "/home/dev");
+
+    try {
+      const output = await execInVM(env.vm_ip, [
+        "ls", "-la", "--time-style=long-iso", dirPath,
+      ]);
+
+      const lines = output.split("\n").filter(Boolean);
+      const entries: FileEntry[] = [];
+
+      for (const line of lines) {
+        if (line.startsWith("total ")) continue;
+        const entry = parseLsLine(line);
+        if (entry) entries.push(entry);
+      }
+
+      entries.sort((a, b) => {
+        if (a.type === "dir" && b.type !== "dir") return -1;
+        if (a.type !== "dir" && b.type === "dir") return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      return { path: dirPath, entries };
+    } catch (err: any) {
+      return reply.status(500).send({ error: `Failed to list files: ${err.message}` });
+    }
+  });
+
+  // Read file content
+  app.get("/envs/:id/files/read", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = request.query as { path?: string };
+
+    const role = checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this environment" });
+    }
+
+    const env = findEnvById(id);
+    if (!env || !env.vm_ip) {
+      return reply.status(404).send({ error: "Environment not found" });
+    }
+
+    if (!query.path) {
+      return reply.status(400).send({ error: "path query parameter is required" });
+    }
+
+    const filePath = sanitizePath(query.path);
+
+    try {
+      const sizeOutput = await execInVM(env.vm_ip, [
+        "stat", "--format=%s", filePath,
+      ]);
+      const size = parseInt(sizeOutput.trim(), 10);
+      if (isNaN(size)) {
+        return reply.status(404).send({ error: "File not found" });
+      }
+      if (size > 1_048_576) {
+        return reply.status(413).send({ error: "File too large (max 1MB)" });
+      }
+
+      const mimeOutput = await execInVM(env.vm_ip, [
+        "file", "--brief", "--mime-type", filePath,
+      ]);
+      const mimeType = mimeOutput.trim();
+      const binary = !mimeType.startsWith("text/") && mimeType !== "application/json" && mimeType !== "application/javascript" && mimeType !== "application/xml";
+
+      if (binary) {
+        return { path: filePath, binary: true, mimeType, size, content: null };
+      }
+
+      const content = await execInVM(env.vm_ip, ["cat", filePath]);
+      return { path: filePath, binary: false, mimeType, size, content };
+    } catch (err: any) {
+      return reply.status(500).send({ error: `Failed to read file: ${err.message}` });
+    }
+  });
+
+  // Git log
+  app.get("/envs/:id/git/log", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = request.query as { limit?: string };
+
+    const role = checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this environment" });
+    }
+
+    const env = findEnvById(id);
+    if (!env || !env.vm_ip) {
+      return reply.status(404).send({ error: "Environment not found" });
+    }
+
+    const limit = Math.min(parseInt(query.limit || "20", 10) || 20, 100);
+
+    try {
+      const output = await execInVM(env.vm_ip, [
+        "git", "-C", "/home/dev/repo", "log",
+        `--max-count=${limit}`,
+        "--format=%H|||%an|||%ae|||%at|||%s",
+      ]);
+
+      const commits = output
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [hash, author, email, timestamp, ...msgParts] = line.split("|||");
+          return {
+            hash,
+            author,
+            email,
+            date: new Date(parseInt(timestamp, 10) * 1000).toISOString(),
+            message: msgParts.join("|||"),
+          };
+        });
+
+      return { commits };
+    } catch {
+      return { commits: [] };
+    }
+  });
+}

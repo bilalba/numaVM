@@ -1,0 +1,9 @@
+# This Caddyfile is a reference template.
+# The control plane dynamically generates and loads the full config
+# via Caddy's /load admin API on startup and env changes.
+#
+# To start Caddy for initial admin API only:
+#   caddy run --config Caddyfile --adapter caddyfile
+{
+    admin localhost:2019
+}
