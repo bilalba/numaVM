@@ -20,7 +20,6 @@ export interface CreateVMParams {
   appPort: number;
   sshPort: number;
   opencodePort: number;
-  pagesPort: number;
   ghRepo: string;
   ghToken: string;
   sshKeys: string;
@@ -42,7 +41,8 @@ export interface VMStatus {
 
 // Track running Firecracker processes in memory
 const runningVMs = new Map<string, {
-  process: ChildProcess;
+  process: ChildProcess | null;  // null for reconciled (re-adopted) VMs
+  pid: number;
   socketPath: string;
   vsockCid: number;
   vmIp: string;
@@ -186,7 +186,7 @@ function removeDnat(hostPort: number, vmIp: string, vmPort: number): void {
 
 export async function createAndStartVM(params: CreateVMParams): Promise<string> {
   const {
-    slug, appPort, sshPort, opencodePort, pagesPort,
+    slug, appPort, sshPort, opencodePort,
     ghRepo, ghToken, sshKeys, opencodePassword,
     openaiApiKey, anthropicApiKey,
     vsockCid, vmIp,
@@ -335,16 +335,16 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   });
 
   // Set up iptables DNAT for port forwarding
-  addDnat(appPort, vmIp, 4000);    // app port
+  addDnat(appPort, vmIp, 3000);    // app port
   addDnat(sshPort, vmIp, 22);      // SSH port
   addDnat(opencodePort, vmIp, 5000); // OpenCode port
-  addDnat(pagesPort, vmIp, 3000);  // pages port
 
   const startedAt = new Date().toISOString();
 
   // Track the running VM
   runningVMs.set(slug, {
     process: fcProc,
+    pid: fcProc.pid!,
     socketPath,
     vsockCid,
     vmIp,
@@ -377,11 +377,7 @@ export async function stopVM(vmId: string): Promise<void> {
   } catch { /* ignore */ }
 
   // Force kill if still running
-  if (vm.process && !vm.process.killed) {
-    vm.process.kill("SIGTERM");
-    await sleep(500);
-    if (!vm.process.killed) vm.process.kill("SIGKILL");
-  }
+  killVmProcess(vm);
 
   runningVMs.delete(vmId);
 }
@@ -419,15 +415,13 @@ export async function removeVMFull(
   appPort: number,
   sshPort: number,
   opencodePort: number,
-  pagesPort: number,
 ): Promise<void> {
   await removeVM(vmId);
 
   // Clean up DNAT rules
-  removeDnat(appPort, vmIp, 4000);
+  removeDnat(appPort, vmIp, 3000);
   removeDnat(sshPort, vmIp, 22);
   removeDnat(opencodePort, vmIp, 5000);
-  removeDnat(pagesPort, vmIp, 3000);
 }
 
 export async function inspectVM(vmId: string): Promise<VMStatus> {
@@ -494,9 +488,7 @@ export async function snapshotVM(vmId: string): Promise<void> {
   }
 
   // 4. Kill Firecracker process
-  if (vm.process && !vm.process.killed) {
-    vm.process.kill("SIGTERM");
-  }
+  killVmProcess(vm);
 
   // 5. Clean up TAP device and DNAT rules (caller handles DNAT)
   destroyTap(vm.tapDev);
@@ -516,7 +508,6 @@ export async function restoreVM(
   appPort: number,
   sshPort: number,
   opencodePort: number,
-  pagesPort: number,
 ): Promise<void> {
   const snapshotDir = join(getDataDir(), vmId, "snapshot");
   const snapshotPath = join(snapshotDir, "vmstate");
@@ -560,16 +551,16 @@ export async function restoreVM(
   });
 
   // 5. Re-add DNAT rules
-  addDnat(appPort, vmIp, 4000);
+  addDnat(appPort, vmIp, 3000);
   addDnat(sshPort, vmIp, 22);
   addDnat(opencodePort, vmIp, 5000);
-  addDnat(pagesPort, vmIp, 3000);
 
   const startedAt = new Date().toISOString();
 
   // Track the restored VM
   runningVMs.set(vmId, {
     process: fcProc,
+    pid: fcProc.pid!,
     socketPath,
     vsockCid,
     vmIp,
@@ -589,6 +580,73 @@ export async function restoreVM(
     unlinkSync(snapshotPath);
     unlinkSync(memPath);
   } catch { /* ok */ }
+}
+
+// --- Process management ---
+
+function killVmProcess(vm: { process: ChildProcess | null; pid: number }): void {
+  if (vm.process && !vm.process.killed) {
+    vm.process.kill("SIGTERM");
+  } else if (vm.pid) {
+    try { process.kill(vm.pid, "SIGTERM"); } catch { /* already dead */ }
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0); // signal 0 = check existence
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reconcile in-memory VM state with running Firecracker processes.
+ * Called on startup to re-adopt VMs that survived a control plane restart.
+ */
+export async function reconcileRunningVMs(): Promise<void> {
+  const { db } = await import("../db/client.js");
+
+  const runningEnvs = db.prepare(
+    "SELECT id, vm_ip, vsock_cid, app_port, ssh_port, opencode_port FROM envs WHERE status = 'running'"
+  ).all() as { id: string; vm_ip: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number }[];
+
+  if (runningEnvs.length === 0) return;
+
+  console.log(`[reconcile] Found ${runningEnvs.length} env(s) with status 'running', checking for live processes...`);
+
+  for (const env of runningEnvs) {
+    const socketPath = join(getSocketDir(), `fc-${env.id}.sock`);
+    const tapDev = `tap-${env.id}`;
+
+    // Find the Firecracker PID for this env
+    let pid: number | null = null;
+    try {
+      const out = execSync(`pgrep -f "firecracker.*fc-${env.id}\\.sock"`, { stdio: "pipe" }).toString().trim();
+      const pids = out.split("\n").map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
+      if (pids.length > 0) pid = pids[0];
+    } catch { /* no matching process */ }
+
+    if (pid && isProcessAlive(pid)) {
+      // Re-adopt this VM
+      runningVMs.set(env.id, {
+        process: null,
+        pid,
+        socketPath,
+        vsockCid: env.vsock_cid,
+        vmIp: env.vm_ip,
+        tapDev,
+        startedAt: new Date().toISOString(), // approximate
+      });
+      console.log(`[reconcile] Re-adopted VM ${env.id} (PID ${pid})`);
+    } else {
+      // Process is dead — mark as stopped
+      const { updateEnvStatus } = await import("../db/client.js");
+      updateEnvStatus(env.id, "stopped");
+      console.log(`[reconcile] VM ${env.id} process not found, marked as stopped`);
+    }
+  }
 }
 
 // --- Utilities ---

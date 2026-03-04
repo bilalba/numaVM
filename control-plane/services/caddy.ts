@@ -18,13 +18,12 @@ function getDashboardPort(): string {
 interface EnvRoute {
   id: string;
   app_port: number;
-  pages_port: number | null;
   status: string;
 }
 
 function getAllEnvs(): EnvRoute[] {
   return db
-    .prepare("SELECT id, app_port, pages_port, status FROM envs WHERE status NOT IN ('error')")
+    .prepare("SELECT id, app_port, status FROM envs WHERE status NOT IN ('error')")
     .all() as EnvRoute[];
 }
 
@@ -97,18 +96,6 @@ http://${env.id}.${domain} {${forwardAuth}
     reverse_proxy localhost:${env.app_port}
 }
 `;
-      if (env.pages_port) {
-        config += `
-# Pages: ${env.id}
-http://${env.id}-pages.${domain} {${forwardAuth}
-    handle_errors {
-        rewrite * /envs/${env.id}/status-page
-        reverse_proxy localhost:${cpPort}
-    }
-    reverse_proxy localhost:${env.pages_port}
-}
-`;
-      }
     } else {
       // Not running: auth-gate then always show status page (triggers wake)
       config += `
@@ -118,15 +105,6 @@ http://${env.id}.${domain} {${forwardAuth}
     reverse_proxy localhost:${cpPort}
 }
 `;
-      if (env.pages_port) {
-        config += `
-# Pages: ${env.id} (${env.status})
-http://${env.id}-pages.${domain} {${forwardAuth}
-    rewrite * /envs/${env.id}/status-page
-    reverse_proxy localhost:${cpPort}
-}
-`;
-      }
     }
   }
 
