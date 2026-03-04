@@ -17,6 +17,7 @@ import { allocatePorts, allocateCid, cidToVmIp } from "../services/port-allocato
 import {
   createAndStartVM,
   stopVM,
+  snapshotVM,
   removeVMFull,
   inspectVM,
   getInternalSshPubKey,
@@ -26,7 +27,7 @@ import { addRoute, removeRoute } from "../services/caddy.js";
 import { ensureVMRunning } from "../services/wake.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
-const baseDomain = process.env.BASE_DOMAIN || "localhost";
+const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
 
 export function registerEnvRoutes(app: FastifyInstance) {
   // Create environment
@@ -38,7 +39,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
     }
 
     const slug = `env-${generateSlug()}`;
-    const { appPort, sshPort, opencodePort, pagesPort } = allocatePorts();
+    const { appPort, sshPort, opencodePort } = allocatePorts();
     const vsockCid = allocateCid();
     const vmIp = cidToVmIp(vsockCid);
 
@@ -82,7 +83,6 @@ export function registerEnvRoutes(app: FastifyInstance) {
       ssh_port: sshPort,
       opencode_port: opencodePort,
       opencode_password: opencodePassword,
-      pages_port: pagesPort,
       status: "creating",
     });
 
@@ -96,7 +96,6 @@ export function registerEnvRoutes(app: FastifyInstance) {
         appPort,
         sshPort,
         opencodePort,
-        pagesPort,
         ghRepo: repoFullName,
         ghToken,
         sshKeys,
@@ -115,6 +114,9 @@ export function registerEnvRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to create VM", details: err.message });
     }
 
+    // Mark running BEFORE Caddy reload so it generates reverse_proxy (not status-page)
+    updateEnvStatus(slug, "running");
+
     // Register Caddy route (non-fatal)
     try {
       await addRoute(slug, appPort);
@@ -122,15 +124,12 @@ export function registerEnvRoutes(app: FastifyInstance) {
       request.log.warn({ err, slug }, "Failed to register Caddy route");
     }
 
-    updateEnvStatus(slug, "running");
-
     return reply.status(201).send({
       id: slug,
       name: body.name,
-      url: `http://${slug}.${baseDomain}`,
-      pages_url: `http://${slug}-pages.${baseDomain}`,
+      url: `http://${slug}.${getBaseDomain()}`,
       repo_url: `https://github.com/${repoFullName}`,
-      ssh_command: `ssh dev@${baseDomain} -p ${sshPort}`,
+      ssh_command: `ssh dev@${getBaseDomain()} -p ${sshPort}`,
       ssh_port: sshPort,
       status: "running",
     });
@@ -145,8 +144,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
         name: e.name,
         status: e.status,
         role: e.role,
-        url: `http://${e.id}.${baseDomain}`,
-        pages_url: `http://${e.id}-pages.${baseDomain}`,
+        url: `http://${e.id}.${getBaseDomain()}`,
         repo_url: `https://github.com/${e.gh_repo}`,
         created_at: e.created_at,
       })),
@@ -186,14 +184,12 @@ export function registerEnvRoutes(app: FastifyInstance) {
       id: env.id,
       name: env.name,
       status: env.status,
-      url: `http://${env.id}.${baseDomain}`,
-      pages_url: `http://${env.id}-pages.${baseDomain}`,
+      url: `http://${env.id}.${getBaseDomain()}`,
       repo_url: `https://github.com/${env.gh_repo}`,
-      ssh_command: `ssh dev@${baseDomain} -p ${env.ssh_port}`,
+      ssh_command: `ssh dev@${getBaseDomain()} -p ${env.ssh_port}`,
       ssh_port: env.ssh_port,
       app_port: env.app_port,
       opencode_port: env.opencode_port,
-      pages_port: env.pages_port,
       vm_status: vmStatus,
       role,
       created_at: env.created_at,
@@ -221,7 +217,6 @@ export function registerEnvRoutes(app: FastifyInstance) {
         env.app_port,
         env.ssh_port,
         env.opencode_port,
-        env.pages_port || 0,
       );
     } catch { /* may already be stopped/removed */ }
 
@@ -233,6 +228,38 @@ export function registerEnvRoutes(app: FastifyInstance) {
     deleteEnv(id);
 
     return { ok: true, message: `Environment ${id} destroyed` };
+  });
+
+  // Pause (snapshot) environment
+  app.post("/envs/:id/pause", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const env = findEnvById(id);
+    if (!env) {
+      return reply.status(404).send({ error: "Environment not found" });
+    }
+
+    const role = checkAccess(id, request.userId);
+    if (role !== "owner") {
+      return reply.status(403).send({ error: "Only the owner can pause an environment" });
+    }
+
+    if (env.status !== "running") {
+      return reply.status(400).send({ error: `Cannot pause environment in '${env.status}' state` });
+    }
+
+    try {
+      await snapshotVM(id);
+      const snapshotPath = `${process.env.DATA_DIR || "/data/envs"}/${id}/snapshot`;
+      updateEnvSnapshotPath(id, snapshotPath);
+      updateEnvStatus(id, "snapshotted");
+
+      try { await removeRoute(id); } catch { /* ok */ }
+
+      return { ok: true, message: `Environment ${id} paused (snapshotted)` };
+    } catch (err: any) {
+      request.log.error({ err, id }, "Failed to pause VM");
+      return reply.status(500).send({ error: "Failed to pause VM", details: err.message });
+    }
   });
 
   // Status page (Caddy fallback for 502/503)
@@ -265,7 +292,6 @@ export function registerEnvRoutes(app: FastifyInstance) {
   <div class="card">
     <h2>Nothing here yet</h2>
     <p style="margin-top: 0.75rem;">Ask your agent to serve on port <code>3000</code></p>
-    <p style="margin-top: 1rem;">Or place files in <code>~/pages/</code></p>
     <p style="margin-top: 1.5rem; font-size: 0.625rem; color: #a3a3a3;">This page refreshes automatically.</p>
   </div>
 </body>

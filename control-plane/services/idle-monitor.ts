@@ -41,8 +41,8 @@ function readTapBytes(tapDev: string): number {
 async function pollOnce(): Promise<void> {
   // Get all running VMs
   const runningEnvs = db.prepare(
-    "SELECT id, vsock_cid, app_port, ssh_port, opencode_port, pages_port, vm_ip FROM envs WHERE status = 'running'"
-  ).all() as { id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; pages_port: number | null; vm_ip: string }[];
+    "SELECT id, vsock_cid, app_port, ssh_port, opencode_port, vm_ip FROM envs WHERE status = 'running'"
+  ).all() as { id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; vm_ip: string }[];
 
   const now = Date.now();
 

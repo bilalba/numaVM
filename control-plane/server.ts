@@ -25,7 +25,7 @@ import { registerFileRoutes } from "./routes/files.js";
 import { destroyAllTerminals } from "./terminal/pty-handler.js";
 import { agentManager } from "./agents/manager.js";
 import { getHealthStats } from "./services/health.js";
-import { destroyAllVMs } from "./services/firecracker.js";
+import { destroyAllVMs, reconcileRunningVMs } from "./services/firecracker.js";
 import { startIdleMonitor, stopIdleMonitor } from "./services/idle-monitor.js";
 
 declare module "fastify" {
@@ -124,6 +124,9 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 // Start
+// Reconcile in-memory VM state with any surviving Firecracker processes
+await reconcileRunningVMs();
+
 // Start idle monitor (only on non-localhost deployments)
 if (baseDomain !== "localhost") {
   startIdleMonitor();

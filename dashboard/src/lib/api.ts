@@ -24,7 +24,6 @@ export interface EnvSummary {
   status: string;
   role: string;
   url: string;
-  pages_url: string;
   repo_url: string;
   created_at: string;
 }
@@ -34,13 +33,11 @@ export interface EnvDetail {
   name: string;
   status: string;
   url: string;
-  pages_url: string;
   repo_url: string;
   ssh_command: string;
   ssh_port: number;
   app_port: number;
   opencode_port: number;
-  pages_port: number | null;
   vm_status: {
     running: boolean;
     status: string;

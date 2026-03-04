@@ -21,7 +21,7 @@ export function registerVerifyRoute(app: FastifyInstance) {
       "";
 
     // Check if this is an env-specific subdomain (matches env-xxx and env-xxx-pages)
-    const envMatch = forwardedHost.match(/^(env-[a-z0-9]+?)(?:-pages)?\./)
+    const envMatch = forwardedHost.match(/^(env-[a-z0-9]+)\./)
     if (envMatch) {
       const envId = envMatch[1];
       const role = checkEnvAccess(envId, user.id);
