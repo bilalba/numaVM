@@ -1,0 +1,19 @@
+[Unit]
+Description=DeployMagi Control Plane
+After=network.target deploymagi-auth.service deploymagi-bridge.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/ubuntu/deploymagi
+ExecStart=/usr/bin/node --import tsx control-plane/server.ts
+EnvironmentFile=/home/ubuntu/deploymagi/.env
+Restart=on-failure
+RestartSec=5
+SyslogIdentifier=deploymagi-cp
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

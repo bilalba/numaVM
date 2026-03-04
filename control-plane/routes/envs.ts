@@ -165,6 +165,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
     // Auto-wake snapshotted VMs in the background when detail page is loaded
     if (env.status === "snapshotted" || env.status === "paused") {
       ensureVMRunning(env.id).catch((err) => {
+        console.error(`[wake] Background wake failed for ${id}:`, err);
         request.log.error({ err, envId: id }, "Background wake failed");
       });
     }
