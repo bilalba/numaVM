@@ -10,7 +10,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end mb-3">
-        <div className="max-w-[80%] bg-blue-600 text-white px-4 py-2.5 rounded-2xl rounded-br-sm text-sm whitespace-pre-wrap">
+        <div className="max-w-[80%] bg-white border border-neutral-200 px-4 py-2.5 text-sm whitespace-pre-wrap">
           {message.content}
         </div>
       </div>
@@ -20,11 +20,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
   if (message.role === "tool") {
     return (
       <div className="mb-3 ml-2">
-        <details className="bg-[#1a1a2e] border border-[#333] rounded-lg overflow-hidden">
-          <summary className="px-3 py-2 text-xs text-[#999] cursor-pointer hover:bg-[#222]">
+        <details className="border border-neutral-200 overflow-hidden">
+          <summary className="px-3 py-2 text-xs text-neutral-500 cursor-pointer transition-opacity hover:opacity-60">
             Tool: {metadata?.tool || "unknown"}
           </summary>
-          <pre className="px-3 py-2 text-xs text-[#ccc] overflow-x-auto whitespace-pre-wrap border-t border-[#333] max-h-48">
+          <pre className="px-3 py-2 text-xs text-neutral-600 overflow-x-auto whitespace-pre-wrap border-t border-neutral-100 max-h-48 bg-white">
             {message.content}
           </pre>
         </details>
@@ -35,7 +35,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
   if (message.role === "system") {
     return (
       <div className="mb-3 text-center">
-        <span className="text-xs text-[#666] italic">{message.content}</span>
+        <span className="text-xs text-neutral-500 italic">{message.content}</span>
       </div>
     );
   }
@@ -43,7 +43,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
   // assistant
   return (
     <div className="flex justify-start mb-3">
-      <div className="max-w-[80%] bg-[#1a1a1a] border border-[#333] px-4 py-2.5 rounded-2xl rounded-bl-sm text-sm whitespace-pre-wrap text-[#e5e5e5]">
+      <div className="max-w-[80%] border border-neutral-100 bg-[#faf7f2] px-4 py-2.5 text-sm whitespace-pre-wrap">
         <AssistantContent content={message.content} />
       </div>
     </div>
@@ -64,7 +64,7 @@ function AssistantContent({ content }: { content: string }) {
           return (
             <pre
               key={i}
-              className="bg-[#0a0a0a] border border-[#333] rounded px-3 py-2 my-2 text-xs overflow-x-auto"
+              className="bg-white border border-neutral-200 px-3 py-2 my-2 text-xs overflow-x-auto"
             >
               {code}
             </pre>
@@ -72,7 +72,7 @@ function AssistantContent({ content }: { content: string }) {
         }
         if (part.startsWith("`") && part.endsWith("`")) {
           return (
-            <code key={i} className="bg-[#0a0a0a] px-1.5 py-0.5 rounded text-xs">
+            <code key={i} className="bg-white border border-neutral-100 px-1.5 py-0.5 text-xs">
               {part.slice(1, -1)}
             </code>
           );
@@ -92,9 +92,9 @@ export function StreamingMessage({ text }: StreamingMessageProps) {
 
   return (
     <div className="flex justify-start mb-3">
-      <div className="max-w-[80%] bg-[#1a1a1a] border border-[#333] px-4 py-2.5 rounded-2xl rounded-bl-sm text-sm whitespace-pre-wrap text-[#e5e5e5]">
+      <div className="max-w-[80%] border border-neutral-100 bg-[#faf7f2] px-4 py-2.5 text-sm whitespace-pre-wrap">
         {text}
-        <span className="inline-block w-2 h-4 bg-blue-400 ml-0.5 animate-pulse" />
+        <span className="inline-block w-1.5 h-3.5 bg-black ml-0.5 animate-[pulseDot_1s_ease-in-out_infinite]" />
       </div>
     </div>
   );

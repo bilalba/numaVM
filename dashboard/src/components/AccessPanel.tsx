@@ -7,12 +7,6 @@ interface AccessPanelProps {
   currentUserRole: string;
 }
 
-const roleBadge: Record<string, string> = {
-  owner: "bg-purple-900/40 text-purple-300 border-purple-700",
-  editor: "bg-blue-900/40 text-blue-300 border-blue-700",
-  viewer: "bg-gray-800/40 text-gray-400 border-gray-600",
-};
-
 export function AccessPanel({ envId, currentUserRole }: AccessPanelProps) {
   const [access, setAccess] = useState<AccessEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -69,27 +63,29 @@ export function AccessPanel({ envId, currentUserRole }: AccessPanelProps) {
   };
 
   if (loading) {
-    return <div className="text-[#999] text-sm py-8 text-center">Loading access list...</div>;
+    return <div className="text-neutral-500 text-xs py-8 text-center">Loading access list...</div>;
   }
 
   return (
     <div className="max-w-2xl">
       {/* Invite form (owner only) */}
       {isOwner && (
-        <form onSubmit={handleInvite} className="mb-6 bg-[#141414] border border-[#333] rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">Invite a collaborator</h3>
-          <div className="flex gap-2">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Email address"
-              className="flex-1 bg-[#0a0a0a] border border-[#333] rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-            />
+        <form onSubmit={handleInvite} className="mb-6 bg-panel-chat border border-neutral-200 p-4">
+          <h3 className="text-xs font-semibold mb-3">Invite a collaborator</h3>
+          <div className="flex gap-3 items-end">
+            <div className="flex-1">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Email address"
+                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none"
+              />
+            </div>
             <select
               value={role}
               onChange={(e) => setRole(e.target.value)}
-              className="bg-[#0a0a0a] border border-[#333] rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 cursor-pointer"
+              className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black focus:border-black focus:outline-none cursor-pointer"
             >
               <option value="editor">Editor</option>
               <option value="viewer">Viewer</option>
@@ -97,54 +93,54 @@ export function AccessPanel({ envId, currentUserRole }: AccessPanelProps) {
             <button
               type="submit"
               disabled={submitting || !email.trim()}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded transition-colors cursor-pointer"
+              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer pb-1"
             >
               {submitting ? "Inviting..." : "Invite"}
             </button>
           </div>
-          <p className="text-[10px] text-[#666] mt-2">User must have an account to be invited.</p>
+          <p className="text-[10px] text-neutral-500 mt-2">User must have an account to be invited.</p>
         </form>
       )}
 
       {/* Access list */}
-      <div className="bg-[#141414] border border-[#333] rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-[#333]">
-          <h3 className="text-sm font-medium">People with access</h3>
+      <div className="bg-panel-chat border border-neutral-200 overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200">
+          <h3 className="text-xs font-semibold">People with access</h3>
         </div>
         {access.length === 0 ? (
-          <p className="text-sm text-[#666] p-4">No access entries found.</p>
+          <p className="text-xs text-neutral-500 p-4">No access entries found.</p>
         ) : (
           <div>
             {access.map((entry) => (
               <div
                 key={entry.user_id}
-                className="flex items-center justify-between px-4 py-3 border-b border-[#222] last:border-b-0"
+                className="flex items-center justify-between px-4 py-3 border-b border-neutral-100 last:border-b-0"
               >
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm truncate">{entry.name || entry.email}</div>
+                  <div className="text-xs truncate">{entry.name || entry.email}</div>
                   {entry.name && (
-                    <div className="text-xs text-[#666] truncate">{entry.email}</div>
+                    <div className="text-[10px] text-neutral-500 truncate">{entry.email}</div>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0 ml-4">
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded border ${roleBadge[entry.role] || roleBadge.viewer}`}
-                  >
+                  <span className="text-xs text-neutral-500">
                     {entry.role}
                   </span>
                   {isOwner && entry.role !== "owner" && (
                     <>
+                      <span className="text-neutral-400">|</span>
                       <select
                         value={entry.role}
                         onChange={(e) => handleRoleChange(entry, e.target.value)}
-                        className="bg-[#0a0a0a] border border-[#333] rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 cursor-pointer"
+                        className="border-0 bg-transparent px-0 py-0 text-xs text-black focus:outline-none cursor-pointer"
                       >
                         <option value="editor">Editor</option>
                         <option value="viewer">Viewer</option>
                       </select>
+                      <span className="text-neutral-400">|</span>
                       <button
                         onClick={() => handleRevoke(entry)}
-                        className="text-xs text-red-400 hover:text-red-300 cursor-pointer"
+                        className="text-xs underline underline-offset-4 opacity-60 transition-opacity hover:opacity-80 cursor-pointer"
                       >
                         Remove
                       </button>

@@ -128,31 +128,31 @@ export function TerminalTab({ envId }: TerminalTabProps) {
 
   if (loading) {
     return (
-      <div className="h-[calc(100vh-200px)] min-h-[400px] bg-[#0a0a0a] rounded-lg overflow-hidden border border-[#333] flex items-center justify-center">
-        <span className="text-sm text-[#999]">Loading terminal sessions...</span>
+      <div className="h-[calc(100vh-200px)] min-h-[400px] bg-[#0a0a0a] overflow-hidden border border-neutral-200 flex items-center justify-center">
+        <span className="text-xs text-neutral-500">Loading terminal sessions...</span>
       </div>
     );
   }
 
   return (
-    <div className="h-[calc(100vh-200px)] min-h-[400px] bg-[#0a0a0a] rounded-lg overflow-hidden border border-[#333] flex flex-col">
+    <div className="h-[calc(100vh-200px)] min-h-[400px] overflow-hidden border border-neutral-200 flex flex-col">
       {/* Tab bar */}
-      <div className="flex items-center bg-[#141414] border-b border-[#333] shrink-0">
+      <div className="flex items-center bg-panel-sidebar border-b border-neutral-200 shrink-0">
         <div className="flex overflow-x-auto">
           {tabs.map((tab) => (
             <button
               key={tab.name}
               onClick={() => setActiveTab(tab.name)}
-              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-r border-[#333] transition-colors cursor-pointer shrink-0 ${
+              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-neutral-200 transition-opacity cursor-pointer shrink-0 ${
                 activeTab === tab.name
-                  ? "bg-[#0a0a0a] text-[#e5e5e5] border-b-2 border-b-blue-500"
-                  : "text-[#999] hover:text-[#e5e5e5] hover:bg-[#1a1a1a]"
+                  ? "font-semibold opacity-100 bg-panel-chat"
+                  : "opacity-60 hover:opacity-80"
               }`}
             >
-              <span className="font-mono">{tab.name}</span>
+              <span>{tab.name}</span>
               <span
                 onClick={(e) => closeTab(tab.name, e)}
-                className="opacity-0 group-hover:opacity-100 hover:text-red-400 text-[#666] transition-opacity ml-1"
+                className="opacity-0 group-hover:opacity-60 hover:opacity-100 text-neutral-500 transition-opacity ml-1 text-[10px]"
                 title="Close session"
               >
                 ×
@@ -162,7 +162,7 @@ export function TerminalTab({ envId }: TerminalTabProps) {
         </div>
         <button
           onClick={addTab}
-          className="px-2.5 py-1.5 text-[#999] hover:text-[#e5e5e5] hover:bg-[#1a1a1a] text-sm transition-colors cursor-pointer shrink-0"
+          className="px-2.5 py-1.5 text-xs text-neutral-500 transition-opacity hover:opacity-60 cursor-pointer shrink-0"
           title="New terminal"
         >
           +
@@ -170,7 +170,7 @@ export function TerminalTab({ envId }: TerminalTabProps) {
       </div>
 
       {/* Terminal panes */}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 bg-[#0a0a0a]">
         {tabs.map((tab) => (
           <TerminalPane
             key={tab.name}
