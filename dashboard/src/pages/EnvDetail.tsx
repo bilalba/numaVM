@@ -13,7 +13,7 @@ type TabId = "terminal" | "claude" | "codex" | "opencode" | "files" | "access";
 const statusColors: Record<string, string> = {
   running: "bg-green-500",
   creating: "bg-yellow-500",
-  stopped: "bg-gray-500",
+  stopped: "bg-neutral-400",
   error: "bg-red-500",
   snapshotted: "bg-blue-500",
   paused: "bg-blue-500",
@@ -53,7 +53,7 @@ export function EnvDetail() {
 
   if (loading) {
     return (
-      <div className="max-w-7xl mx-auto px-6 py-8 text-[#999]">
+      <div className="max-w-7xl mx-auto px-6 py-8 text-neutral-500 text-xs">
         Loading environment...
       </div>
     );
@@ -62,10 +62,10 @@ export function EnvDetail() {
   if (error || !env) {
     return (
       <div className="max-w-7xl mx-auto px-6 py-8">
-        <div className="bg-red-900/30 border border-red-800 rounded-lg p-4 text-red-300 text-sm">
+        <div className="border border-neutral-300 p-4 text-sm text-red-600">
           {error || "Environment not found"}
         </div>
-        <Link to="/" className="text-blue-400 hover:underline text-sm mt-4 inline-block">
+        <Link to="/" className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 mt-4 inline-block">
           Back to environments
         </Link>
       </div>
@@ -85,34 +85,36 @@ export function EnvDetail() {
     <div className="max-w-7xl mx-auto px-6 py-8">
       {/* Header */}
       <div className="mb-6">
-        <Link to="/" className="text-sm text-[#999] hover:text-[#e5e5e5] mb-2 inline-block">
+        <Link to="/" className="text-xs text-neutral-500 underline underline-offset-4 transition-opacity hover:opacity-60 mb-2 inline-block">
           &larr; Environments
         </Link>
         <div className="flex items-center gap-3 mt-1">
           <span
-            className={`w-2.5 h-2.5 rounded-full ${statusColors[env.status] || "bg-gray-500"}`}
+            className={`w-2 h-2 rounded-full ${statusColors[env.status] || "bg-neutral-400"}`}
           />
-          <h1 className="text-2xl font-bold">{env.name}</h1>
-          <span className="text-sm font-mono text-[#999]">{env.id}</span>
+          <h1 className="text-2xl font-semibold">{env.name}</h1>
+          <span className="text-xs text-neutral-500">{env.id}</span>
         </div>
-        <div className="flex items-center gap-4 mt-3">
+        <div className="flex items-center gap-2 mt-3 text-xs">
           <a
             href={env.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-sm text-blue-400 hover:underline"
+            className="underline underline-offset-4 transition-opacity hover:opacity-60"
           >
             Visit
           </a>
+          <span className="text-neutral-400">|</span>
           <a
             href={env.repo_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-sm text-blue-400 hover:underline"
+            className="underline underline-offset-4 transition-opacity hover:opacity-60"
           >
             GitHub
           </a>
-          <span className="text-xs text-[#999] capitalize">
+          <span className="text-neutral-400">|</span>
+          <span className="text-neutral-500 capitalize">
             {env.role} &middot; {env.status}
           </span>
         </div>
@@ -120,9 +122,9 @@ export function EnvDetail() {
 
       {/* Setting up banner */}
       {env.status === "creating" && (
-        <div className="mb-4 bg-blue-900/20 border border-blue-800/50 rounded-lg px-4 py-3 flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-          <span className="text-sm text-blue-300">
+        <div className="mb-4 border border-neutral-200 px-4 py-3 flex items-center gap-3 bg-panel-chat">
+          <div className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]" />
+          <span className="text-xs text-neutral-600">
             Your environment is being set up. This usually takes a minute.
           </span>
         </div>
@@ -130,24 +132,24 @@ export function EnvDetail() {
 
       {/* Waking up banner */}
       {(env.status === "snapshotted" || env.status === "paused") && (
-        <div className="mb-4 bg-blue-900/20 border border-blue-800/50 rounded-lg px-4 py-3 flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-          <span className="text-sm text-blue-300">
+        <div className="mb-4 border border-neutral-200 px-4 py-3 flex items-center gap-3 bg-panel-chat">
+          <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-[pulseDot_1s_ease-in-out_infinite]" />
+          <span className="text-xs text-neutral-600">
             Your environment is waking up from sleep. This usually takes a few seconds.
           </span>
         </div>
       )}
 
       {/* Tab bar */}
-      <div className="flex border-b border-[#333] mb-6">
+      <div className="flex border-b border-neutral-200 mb-6">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`px-5 py-2.5 text-sm font-medium transition-colors cursor-pointer -mb-px ${
+            className={`px-4 py-2 text-xs transition-opacity cursor-pointer -mb-px ${
               activeTab === tab.id
-                ? "text-[#e5e5e5] border-b-2 border-blue-500"
-                : "text-[#999] hover:text-[#e5e5e5]"
+                ? "font-semibold opacity-100 border-b border-black"
+                : "opacity-60 hover:opacity-80"
             }`}
           >
             {tab.label}

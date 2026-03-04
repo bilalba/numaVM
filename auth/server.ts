@@ -18,6 +18,13 @@ import { findUserById } from "./db/client.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+let deployVersion: Record<string, string> = {};
+try {
+  deployVersion = JSON.parse(
+    readFileSync(join(__dirname, "..", "version.json"), "utf-8")
+  );
+} catch {}
+
 const app = Fastify({ logger: true });
 
 await app.register(cookie);
@@ -63,7 +70,7 @@ app.get("/logout", async (_request, reply) => {
 });
 
 // Health check
-app.get("/health", async () => ({ status: "ok" }));
+app.get("/health", async () => ({ status: "ok", version: deployVersion }));
 
 // Register route modules
 registerGithubRoutes(app);
@@ -75,3 +82,6 @@ registerVerifyRoute(app);
 const port = parseInt(process.env.AUTH_PORT || "4000", 10);
 await app.listen({ port, host: "0.0.0.0" });
 console.log(`Auth service listening on http://localhost:${port}`);
+if (deployVersion.commit) {
+  console.log(`Version: ${deployVersion.commit} (${deployVersion.branch}) deployed ${deployVersion.timestamp}`);
+}

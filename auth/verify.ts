@@ -20,10 +20,10 @@ export function registerVerifyRoute(app: FastifyInstance) {
       (request.headers.host as string) ||
       "";
 
-    // Check if this is an env-specific subdomain
-    const envMatch = forwardedHost.match(/^env-([a-z0-9]+)\./);
+    // Check if this is an env-specific subdomain (matches env-xxx and env-xxx-pages)
+    const envMatch = forwardedHost.match(/^(env-[a-z0-9]+)\./)
     if (envMatch) {
-      const envId = `env-${envMatch[1]}`;
+      const envId = envMatch[1];
       const role = checkEnvAccess(envId, user.id);
       if (!role) {
         return reply.status(403).send("No access to this environment");

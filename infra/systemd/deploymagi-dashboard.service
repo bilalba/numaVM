@@ -1,0 +1,19 @@
+[Unit]
+Description=DeployMagi Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/deploymagi/dashboard
+ExecStart=/usr/bin/npx serve -s dist -l 4002 --cors
+EnvironmentFile=/home/ubuntu/deploymagi/.env
+Restart=on-failure
+RestartSec=5
+SyslogIdentifier=deploymagi-dashboard
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

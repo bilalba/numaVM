@@ -52,6 +52,9 @@ echo "[init] VM IP: ${VM_IP}, Gateway: ${GATEWAY}, CID: ${VSOCK_CID}"
 
 echo "[init] Configuring network..."
 
+# Bring up loopback (needed for localhost-binding services like Claude Code OAuth)
+ip link set lo up 2>/dev/null || true
+
 # Configure eth0 (Firecracker's default network interface)
 ip addr add "${VM_IP}/16" dev eth0 2>/dev/null || true
 ip link set eth0 up 2>/dev/null || true
@@ -164,7 +167,7 @@ fi
 # --- Start user app (best-effort) ---
 
 cd /data/repo 2>/dev/null || true
-export PORT=4000
+export PORT=3000
 
 if [ -f package.json ]; then
   echo "[init] Starting Node.js app..."

@@ -133,9 +133,21 @@ if [ -z "${DEFAULT_IF}" ]; then
   DEFAULT_IF="eth0"
 fi
 
-# Enable IP forwarding
+# Enable IP forwarding + route_localnet (needed for localhost DNAT to VMs)
 sysctl -w net.ipv4.ip_forward=1 > /dev/null
-echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-deploymagi.conf
+sysctl -w net.ipv4.conf.all.route_localnet=1 > /dev/null
+cat > /etc/sysctl.d/99-deploymagi.conf <<EOF
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.route_localnet=1
+EOF
+
+# Add MASQUERADE rule for localhost->VM traffic (Caddy connects via localhost DNAT)
+if ! iptables -t nat -C POSTROUTING -s 127.0.0.1 -d "${BRIDGE_SUBNET}" -j MASQUERADE 2>/dev/null; then
+  iptables -t nat -A POSTROUTING -s 127.0.0.1 -d "${BRIDGE_SUBNET}" -j MASQUERADE
+  echo "  Added localhost MASQUERADE rule for ${BRIDGE_SUBNET}"
+else
+  echo "  Localhost MASQUERADE rule already exists"
+fi
 
 # Add MASQUERADE rule (idempotent)
 if ! iptables -t nat -C POSTROUTING -s "${BRIDGE_SUBNET}" -o "${DEFAULT_IF}" -j MASQUERADE 2>/dev/null; then

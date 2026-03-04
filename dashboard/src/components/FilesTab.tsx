@@ -87,12 +87,12 @@ export function FilesTab({ envId }: FilesTabProps) {
   return (
     <div className="flex h-[calc(100vh-200px)] min-h-[400px] gap-4">
       {/* File tree (left panel) */}
-      <div className="w-72 shrink-0 bg-[#141414] border border-[#333] rounded-lg flex flex-col overflow-hidden">
-        <div className="px-3 py-2 border-b border-[#333] flex items-center justify-between">
-          <span className="text-xs font-medium text-[#999] uppercase tracking-wide">Files</span>
+      <div className="w-72 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col overflow-hidden">
+        <div className="px-3 py-2 border-b border-neutral-200 flex items-center justify-between">
+          <span className="text-xs text-neutral-500 uppercase tracking-wide">Files</span>
           <button
             onClick={() => { setDirs(new Map()); loadDir(ROOT); }}
-            className="p-1 text-[#666] hover:text-[#e5e5e5] transition-colors cursor-pointer"
+            className="text-xs text-neutral-500 transition-opacity hover:opacity-60 cursor-pointer"
             title="Refresh"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -102,7 +102,7 @@ export function FilesTab({ envId }: FilesTabProps) {
         </div>
 
         {/* Tree */}
-        <div className="flex-1 overflow-y-auto text-xs font-mono">
+        <div className="flex-1 overflow-y-auto text-xs">
           <TreeNode
             parentPath={ROOT}
             dirs={dirs}
@@ -115,18 +115,18 @@ export function FilesTab({ envId }: FilesTabProps) {
 
         {/* Git log */}
         {commits.length > 0 && (
-          <div className="border-t border-[#333]">
-            <div className="px-3 py-2 border-b border-[#222]">
-              <span className="text-xs font-medium text-[#999] uppercase tracking-wide">Git History</span>
+          <div className="border-t border-neutral-200">
+            <div className="px-3 py-2 border-b border-neutral-100">
+              <span className="text-xs text-neutral-500 uppercase tracking-wide">Git History</span>
             </div>
             <div className="max-h-48 overflow-y-auto">
               {commits.map((c) => (
-                <div key={c.hash} className="px-3 py-1.5 border-b border-[#222] last:border-b-0">
+                <div key={c.hash} className="px-3 py-1.5 border-b border-neutral-100 last:border-b-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono text-blue-400 shrink-0">{c.hash.slice(0, 7)}</span>
-                    <span className="text-[11px] text-[#ccc] truncate">{c.message}</span>
+                    <span className="text-[10px] text-neutral-500 shrink-0">{c.hash.slice(0, 7)}</span>
+                    <span className="text-[11px] truncate">{c.message}</span>
                   </div>
-                  <div className="text-[10px] text-[#555]">{c.author}</div>
+                  <div className="text-[10px] text-neutral-500">{c.author}</div>
                 </div>
               ))}
             </div>
@@ -135,42 +135,42 @@ export function FilesTab({ envId }: FilesTabProps) {
       </div>
 
       {/* Content viewer (right panel) */}
-      <div className="flex-1 bg-[#0a0a0a] border border-[#333] rounded-lg flex flex-col overflow-hidden">
+      <div className="flex-1 bg-white border border-neutral-200 flex flex-col overflow-hidden">
         {fileLoading ? (
-          <div className="flex-1 flex items-center justify-center text-[#666] text-sm">
+          <div className="flex-1 flex items-center justify-center text-neutral-500 text-xs">
             Loading file...
           </div>
         ) : fileError ? (
-          <div className="flex-1 flex items-center justify-center text-red-400 text-sm">
+          <div className="flex-1 flex items-center justify-center text-red-600 text-xs">
             {fileError}
           </div>
         ) : !selectedFile ? (
-          <div className="flex-1 flex items-center justify-center text-[#666] text-sm">
+          <div className="flex-1 flex items-center justify-center text-neutral-500 text-xs">
             Select a file to view its contents
           </div>
         ) : selectedFile.binary ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-[#666]">
-            <div className="text-sm mb-1">Binary file</div>
-            <div className="text-xs">{selectedFile.mimeType} &middot; {formatSize(selectedFile.size)}</div>
+          <div className="flex-1 flex flex-col items-center justify-center text-neutral-500">
+            <div className="text-xs mb-1">Binary file</div>
+            <div className="text-[10px]">{selectedFile.mimeType} &middot; {formatSize(selectedFile.size)}</div>
           </div>
         ) : (
           <>
             {/* File header */}
-            <div className="px-4 py-2 border-b border-[#333] flex items-center justify-between bg-[#141414]">
-              <span className="text-xs font-mono text-[#999] truncate">{selectedFile.path}</span>
-              <span className="text-xs text-[#555] shrink-0 ml-4">{formatSize(selectedFile.size)}</span>
+            <div className="px-4 py-2 border-b border-neutral-200 flex items-center justify-between">
+              <span className="text-xs text-neutral-500 truncate">{selectedFile.path}</span>
+              <span className="text-[10px] text-neutral-500 shrink-0 ml-4">{formatSize(selectedFile.size)}</span>
             </div>
             {/* File content with line numbers */}
             <div className="flex-1 overflow-auto">
-              <pre className="text-xs leading-5 font-mono">
+              <pre className="text-xs leading-5">
                 <table className="w-full border-collapse">
                   <tbody>
                     {(selectedFile.content || "").split("\n").map((line, i) => (
-                      <tr key={i} className="hover:bg-[#111]">
-                        <td className="text-right pr-4 pl-4 text-[#555] select-none w-12 align-top border-r border-[#222]">
+                      <tr key={i} className="hover:bg-[#faf7f2]">
+                        <td className="text-right pr-4 pl-4 text-neutral-400 select-none w-12 align-top border-r border-neutral-100">
                           {i + 1}
                         </td>
-                        <td className="pl-4 pr-4 text-[#ccc] whitespace-pre-wrap break-all">
+                        <td className="pl-4 pr-4 whitespace-pre-wrap break-all">
                           {line || "\u00A0"}
                         </td>
                       </tr>
@@ -207,7 +207,7 @@ function TreeNode({
   if (dirState.loading && dirState.entries.length === 0) {
     return (
       <div className="py-1" style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}>
-        <span className="text-[#555]">Loading...</span>
+        <span className="text-neutral-500">Loading...</span>
       </div>
     );
   }
@@ -215,7 +215,7 @@ function TreeNode({
   if (dirState.error) {
     return (
       <div className="py-1" style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}>
-        <span className="text-red-400 text-[10px]">{dirState.error}</span>
+        <span className="text-red-600 text-[10px]">{dirState.error}</span>
       </div>
     );
   }
@@ -223,7 +223,7 @@ function TreeNode({
   if (dirState.entries.length === 0) {
     return (
       <div className="py-1" style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}>
-        <span className="text-[#555] italic">empty</span>
+        <span className="text-neutral-500 italic">empty</span>
       </div>
     );
   }
@@ -240,24 +240,16 @@ function TreeNode({
         return (
           <div key={entry.name}>
             <div
-              className={`flex items-center py-0.5 cursor-pointer group ${
-                isSelected ? "bg-[#1a1a2e]" : "hover:bg-[#1a1a1a]"
+              className={`flex items-center py-0.5 cursor-pointer transition-opacity ${
+                isSelected ? "bg-panel-chat font-semibold" : "hover:opacity-60"
               }`}
               style={{ paddingLeft: `${depth * 12 + 8}px` }}
               onClick={() => (isDir ? onToggleDir(fullPath) : onFileClick(fullPath))}
             >
-              <span className="w-4 text-center shrink-0 text-[#555]">
+              <span className="w-4 text-center shrink-0 text-neutral-400">
                 {isDir ? (isExpanded ? "\u25BE" : "\u25B8") : ""}
               </span>
-              <span
-                className={`truncate ${
-                  isDir
-                    ? "text-blue-300"
-                    : entry.type === "symlink"
-                      ? "text-purple-300"
-                      : "text-[#ccc]"
-                }`}
-              >
+              <span className="truncate">
                 {entry.name}
               </span>
             </div>

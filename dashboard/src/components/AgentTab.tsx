@@ -302,43 +302,43 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
 
     return (
       <div className="flex items-center justify-center h-[calc(100vh-200px)] min-h-[400px]">
-        <div className="bg-[#141414] border border-[#333] rounded-xl p-8 max-w-md w-full text-center">
-          <h2 className="text-xl font-bold mb-2">Sign in to Codex</h2>
-          <p className="text-sm text-[#999] mb-6">
+        <div className="border border-neutral-300 bg-white p-5 max-w-sm w-full text-center">
+          <h2 className="text-sm font-semibold mb-2">Sign in to Codex</h2>
+          <p className="text-xs text-neutral-500 mb-6">
             Codex requires authentication with your ChatGPT or OpenAI account.
           </p>
 
           {deviceUrl && deviceCode ? (
             <div>
-              <p className="text-sm text-[#999] mb-4">
+              <p className="text-xs text-neutral-500 mb-4">
                 1. Open this link and sign in:
               </p>
               <a
                 href={deviceUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-block text-blue-400 hover:text-blue-300 underline text-sm mb-5"
+                className="inline-block text-xs underline underline-offset-4 transition-opacity hover:opacity-60 mb-5"
               >
                 {deviceUrl}
               </a>
 
-              <p className="text-sm text-[#999] mb-3">
+              <p className="text-xs text-neutral-500 mb-3">
                 2. Enter this device code:
               </p>
-              <div className="bg-[#0a0a0a] border border-[#444] rounded-lg py-3 px-6 inline-block mb-6">
-                <span className="text-2xl font-mono font-bold tracking-widest select-all">{deviceCode}</span>
+              <div className="border border-neutral-300 bg-[#f8f4ee] py-3 px-6 inline-block mb-6">
+                <span className="text-2xl font-semibold tracking-widest select-all">{deviceCode}</span>
               </div>
 
-              <p className="text-xs text-[#666] mb-4">Expires in 15 minutes. Never share this code.</p>
+              <p className="text-[10px] text-neutral-500 mb-4">Expires in 15 minutes. Never share this code.</p>
 
               {codexAuth.authError && (
-                <p className="text-sm text-yellow-400 mb-3">{codexAuth.authError}</p>
+                <p className="text-xs text-red-600 mb-3">{codexAuth.authError}</p>
               )}
 
               <button
                 onClick={handleCheckAuth}
                 disabled={codexAuth.checkingAuth}
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
+                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer"
               >
                 {codexAuth.checkingAuth ? "Checking..." : "I've completed sign in"}
               </button>
@@ -348,29 +348,29 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
               <button
                 onClick={handleChatGPTLogin}
                 disabled={codexAuth.loggingIn}
-                className="w-full px-5 py-3 bg-[#10a37f] hover:bg-[#0d8c6d] disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
+                className="w-full text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-2"
               >
                 {codexAuth.loggingIn ? "Starting login..." : "Sign in with ChatGPT"}
               </button>
 
               <div className="relative">
-                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-[#333]" /></div>
-                <div className="relative flex justify-center"><span className="bg-[#141414] px-3 text-xs text-[#666]">or</span></div>
+                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-neutral-200" /></div>
+                <div className="relative flex justify-center"><span className="bg-white px-3 text-[10px] text-neutral-500">or</span></div>
               </div>
 
               {codexAuth.showApiKey ? (
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-end">
                   <input
                     type="password"
                     value={codexAuth.apiKeyInput || ""}
                     onChange={(e) => setCodexAuth((prev) => ({ ...prev, apiKeyInput: e.target.value }))}
                     placeholder="sk-..."
-                    className="flex-1 bg-[#0a0a0a] border border-[#333] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 font-mono"
+                    className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none"
                   />
                   <button
                     onClick={handleApiKeyLogin}
                     disabled={!codexAuth.apiKeyInput?.trim() || codexAuth.loggingIn}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
+                    className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer pb-1"
                   >
                     Save
                   </button>
@@ -378,7 +378,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
               ) : (
                 <button
                   onClick={() => setCodexAuth((prev) => ({ ...prev, showApiKey: true }))}
-                  className="w-full px-5 py-3 bg-[#1a1a1a] hover:bg-[#222] border border-[#333] text-[#999] text-sm font-medium rounded-lg transition-colors cursor-pointer"
+                  className="w-full text-xs underline underline-offset-4 opacity-60 transition-opacity hover:opacity-80 cursor-pointer py-2"
                 >
                   Use API Key
                 </button>
@@ -393,13 +393,13 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   return (
     <div className="flex h-[calc(100vh-200px)] min-h-[400px] gap-4">
       {/* Session sidebar */}
-      <div className="w-56 shrink-0 bg-[#141414] border border-[#333] rounded-lg flex flex-col">
-        <div className="p-3 border-b border-[#333] space-y-2">
+      <div className="w-56 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col">
+        <div className="p-3 border-b border-neutral-200 space-y-2">
           {modelOptions.length > 1 && (
             <select
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
-              className="w-full bg-[#0a0a0a] border border-[#333] rounded px-2 py-1.5 text-xs text-[#ccc] focus:outline-none focus:border-blue-500 cursor-pointer"
+              className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black focus:border-black focus:outline-none cursor-pointer"
             >
               {modelOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -411,14 +411,14 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
           <button
             onClick={handleCreateSession}
             disabled={loading}
-            className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded transition-colors cursor-pointer"
+            className="w-full text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1"
           >
             New Session
           </button>
         </div>
         <div className="flex-1 overflow-y-auto">
           {sessions.length === 0 ? (
-            <p className="text-xs text-[#666] p-3">
+            <p className="text-xs text-neutral-500 p-3">
               No sessions yet. Create one to start chatting with {agentLabel}.
             </p>
           ) : (
@@ -430,16 +430,16 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
                   setStreamingText("");
                   setApprovals([]);
                 }}
-                className={`w-full text-left px-3 py-2.5 text-sm border-b border-[#222] transition-colors cursor-pointer ${
+                className={`w-full text-left px-3 py-2.5 text-xs border-b border-neutral-100 transition-opacity cursor-pointer ${
                   s.id === activeSessionId
-                    ? "bg-[#1a1a2e] text-[#e5e5e5]"
-                    : "text-[#999] hover:bg-[#1a1a1a]"
+                    ? "font-semibold opacity-100 bg-panel-chat"
+                    : "opacity-60 hover:opacity-80"
                 }`}
               >
-                <div className="truncate text-xs font-medium">
+                <div className="truncate">
                   {s.title || `Session ${s.id.slice(0, 8)}`}
                 </div>
-                <div className="text-[10px] text-[#666] mt-0.5">
+                <div className="text-[10px] text-neutral-500 mt-0.5">
                   {relativeTime(s.updated_at || s.created_at)}
                 </div>
               </button>
@@ -449,31 +449,31 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
       </div>
 
       {/* Chat area */}
-      <div className="flex-1 flex flex-col bg-[#0a0a0a] border border-[#333] rounded-lg overflow-hidden">
+      <div className="flex-1 flex flex-col bg-panel-chat border border-neutral-200 overflow-hidden">
         {/* Header */}
-        <div className="px-4 py-2.5 border-b border-[#333] flex items-center justify-between bg-[#141414]">
+        <div className="px-4 py-2 border-b border-neutral-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">{agentLabel}</span>
+            <span className="text-xs font-semibold">{agentLabel}</span>
             <span
-              className={`w-2 h-2 rounded-full ${
+              className={`w-1.5 h-1.5 rounded-full ${
                 sessionStatus === "busy"
-                  ? "bg-yellow-400 animate-pulse"
+                  ? "bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]"
                   : sessionStatus === "error"
                     ? "bg-red-500"
                     : connected
                       ? "bg-green-500"
-                      : "bg-gray-500"
+                      : "bg-neutral-400"
               }`}
             />
-            <span className="text-xs text-[#666]">{sessionStatus}</span>
+            <span className="text-xs text-neutral-500">{sessionStatus}</span>
             {modelInfo?.model && (
-              <span className="text-xs text-[#555] ml-2 font-mono">{modelInfo.model}</span>
+              <span className="text-xs text-neutral-500 ml-2">{modelInfo.model}</span>
             )}
           </div>
           {sessionStatus === "busy" && (
             <button
               onClick={handleStop}
-              className="px-2.5 py-1 bg-red-700 hover:bg-red-600 text-white text-xs rounded transition-colors cursor-pointer"
+              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
             >
               Stop
             </button>
@@ -483,15 +483,15 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {!activeSessionId ? (
-            <div className="h-full flex items-center justify-center text-[#666] text-sm">
+            <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Create or select a session to start
             </div>
           ) : loading ? (
-            <div className="h-full flex items-center justify-center text-[#666] text-sm">
+            <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Loading messages...
             </div>
           ) : messages.length === 0 && !streamingText ? (
-            <div className="h-full flex items-center justify-center text-[#666] text-sm">
+            <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Send a message to start the conversation
             </div>
           ) : (
@@ -518,25 +518,25 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
 
         {/* Input */}
         {activeSessionId && (
-          <div className="px-4 py-3 border-t border-[#333] bg-[#141414]">
-            <div className="flex gap-2">
+          <div className="px-4 py-3 border-t border-neutral-200">
+            <div className="flex gap-3 items-end">
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={`Message ${agentLabel}...`}
                 rows={1}
-                className="flex-1 bg-[#0a0a0a] border border-[#333] rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:border-blue-500 min-h-[38px] max-h-32"
+                className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none resize-none min-h-[28px] max-h-32"
               />
               <button
                 onClick={handleSend}
                 disabled={!inputText.trim() || sending || sessionStatus === "busy"}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer shrink-0"
+                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer shrink-0 pb-1"
               >
                 Send
               </button>
             </div>
-            <p className="text-[10px] text-[#666] mt-1.5">
+            <p className="text-[10px] text-neutral-500 mt-1.5">
               Shift+Enter for new line
             </p>
           </div>

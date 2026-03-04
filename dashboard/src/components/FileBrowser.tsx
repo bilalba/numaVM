@@ -79,7 +79,7 @@ export function FileBrowser({ envId, collapsed, onToggleCollapse }: FileBrowserP
       <div className="w-8 shrink-0 flex flex-col items-center">
         <button
           onClick={onToggleCollapse}
-          className="mt-2 p-1 text-[#666] hover:text-[#e5e5e5] transition-colors cursor-pointer"
+          className="mt-2 p-1 text-neutral-500 transition-opacity hover:opacity-60 cursor-pointer"
           title="Show file browser"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -91,14 +91,14 @@ export function FileBrowser({ envId, collapsed, onToggleCollapse }: FileBrowserP
   }
 
   return (
-    <div className="w-64 shrink-0 bg-[#141414] border border-[#333] rounded-lg flex flex-col overflow-hidden">
+    <div className="w-64 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="px-3 py-2 border-b border-[#333] flex items-center justify-between">
-        <span className="text-xs font-medium text-[#999] uppercase tracking-wide">Files</span>
+      <div className="px-3 py-2 border-b border-neutral-200 flex items-center justify-between">
+        <span className="text-xs text-neutral-500 uppercase tracking-wide">Files</span>
         <div className="flex items-center gap-1">
           <button
             onClick={refreshAll}
-            className="p-1 text-[#666] hover:text-[#e5e5e5] transition-colors cursor-pointer"
+            className="p-1 text-neutral-500 transition-opacity hover:opacity-60 cursor-pointer"
             title="Refresh"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -107,7 +107,7 @@ export function FileBrowser({ envId, collapsed, onToggleCollapse }: FileBrowserP
           </button>
           <button
             onClick={onToggleCollapse}
-            className="p-1 text-[#666] hover:text-[#e5e5e5] transition-colors cursor-pointer"
+            className="p-1 text-neutral-500 transition-opacity hover:opacity-60 cursor-pointer"
             title="Hide file browser"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -118,7 +118,7 @@ export function FileBrowser({ envId, collapsed, onToggleCollapse }: FileBrowserP
       </div>
 
       {/* Tree */}
-      <div className="flex-1 overflow-y-auto text-xs font-mono">
+      <div className="flex-1 overflow-y-auto text-xs">
         <DirContents
           parentPath={ROOT}
           dirs={dirs}
@@ -147,7 +147,7 @@ function DirContents({
   if (dirState.loading && dirState.entries.length === 0) {
     return (
       <div className="py-1" style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}>
-        <span className="text-[#555]">Loading...</span>
+        <span className="text-neutral-500">Loading...</span>
       </div>
     );
   }
@@ -155,7 +155,7 @@ function DirContents({
   if (dirState.error) {
     return (
       <div className="py-1" style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}>
-        <span className="text-red-400 text-[10px]">{dirState.error}</span>
+        <span className="text-red-600 text-[10px]">{dirState.error}</span>
       </div>
     );
   }
@@ -163,7 +163,7 @@ function DirContents({
   if (dirState.entries.length === 0) {
     return (
       <div className="py-1" style={{ paddingLeft: `${(depth + 1) * 12 + 8}px` }}>
-        <span className="text-[#555] italic">empty</span>
+        <span className="text-neutral-500 italic">empty</span>
       </div>
     );
   }
@@ -179,34 +179,16 @@ function DirContents({
         return (
           <div key={entry.name}>
             <div
-              className="flex items-center py-0.5 hover:bg-[#1a1a2e] cursor-pointer group"
+              className="flex items-center py-0.5 cursor-pointer transition-opacity hover:opacity-60"
               style={{ paddingLeft: `${depth * 12 + 8}px` }}
               onClick={() => isDir && onToggleDir(fullPath)}
             >
               {/* Expand arrow or spacer */}
-              <span className="w-4 text-center shrink-0 text-[#555]">
-                {isDir ? (isExpanded ? "v" : ">") : ""}
-              </span>
-              {/* Icon */}
-              <span className="w-4 text-center shrink-0 mr-1">
-                {isDir ? (
-                  <span className="text-blue-400">{isExpanded ? "\u{1F4C2}" : "\u{1F4C1}"}</span>
-                ) : entry.type === "symlink" ? (
-                  <span className="text-purple-400">{"\u{1F517}"}</span>
-                ) : (
-                  <span className="text-[#888]">{"\u{1F4C4}"}</span>
-                )}
+              <span className="w-4 text-center shrink-0 text-neutral-400">
+                {isDir ? (isExpanded ? "\u25BE" : "\u25B8") : ""}
               </span>
               {/* Name */}
-              <span
-                className={`truncate ${
-                  isDir
-                    ? "text-blue-300"
-                    : entry.type === "symlink"
-                      ? "text-purple-300"
-                      : "text-[#ccc]"
-                }`}
-              >
+              <span className="truncate">
                 {entry.name}
               </span>
             </div>

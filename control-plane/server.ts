@@ -1,9 +1,17 @@
 import { config } from "dotenv";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: join(__dirname, "..", ".env") });
+
+let deployVersion: Record<string, string> = {};
+try {
+  deployVersion = JSON.parse(
+    readFileSync(join(__dirname, "..", "version.json"), "utf-8")
+  );
+} catch {}
 
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
@@ -17,7 +25,7 @@ import { registerFileRoutes } from "./routes/files.js";
 import { destroyAllTerminals } from "./terminal/pty-handler.js";
 import { agentManager } from "./agents/manager.js";
 import { getHealthStats } from "./services/health.js";
-import { destroyAllVMs } from "./services/firecracker.js";
+import { destroyAllVMs, reconcileRunningVMs } from "./services/firecracker.js";
 import { startIdleMonitor, stopIdleMonitor } from "./services/idle-monitor.js";
 
 declare module "fastify" {
@@ -77,7 +85,10 @@ app.addHook("preHandler", async (request, reply) => {
 });
 
 // Health check
-app.get("/health", async () => getHealthStats());
+app.get("/health", async () => {
+  const stats = await getHealthStats();
+  return { ...stats, version: deployVersion };
+});
 
 // Register route modules
 registerEnvRoutes(app);
@@ -95,6 +106,11 @@ app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => 
   });
 });
 
+// Log unhandled rejections (aids debugging background promise failures)
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[unhandledRejection]", reason);
+});
+
 // Graceful shutdown
 const shutdown = async () => {
   stopIdleMonitor();
@@ -108,6 +124,9 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 // Start
+// Reconcile in-memory VM state with any surviving Firecracker processes
+await reconcileRunningVMs();
+
 // Start idle monitor (only on non-localhost deployments)
 if (baseDomain !== "localhost") {
   startIdleMonitor();
@@ -125,3 +144,6 @@ if (baseDomain !== "localhost") {
 const port = parseInt(process.env.CONTROL_PLANE_PORT || "4001", 10);
 await app.listen({ port, host: "0.0.0.0" });
 console.log(`Control plane listening on http://localhost:${port}`);
+if (deployVersion.commit) {
+  console.log(`Version: ${deployVersion.commit} (${deployVersion.branch}) deployed ${deployVersion.timestamp}`);
+}

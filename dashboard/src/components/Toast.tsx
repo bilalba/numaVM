@@ -23,7 +23,7 @@ export function useToast(): ToastContextValue {
 const ACCENT: Record<ToastType, string> = {
   error: "border-l-red-500",
   success: "border-l-green-500",
-  info: "border-l-blue-500",
+  info: "border-l-black",
 };
 
 const DISMISS_MS = 5000;
@@ -61,12 +61,12 @@ function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: (id: numbe
 
   return (
     <div
-      className={`bg-[#1a1a1a] border border-[#333] border-l-4 ${ACCENT[item.type]} rounded px-4 py-3 text-sm text-[#e5e5e5] shadow-lg flex items-start gap-2 animate-[slideIn_0.2s_ease-out]`}
+      className={`bg-white border border-neutral-300 border-l-4 ${ACCENT[item.type]} px-4 py-3 text-sm flex items-start gap-2 transition-opacity`}
     >
-      <span className="flex-1 break-words">{item.message}</span>
+      <span className="flex-1 break-words text-xs">{item.message}</span>
       <button
         onClick={() => onDismiss(item.id)}
-        className="text-[#666] hover:text-[#e5e5e5] shrink-0 cursor-pointer leading-none text-lg"
+        className="text-neutral-400 transition-opacity hover:opacity-60 shrink-0 cursor-pointer leading-none text-sm"
       >
         &times;
       </button>
