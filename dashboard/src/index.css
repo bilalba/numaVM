@@ -1,6 +1,23 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --font-mono: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --color-panel-chat: #fcfaf7;
+  --color-panel-sidebar: #faf7f2;
+}
+
 @keyframes slideIn {
-  from { opacity: 0; transform: translateX(1rem); }
+  from { opacity: 0; transform: translateX(-100%); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+@keyframes ellipsis {
+  0% { width: 0; }
+  100% { width: 1.8em; }
 }
