@@ -28,8 +28,8 @@ if (!colNames.has("vm_ip")) {
       id                TEXT PRIMARY KEY,
       name              TEXT NOT NULL,
       owner_id          TEXT NOT NULL,
-      gh_repo           TEXT NOT NULL,
-      gh_token          TEXT NOT NULL,
+      gh_repo           TEXT,
+      gh_token          TEXT,
       container_id      TEXT,
       vm_ip             TEXT,
       vsock_cid         INTEGER UNIQUE,
@@ -53,6 +53,46 @@ if (!colNames.has("vm_ip")) {
   db.pragma("foreign_keys = ON");
 }
 
+// Migrate: make gh_repo/gh_token nullable (was NOT NULL in earlier schema)
+// Clean up any leftover temp table from a previously failed migration
+db.exec("DROP TABLE IF EXISTS envs_mig2");
+const ghRepoCol = (db.pragma("table_info(envs)") as { name: string; notnull: number }[])
+  .find((c) => c.name === "gh_repo");
+if (ghRepoCol && ghRepoCol.notnull === 1) {
+  db.pragma("foreign_keys = OFF");
+  // Build envs_mig2 with all current columns from envs (including any added like pages_port)
+  const currentCols = (db.pragma("table_info(envs)") as { name: string }[]).map((c) => c.name);
+  const colList = currentCols.join(", ");
+  db.exec(`
+    CREATE TABLE envs_mig2 (
+      id                TEXT PRIMARY KEY,
+      name              TEXT NOT NULL,
+      owner_id          TEXT NOT NULL,
+      gh_repo           TEXT,
+      gh_token          TEXT,
+      container_id      TEXT,
+      vm_ip             TEXT,
+      vsock_cid         INTEGER UNIQUE,
+      vm_pid            INTEGER,
+      snapshot_path     TEXT,
+      app_port          INTEGER UNIQUE,
+      ssh_port          INTEGER UNIQUE,
+      opencode_port     INTEGER UNIQUE,
+      opencode_password TEXT,
+      status            TEXT NOT NULL DEFAULT 'creating'
+                        CHECK(status IN ('creating', 'running', 'stopped', 'paused', 'snapshotted', 'error')),
+      created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+      pages_port        INTEGER UNIQUE
+    );
+    INSERT INTO envs_mig2 (${colList}) SELECT ${colList} FROM envs;
+    DROP TABLE envs;
+    ALTER TABLE envs_mig2 RENAME TO envs;
+    CREATE INDEX IF NOT EXISTS idx_envs_owner ON envs(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_envs_status ON envs(status);
+  `);
+  db.pragma("foreign_keys = ON");
+}
+
 export { db };
 
 // --- Types ---
@@ -61,8 +101,8 @@ export interface Env {
   id: string;
   name: string;
   owner_id: string;
-  gh_repo: string;
-  gh_token: string;
+  gh_repo: string | null;
+  gh_token: string | null;
   container_id: string | null;
   vm_ip: string | null;
   vsock_cid: number | null;
@@ -89,6 +129,7 @@ export interface User {
   google_id: string | null;
   avatar_url: string | null;
   ssh_public_keys: string | null;
+  is_admin: number;
   created_at: string;
 }
 
@@ -160,6 +201,30 @@ export function getUsedCids(): number[] {
   return (getUsedCidsStmt.all() as { vsock_cid: number }[]).map((r) => r.vsock_cid);
 }
 
+// --- SSH proxy lookups ---
+
+const findEnvBySshPortStmt = db.prepare("SELECT * FROM envs WHERE ssh_port = ?");
+export function findEnvBySshPort(port: number): Env | undefined {
+  return findEnvBySshPortStmt.get(port) as Env | undefined;
+}
+
+const getAuthorizedUsersForEnvStmt = db.prepare(`
+  SELECT u.id, u.ssh_public_keys, u.github_username
+  FROM env_access ea
+  JOIN users u ON u.id = ea.user_id
+  WHERE ea.env_id = ?
+`);
+export function getAuthorizedUsersForEnv(envId: string): { id: string; ssh_public_keys: string | null; github_username: string | null }[] {
+  return getAuthorizedUsersForEnvStmt.all(envId) as { id: string; ssh_public_keys: string | null; github_username: string | null }[];
+}
+
+// --- All envs (for SSH proxy startup) ---
+
+const findAllEnvsStmt = db.prepare("SELECT * FROM envs WHERE status != 'error'");
+export function findAllEnvs(): Env[] {
+  return findAllEnvsStmt.all() as Env[];
+}
+
 const deleteEnvStmt = db.prepare("DELETE FROM envs WHERE id = ?");
 export function deleteEnv(id: string): void {
   deleteEnvStmt.run(id);
@@ -223,6 +288,43 @@ export function findUserById(id: string): User | undefined {
 const findUserByEmailStmt = db.prepare("SELECT * FROM users WHERE email = ?");
 export function findUserByEmail(email: string): User | undefined {
   return findUserByEmailStmt.get(email) as User | undefined;
+}
+
+// --- VM Traffic ---
+
+const insertTrafficStmt = db.prepare(
+  "INSERT INTO vm_traffic (env_id, rx_bytes, tx_bytes) VALUES (?, ?, ?)"
+);
+export function insertTrafficRecord(envId: string, rxBytes: number, txBytes: number): void {
+  insertTrafficStmt.run(envId, rxBytes, txBytes);
+}
+
+export function getTrafficHistory(envId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[] {
+  return db.prepare(
+    "SELECT rx_bytes, tx_bytes, recorded_at FROM vm_traffic WHERE env_id = ? AND recorded_at > datetime('now', '-' || ? || ' hours') ORDER BY recorded_at ASC"
+  ).all(envId, hours) as { rx_bytes: number; tx_bytes: number; recorded_at: string }[];
+}
+
+export function getTrafficSummary(hours: number): { env_id: string; total_rx: number; total_tx: number; samples: number }[] {
+  return db.prepare(
+    "SELECT env_id, SUM(rx_bytes) as total_rx, SUM(tx_bytes) as total_tx, COUNT(*) as samples FROM vm_traffic WHERE recorded_at > datetime('now', '-' || ? || ' hours') GROUP BY env_id ORDER BY total_rx + total_tx DESC"
+  ).all(hours) as { env_id: string; total_rx: number; total_tx: number; samples: number }[];
+}
+
+export function pruneOldTraffic(days: number = 7): number {
+  const result = db.prepare(
+    "DELETE FROM vm_traffic WHERE recorded_at < datetime('now', '-' || ? || ' days')"
+  ).run(days);
+  return result.changes;
+}
+
+// --- Admin Events ---
+
+const insertAdminEventStmt = db.prepare(
+  "INSERT INTO admin_events (type, env_id, user_id, metadata) VALUES (?, ?, ?, ?)"
+);
+export function emitAdminEvent(type: string, envId?: string | null, userId?: string | null, metadata?: Record<string, unknown>): void {
+  insertAdminEventStmt.run(type, envId || null, userId || null, metadata ? JSON.stringify(metadata) : null);
 }
 
 // --- Agent Sessions ---

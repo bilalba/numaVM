@@ -33,6 +33,9 @@ export function registerVerifyRoute(app: FastifyInstance) {
     // Set headers for downstream services
     reply.header("X-User-Id", user.id);
     reply.header("X-User-Email", user.email);
+    if (user.is_admin) {
+      reply.header("X-User-Admin", "true");
+    }
 
     return reply.status(200).send("OK");
   });

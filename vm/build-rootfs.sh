@@ -11,7 +11,7 @@ set -euo pipefail
 # Requires: root, debootstrap or alpine-make-rootfs, e2fsprogs
 
 OUTPUT="${1:-/opt/firecracker/rootfs/base.ext4}"
-ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"
+ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-4096}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.21}"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
 ARCH="$(uname -m)"
@@ -257,12 +257,22 @@ cat > "${MOUNTDIR}/etc/motd" <<'MOTD'
   Set ANTHROPIC_API_KEY or run `claude /login` to authenticate.
 MOTD
 
+# --- Create swap file ---
+
+echo "Creating 1GB swap file..."
+dd if=/dev/zero of="${MOUNTDIR}/swapfile" bs=1M count=1024 status=progress
+chmod 600 "${MOUNTDIR}/swapfile"
+mkswap "${MOUNTDIR}/swapfile"
+
 # --- Cleanup ---
 
 echo "Cleaning up rootfs..."
 
 # Remove APK cache
 rm -rf "${MOUNTDIR}/var/cache/apk/*"
+
+# Remove npm cache (can be 100MB+)
+rm -rf "${MOUNTDIR}/root/.npm" "${MOUNTDIR}/tmp/"*
 
 # Remove resolv.conf (will be set at boot)
 rm -f "${MOUNTDIR}/etc/resolv.conf"

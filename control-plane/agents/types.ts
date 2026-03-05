@@ -20,14 +20,14 @@ export type AgentEvent =
 export type AgentCommand =
   | { type: "message.send"; text: string }
   | { type: "turn.interrupt" }
-  | { type: "approval.respond"; id: string; decision: "accept" | "decline" }
+  | { type: "approval.respond"; id: string; decision: "accept" | "always" | "decline" }
   | { type: "session.switch"; sessionId: string }
   | { type: "session.create" };
 
 export interface AgentBridge {
   readonly agentType: AgentType;
   start(envSlugOrCid: string | number, options?: { model?: string }): Promise<string>; // returns thread/session ID from the agent
-  sendMessage(text: string): Promise<void>;
+  sendMessage(text: string, options?: { agent?: string }): Promise<void>;
   interrupt(): Promise<void>;
   destroy(): Promise<void>;
   onEvent(listener: (event: AgentEvent) => void): void;

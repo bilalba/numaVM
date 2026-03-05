@@ -15,6 +15,7 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [keysSynced, setKeysSynced] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -28,11 +29,21 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
       .finally(() => setLoading(false));
   }, []);
 
+  // Check if keys are already synced to the VM
+  useEffect(() => {
+    if (!envId) return;
+    api
+      .checkSshKeysStatus(envId)
+      .then((data) => setKeysSynced(data.synced))
+      .catch(() => setKeysSynced(false));
+  }, [envId]);
+
   const handleSave = async () => {
     setSaving(true);
     try {
       await api.saveSshKeys(keys.trim());
       setDirty(false);
+      setKeysSynced(false);
       toast("SSH keys saved", "success");
     } catch (err: any) {
       toast(err.message, "error");
@@ -51,6 +62,7 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
         setDirty(false);
       }
       await api.syncSshKeys(envId);
+      setKeysSynced(true);
       toast("SSH keys synced to environment", "success");
     } catch (err: any) {
       toast(err.message, "error");
@@ -147,10 +159,10 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
           {envId && (
             <button
               onClick={handleSync}
-              disabled={syncing}
+              disabled={syncing || (keysSynced && !dirty)}
               className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer"
             >
-              {syncing ? "Syncing..." : "Sync to this environment"}
+              {syncing ? "Syncing..." : keysSynced && !dirty ? "Synced" : "Sync to this environment"}
             </button>
           )}
           {keyCount > 0 && (

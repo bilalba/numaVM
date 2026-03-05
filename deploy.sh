@@ -3,8 +3,9 @@ set -euo pipefail
 
 # DeployMagi deploy script
 # Usage: ./deploy.sh [flags]
-#   --skip-build        Skip dashboard build
+#   --skip-build        Skip dashboard + admin build
 #   --dashboard-only    Only deploy dashboard
+#   --admin-only        Only deploy admin dashboard
 #   --auth-only         Only deploy and restart auth service
 #   --cp-only           Only deploy and restart control plane
 #   --install-services  Install systemd units and migrate from nohup (one-time)
@@ -16,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Parse flags
 SKIP_BUILD=false
 DASHBOARD_ONLY=false
+ADMIN_ONLY=false
 AUTH_ONLY=false
 CP_ONLY=false
 INSTALL_SERVICES=false
@@ -24,6 +26,7 @@ for arg in "$@"; do
   case "$arg" in
     --skip-build)       SKIP_BUILD=true ;;
     --dashboard-only)   DASHBOARD_ONLY=true ;;
+    --admin-only)       ADMIN_ONLY=true ;;
     --auth-only)        AUTH_ONLY=true ;;
     --cp-only)          CP_ONLY=true ;;
     --install-services) INSTALL_SERVICES=true ;;
@@ -53,12 +56,18 @@ cat > "$SCRIPT_DIR/version.json" <<EOF
 EOF
 cat "$SCRIPT_DIR/version.json"
 
-# Step 2: Build dashboard (unless skipped or not needed)
+# Step 2: Build dashboard + admin (unless skipped or not needed)
 if [[ "$SKIP_BUILD" == false && "$AUTH_ONLY" == false && "$CP_ONLY" == false ]]; then
-  log "Building dashboard..."
-  (cd "$SCRIPT_DIR/dashboard" && npm run build)
+  if [[ "$ADMIN_ONLY" == false ]]; then
+    log "Building dashboard..."
+    (cd "$SCRIPT_DIR/dashboard" && npm run build)
+  fi
+  if [[ "$DASHBOARD_ONLY" == false ]]; then
+    log "Building admin dashboard..."
+    (cd "$SCRIPT_DIR/admin" && npm run build)
+  fi
 else
-  log "Skipping dashboard build"
+  log "Skipping builds"
 fi
 
 # Step 3: Rsync
@@ -79,6 +88,7 @@ set -e
 cp /home/ubuntu/deploymagi/infra/systemd/deploymagi-auth.service /etc/systemd/system/
 cp /home/ubuntu/deploymagi/infra/systemd/deploymagi-control-plane.service /etc/systemd/system/
 cp /home/ubuntu/deploymagi/infra/systemd/deploymagi-dashboard.service /etc/systemd/system/
+cp /home/ubuntu/deploymagi/infra/systemd/deploymagi-admin.service /etc/systemd/system/
 systemctl daemon-reload
 
 # Kill old nohup processes
@@ -86,10 +96,11 @@ echo "Stopping old nohup processes..."
 pkill -f "tsx auth/server.ts" 2>/dev/null || true
 pkill -f "tsx control-plane/server.ts" 2>/dev/null || true
 pkill -f "serve -s dist -l 4002" 2>/dev/null || true
+pkill -f "serve -s dist -l 4003" 2>/dev/null || true
 sleep 2
 
 # Enable and start services
-systemctl enable deploymagi-auth deploymagi-control-plane deploymagi-dashboard
+systemctl enable deploymagi-auth deploymagi-control-plane deploymagi-dashboard deploymagi-admin
 systemctl start deploymagi-auth
 echo "Auth service started"
 sleep 3
@@ -98,6 +109,8 @@ echo "Control plane started"
 sleep 2
 systemctl start deploymagi-dashboard
 echo "Dashboard started"
+systemctl start deploymagi-admin
+echo "Admin dashboard started"
 REMOTE_SCRIPT
   log "Systemd services installed and started"
 fi
@@ -133,9 +146,17 @@ restart_dashboard() {
   wait_for_health "Dashboard" "http://localhost:4002" 10
 }
 
+restart_admin() {
+  log "Restarting admin dashboard..."
+  ssh "$REMOTE" "sudo systemctl restart deploymagi-admin"
+  wait_for_health "Admin" "http://localhost:4003" 10
+}
+
 if [[ "$INSTALL_SERVICES" == false ]]; then
   if [[ "$DASHBOARD_ONLY" == true ]]; then
     restart_dashboard
+  elif [[ "$ADMIN_ONLY" == true ]]; then
+    restart_admin
   elif [[ "$AUTH_ONLY" == true ]]; then
     restart_auth
   elif [[ "$CP_ONLY" == true ]]; then
@@ -144,6 +165,7 @@ if [[ "$INSTALL_SERVICES" == false ]]; then
     restart_auth
     restart_cp
     restart_dashboard
+    restart_admin
   fi
 fi
 
@@ -151,7 +173,7 @@ fi
 log "Running smoke tests..."
 
 # Verify version in health endpoints
-if [[ "$DASHBOARD_ONLY" != true ]]; then
+if [[ "$DASHBOARD_ONLY" != true && "$ADMIN_ONLY" != true ]]; then
   COMMIT=$(jq -r .commit "$SCRIPT_DIR/version.json")
 
   AUTH_VERSION=$(ssh "$REMOTE" "curl -sf http://localhost:4000/health | jq -r '.version.commit // empty'" 2>/dev/null || echo "")
@@ -178,4 +200,4 @@ else
 fi
 
 log "Deploy complete!"
-ssh "$REMOTE" "sudo systemctl status deploymagi-auth deploymagi-control-plane deploymagi-dashboard --no-pager -l" 2>/dev/null | head -30 || true
+ssh "$REMOTE" "sudo systemctl status deploymagi-auth deploymagi-control-plane deploymagi-dashboard deploymagi-admin --no-pager -l" 2>/dev/null | head -40 || true

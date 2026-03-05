@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { checkAccess, findAgentSession, findEnvById } from "../db/client.js";
+import { checkAccess, findAgentSession, findEnvById, emitAdminEvent } from "../db/client.js";
 import { agentManager } from "../agents/manager.js";
 import { wsHub } from "../agents/ws-hub.js";
 import type { AgentCommand, AgentType } from "../agents/types.js";
+import { OpenCodeBridge } from "../agents/opencode-bridge.js";
 import { spawnProcessOverVsock } from "../services/vsock-ssh.js";
 import { ensureVMRunning } from "../services/wake.js";
 
@@ -30,11 +31,14 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(503).send({ error: "Environment is not available. Please try again." });
     }
 
-    const body = request.body as { model?: string } | undefined;
+    const body = request.body as { model?: string; providerID?: string; modelID?: string } | undefined;
     const model = body?.model?.trim() || undefined;
+    const providerID = body?.providerID?.trim() || undefined;
+    const modelID = body?.modelID?.trim() || undefined;
 
     try {
-      const session = await agentManager.createSession(id, type as AgentType, model ? { model } : undefined);
+      const session = await agentManager.createSession(id, type as AgentType, { model, providerID, modelID });
+      emitAdminEvent("agent.session_created", id, request.userId, { agentType: type, sessionId: session.id });
       return reply.status(201).send(session);
     } catch (err: any) {
       request.log.error({ err, envId: id, agentType: type }, "Failed to create agent session");
@@ -83,11 +87,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
   // POST /envs/:id/sessions/:sid/message — Send message to agent
   app.post("/envs/:id/sessions/:sid/message", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
-    const body = request.body as { text?: string };
+    const body = request.body as { text?: string; agent?: string };
 
     if (!body.text || typeof body.text !== "string" || !body.text.trim()) {
       return reply.status(400).send({ error: "text is required" });
     }
+    const agent = body.agent?.trim() || undefined;
 
     const role = checkAccess(id, request.userId);
     if (!role || role === "viewer") {
@@ -108,7 +113,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     try {
-      await agentManager.sendMessage(sid, body.text.trim());
+      await agentManager.sendMessage(sid, body.text.trim(), agent ? { agent } : undefined);
       return { ok: true };
     } catch (err: any) {
       request.log.error({ err, sessionId: sid }, "Failed to send message");
@@ -161,8 +166,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const { id, sid } = request.params as { id: string; sid: string };
     const body = request.body as { approvalId?: string; decision?: string };
 
-    if (!body.approvalId || !body.decision || !["accept", "decline"].includes(body.decision)) {
-      return reply.status(400).send({ error: "approvalId and decision (accept/decline) are required" });
+    if (!body.approvalId || !body.decision || !["accept", "always", "decline"].includes(body.decision)) {
+      return reply.status(400).send({ error: "approvalId and decision (accept/always/decline) are required" });
     }
 
     const role = checkAccess(id, request.userId);
@@ -171,9 +176,77 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     try {
-      await agentManager.respondToApproval(sid, body.approvalId, body.decision as "accept" | "decline");
+      await agentManager.respondToApproval(sid, body.approvalId, body.decision as "accept" | "always" | "decline");
       return { ok: true };
     } catch (err: any) {
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
+  // POST /envs/:id/sessions/:sid/revert — Revert file changes from a message (OpenCode only)
+  app.post("/envs/:id/sessions/:sid/revert", async (request, reply) => {
+    const { id, sid } = request.params as { id: string; sid: string };
+    const body = request.body as { messageId?: string } | undefined;
+
+    const role = checkAccess(id, request.userId);
+    if (!role || role === "viewer") {
+      return reply.status(403).send({ error: "Editor or owner access required" });
+    }
+
+    const session = findAgentSession(sid);
+    if (!session || session.env_id !== id) {
+      return reply.status(404).send({ error: "Session not found" });
+    }
+
+    try {
+      const result = await agentManager.revert(sid, body?.messageId);
+      return { ok: true, session: result };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
+  // POST /envs/:id/sessions/:sid/unrevert — Restore reverted changes (OpenCode only)
+  app.post("/envs/:id/sessions/:sid/unrevert", async (request, reply) => {
+    const { id, sid } = request.params as { id: string; sid: string };
+
+    const role = checkAccess(id, request.userId);
+    if (!role || role === "viewer") {
+      return reply.status(403).send({ error: "Editor or owner access required" });
+    }
+
+    const session = findAgentSession(sid);
+    if (!session || session.env_id !== id) {
+      return reply.status(404).send({ error: "Session not found" });
+    }
+
+    try {
+      const result = await agentManager.unrevert(sid);
+      return { ok: true, session: result };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
+  // GET /envs/:id/opencode/providers — List available providers/models from OpenCode
+  app.get("/envs/:id/opencode/providers", async (request, reply) => {
+    const { id } = request.params as { id: string };
+
+    const role = checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this environment" });
+    }
+
+    const env = findEnvById(id);
+    if (!env) return reply.status(404).send({ error: "Environment not found" });
+    if (!env.vm_ip) return reply.status(503).send({ error: "VM not available" });
+
+    try {
+      const bridge = new OpenCodeBridge(env.opencode_port, env.opencode_password || "", env.vm_ip);
+      const providers = await bridge.listProviders();
+      return providers;
+    } catch (err: any) {
+      request.log.error({ err, envId: id }, "Failed to list OpenCode providers");
       return reply.status(500).send({ error: err.message });
     }
   });

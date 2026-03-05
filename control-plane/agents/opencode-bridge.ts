@@ -4,7 +4,8 @@ import { execInVM } from "../services/vsock-ssh.js";
 /**
  * OpenCode bridge — HTTP REST + SSE to VM's OpenCode server.
  *
- * OpenCode is started on-demand via SSH exec when the first session is created.
+ * OpenCode is pre-started at VM boot (init.sh). If not running, falls back to
+ * on-demand start via SSH exec.
  * Auth via HTTP basic auth with the per-env password.
  *
  * API reference: https://github.com/anomalyco/opencode
@@ -21,6 +22,7 @@ export class OpenCodeBridge implements AgentBridge {
   private messageRoles = new Map<string, "user" | "assistant">();
   // Track reasoning part IDs to route deltas correctly
   private reasoningParts = new Set<string>();
+  private selectedModel: { providerID: string; modelID: string } | null = null;
 
   constructor(
     private opencodePort: number,
@@ -74,12 +76,13 @@ export class OpenCodeBridge implements AgentBridge {
 
       // Start OpenCode server (SSH connects as dev by default)
       // Must cd to repo dir — opencode needs a project directory
+      // Source ~/.env to pick up API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
       // disown prevents bash from sending SIGHUP when SSH session ends
       await execInVM(
         this.vmIp,
         [
           "bash", "-c",
-          `cd ~/repo 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
+          `source ~/.env 2>/dev/null; cd ~/repo 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
         ],
         { timeoutMs: 5000 },
       );
@@ -137,9 +140,19 @@ export class OpenCodeBridge implements AgentBridge {
     return res.text();
   }
 
-  async start(envSlug: string, options?: { model?: string }): Promise<string> {
+  async listProviders(): Promise<any> {
+    await this.ensureRunning();
+    return this.httpRequest("GET", "/provider/");
+  }
+
+  async start(envSlug: string, options?: { model?: string; providerID?: string; modelID?: string }): Promise<string> {
     // Ensure server is running before creating a session
     await this.ensureRunning();
+
+    // Store model selection for use in sendMessage
+    if (options?.providerID && options?.modelID) {
+      this.selectedModel = { providerID: options.providerID, modelID: options.modelID };
+    }
 
     const result = await this.httpRequest("POST", "/session", {});
     this.opencodeSessionId = result.id || result.sessionId || "";
@@ -150,12 +163,20 @@ export class OpenCodeBridge implements AgentBridge {
     return this.opencodeSessionId!;
   }
 
-  async sendMessage(text: string): Promise<void> {
+  async sendMessage(text: string, options?: { agent?: string }): Promise<void> {
     if (!this.opencodeSessionId) throw new Error("No active session");
 
-    await this.httpRequest("POST", `/session/${this.opencodeSessionId}/message`, {
+    const body: any = {
       parts: [{ type: "text", text }],
-    });
+    };
+    if (this.selectedModel) {
+      body.model = this.selectedModel;
+    }
+    if (options?.agent) {
+      body.agent = options.agent;
+    }
+
+    await this.httpRequest("POST", `/session/${this.opencodeSessionId}/message`, body);
   }
 
   async interrupt(): Promise<void> {
@@ -190,15 +211,41 @@ export class OpenCodeBridge implements AgentBridge {
    * Respond to a permission/approval request.
    * OpenCode uses: "once" (allow this time), "always" (allow permanently), "reject" (deny).
    */
-  async respondToApproval(approvalId: string, decision: "accept" | "decline"): Promise<void> {
+  async respondToApproval(approvalId: string, decision: "accept" | "always" | "decline"): Promise<void> {
     if (!this.opencodeSessionId) throw new Error("No active session");
 
-    const response = decision === "accept" ? "once" : "reject";
+    const response = decision === "always" ? "always" : decision === "accept" ? "once" : "reject";
     await this.httpRequest(
       "POST",
       `/session/${this.opencodeSessionId}/permissions/${approvalId}`,
       { response },
     );
+  }
+
+  async revert(messageId?: string): Promise<any> {
+    if (!this.opencodeSessionId) throw new Error("No active session");
+
+    // If no messageId provided, find the last user message to revert
+    if (!messageId) {
+      const messages = await this.httpRequest("GET", `/session/${this.opencodeSessionId}/message`);
+      const msgs = Array.isArray(messages) ? messages : [];
+      // Find the last user message
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i].info || msgs[i];
+        if (msg.role === "user") {
+          messageId = msg.id;
+          break;
+        }
+      }
+      if (!messageId) throw new Error("No user message found to revert");
+    }
+
+    return this.httpRequest("POST", `/session/${this.opencodeSessionId}/revert`, { messageID: messageId });
+  }
+
+  async unrevert(): Promise<any> {
+    if (!this.opencodeSessionId) throw new Error("No active session");
+    return this.httpRequest("POST", `/session/${this.opencodeSessionId}/unrevert`);
   }
 
   private connectSSE(): void {

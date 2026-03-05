@@ -135,6 +135,61 @@ export function registerFileRoutes(app: FastifyInstance) {
     }
   });
 
+  // Download file (streams raw content with Content-Disposition)
+  app.get("/envs/:id/files/download", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = request.query as { path?: string };
+
+    const role = checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this environment" });
+    }
+
+    const env = findEnvById(id);
+    if (!env || !env.vm_ip) {
+      return reply.status(404).send({ error: "Environment not found" });
+    }
+
+    if (!query.path) {
+      return reply.status(400).send({ error: "path query parameter is required" });
+    }
+
+    const filePath = sanitizePath(query.path);
+    const fileName = filePath.split("/").pop() || "download";
+
+    try {
+      // Check file exists and get size
+      const sizeOutput = await execInVM(env.vm_ip, [
+        "stat", "--format=%s", filePath,
+      ]);
+      const size = parseInt(sizeOutput.trim(), 10);
+      if (isNaN(size)) {
+        return reply.status(404).send({ error: "File not found" });
+      }
+      if (size > 50_000_000) {
+        return reply.status(413).send({ error: "File too large (max 50MB)" });
+      }
+
+      // Get mime type
+      const mimeOutput = await execInVM(env.vm_ip, [
+        "file", "--brief", "--mime-type", filePath,
+      ]);
+      const mimeType = mimeOutput.trim() || "application/octet-stream";
+
+      // Read file content as base64 for binary-safe transfer
+      const b64 = await execInVM(env.vm_ip, ["base64", filePath]);
+      const content = Buffer.from(b64.trim(), "base64");
+
+      return reply
+        .header("Content-Type", mimeType)
+        .header("Content-Disposition", `attachment; filename="${fileName}"`)
+        .header("Content-Length", content.length)
+        .send(content);
+    } catch (err: any) {
+      return reply.status(500).send({ error: `Failed to download file: ${err.message}` });
+    }
+  });
+
   // Git log
   app.get("/envs/:id/git/log", async (request, reply) => {
     const { id } = request.params as { id: string };

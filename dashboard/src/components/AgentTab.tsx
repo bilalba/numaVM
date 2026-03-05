@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { api, type AgentSession, type AgentMessage } from "../lib/api";
+import { api, type AgentSession, type AgentMessage, type OpenCodeProvider } from "../lib/api";
 import { useAgentSocket, type AgentEvent } from "../hooks/useAgentSocket";
 import { ChatMessage, StreamingMessage, StreamingReasoning } from "./ChatMessage";
 import { ApprovalCard } from "./ApprovalCard";
@@ -27,10 +27,14 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [sending, setSending] = useState(false);
   const [sessionStatus, setSessionStatus] = useState<string>("idle");
   const [modelInfo, setModelInfo] = useState<{ model?: string; provider?: string } | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
+  const [openCodeProviders, setOpenCodeProviders] = useState<OpenCodeProvider[]>([]);
+  const [selectedOpenCodeModel, setSelectedOpenCodeModel] = useState("");
+  const [selectedAgent, setSelectedAgent] = useState("");
   const [codexAuth, setCodexAuth] = useState<{
     checked: boolean;
     authenticated: boolean;
@@ -57,6 +61,14 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     }).catch(() => {
       setCodexAuth({ checked: true, authenticated: false });
     });
+  }, [envId, agentType]);
+
+  // Fetch OpenCode providers on mount
+  useEffect(() => {
+    if (agentType !== "opencode") return;
+    api.getOpenCodeProviders(envId).then((data) => {
+      setOpenCodeProviders(data.all || []);
+    }).catch(() => {});
   }, [envId, agentType]);
 
   // Load sessions on mount
@@ -193,9 +205,17 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   }, [messages, streamingText, reasoningText, approvals]);
 
   const handleCreateSession = async () => {
-    setLoading(true);
+    setCreating(true);
     try {
-      const session = await api.createAgentSession(envId, agentType, selectedModel || undefined);
+      // Parse OpenCode model selection (format: "providerID:modelID")
+      let providerID: string | undefined;
+      let modelID: string | undefined;
+      if (agentType === "opencode" && selectedOpenCodeModel) {
+        const [p, ...m] = selectedOpenCodeModel.split(":");
+        providerID = p;
+        modelID = m.join(":");
+      }
+      const session = await api.createAgentSession(envId, agentType, selectedModel || undefined, providerID, modelID);
       setSessions((prev) => [session, ...prev]);
       setActiveSessionId(session.id);
       setMessages([]);
@@ -207,7 +227,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     } catch (err: any) {
       toast(`Failed to create session: ${err.message}`, "error");
     } finally {
-      setLoading(false);
+      setCreating(false);
     }
   };
 
@@ -232,7 +252,8 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     setSessionStatus("busy");
 
     try {
-      await api.sendAgentMessage(envId, activeSessionId, text);
+      const agentMode = agentType === "opencode" && selectedAgent ? selectedAgent : undefined;
+      await api.sendAgentMessage(envId, activeSessionId, text, agentMode);
     } catch (err: any) {
       setSessionStatus("error");
     } finally {
@@ -250,7 +271,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   };
 
   const handleApproval = useCallback(
-    async (approvalId: string, decision: "accept" | "decline") => {
+    async (approvalId: string, decision: "accept" | "always" | "decline") => {
       if (!activeSessionId) return;
       try {
         await api.respondToApproval(envId, activeSessionId, approvalId, decision);
@@ -261,6 +282,31 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     },
     [envId, activeSessionId]
   );
+
+  const handleUndo = async () => {
+    if (!activeSessionId) return;
+    try {
+      await api.revertMessage(envId, activeSessionId);
+      // Reload messages after revert
+      const data = await api.getAgentSession(envId, activeSessionId);
+      setMessages(data.messages);
+      toast("Reverted last changes", "success");
+    } catch (err: any) {
+      toast(`Revert failed: ${err.message}`, "error");
+    }
+  };
+
+  const handleRedo = async () => {
+    if (!activeSessionId) return;
+    try {
+      await api.unrevertSession(envId, activeSessionId);
+      const data = await api.getAgentSession(envId, activeSessionId);
+      setMessages(data.messages);
+      toast("Restored reverted changes", "success");
+    } catch (err: any) {
+      toast(`Unrevert failed: ${err.message}`, "error");
+    }
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -310,15 +356,26 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
 
   const agentLabel = agentType === "codex" ? "Codex" : "OpenCode";
 
-  const modelOptions =
-    agentType === "codex"
-      ? [
-          { value: "", label: "Default" },
-          { value: "o4-mini", label: "o4-mini" },
-          { value: "o3", label: "o3" },
-          { value: "codex-mini-latest", label: "codex-mini" },
-        ]
-      : [{ value: "", label: "Default" }];
+  const codexModelOptions = [
+    { value: "", label: "Default" },
+    { value: "o4-mini", label: "o4-mini" },
+    { value: "o3", label: "o3" },
+    { value: "codex-mini-latest", label: "codex-mini" },
+  ];
+
+  // Build OpenCode model options from providers (grouped by provider)
+  const openCodeModelOptions: { value: string; label: string }[] = [{ value: "", label: "Default" }];
+  for (const provider of openCodeProviders) {
+    for (const model of provider.models) {
+      openCodeModelOptions.push({
+        value: `${provider.id}:${model.id}`,
+        label: `${model.name || model.id}`,
+      });
+    }
+  }
+
+  const modelOptions = agentType === "codex" ? codexModelOptions : openCodeModelOptions;
+  const noOpenCodeProviders = agentType === "opencode" && openCodeProviders.length === 0;
 
   // Show Codex login dialog if not authenticated
   if (agentType === "codex" && codexAuth.checked && !codexAuth.authenticated) {
@@ -328,7 +385,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     const deviceCode = lr?.userCode || lr?.user_code || lr?.code;
 
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-200px)] min-h-[400px]">
+      <div className="flex items-center justify-center h-[calc(100vh-200px)] min-h-[400px] px-4">
         <div className="border border-neutral-300 bg-white p-5 max-w-sm w-full text-center">
           <h2 className="text-sm font-semibold mb-2">Sign in to Codex</h2>
           <p className="text-xs text-neutral-500 mb-6">
@@ -418,15 +475,15 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   }
 
   return (
-    <div className="flex h-[calc(100vh-200px)] min-h-[400px] gap-4">
-      {/* Session sidebar */}
-      <div className="w-56 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col">
-        <div className="p-3 border-b border-neutral-200 space-y-2">
-          {modelOptions.length > 1 && (
+    <div className="flex flex-col md:flex-row h-[calc(100vh-200px)] min-h-[400px] gap-0 md:gap-4">
+      {/* Session sidebar — horizontal scrollable strip on mobile, vertical sidebar on desktop */}
+      <div className="md:w-56 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col">
+        <div className="p-2 sm:p-3 border-b border-neutral-200 flex md:flex-col items-center md:items-stretch gap-2">
+          {modelOptions.length > 1 ? (
             <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black focus:border-black focus:outline-none cursor-pointer"
+              value={agentType === "opencode" ? selectedOpenCodeModel : selectedModel}
+              onChange={(e) => agentType === "opencode" ? setSelectedOpenCodeModel(e.target.value) : setSelectedModel(e.target.value)}
+              className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black focus:border-black focus:outline-none cursor-pointer min-w-0 flex-1 md:flex-none md:w-full"
             >
               {modelOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -434,19 +491,23 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
                 </option>
               ))}
             </select>
-          )}
+          ) : noOpenCodeProviders ? (
+            <p className="text-[10px] text-neutral-400 py-1 hidden md:block">
+              No providers configured. Set API keys in the VM to enable model selection.
+            </p>
+          ) : null}
           <button
             onClick={handleCreateSession}
-            disabled={loading}
-            className="w-full text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1"
+            disabled={creating}
+            className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1 whitespace-nowrap shrink-0 md:w-full"
           >
-            New Session
+            {creating ? `Initializing ${agentLabel}...` : "New Session"}
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex md:flex-col md:flex-1 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto">
           {sessions.length === 0 ? (
-            <p className="text-xs text-neutral-500 p-3">
-              No sessions yet. Create one to start chatting with {agentLabel}.
+            <p className="text-xs text-neutral-500 p-2 sm:p-3 whitespace-nowrap">
+              No sessions yet.
             </p>
           ) : (
             sessions.map((s) => (
@@ -457,13 +518,13 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
                   setStreamingText("");
                   setApprovals([]);
                 }}
-                className={`w-full text-left px-3 py-2.5 text-xs border-b border-neutral-100 transition-opacity cursor-pointer ${
+                className={`text-left px-3 py-2 md:py-2.5 text-xs border-r md:border-r-0 md:border-b border-neutral-100 transition-opacity cursor-pointer shrink-0 ${
                   s.id === activeSessionId
                     ? "font-semibold opacity-100 bg-panel-chat"
                     : "opacity-60 hover:opacity-80"
                 }`}
               >
-                <div className="truncate">
+                <div className="truncate max-w-[150px] md:max-w-none">
                   {s.title || `Session ${s.id.slice(0, 8)}`}
                 </div>
                 <div className="text-[10px] text-neutral-500 mt-0.5">
@@ -476,13 +537,13 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
       </div>
 
       {/* Chat area */}
-      <div className="flex-1 flex flex-col bg-panel-chat border border-neutral-200 overflow-hidden">
+      <div className="flex-1 flex flex-col bg-panel-chat border border-neutral-200 overflow-hidden min-h-0">
         {/* Header */}
-        <div className="px-4 py-2 border-b border-neutral-200 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="px-3 sm:px-4 py-2 border-b border-neutral-200 flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0">
             <span className="text-xs font-semibold">{agentLabel}</span>
             <span
-              className={`w-1.5 h-1.5 rounded-full ${
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                 sessionStatus === "busy"
                   ? "bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]"
                   : sessionStatus === "error"
@@ -492,24 +553,46 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
                       : "bg-neutral-400"
               }`}
             />
-            <span className="text-xs text-neutral-500">{sessionStatus}</span>
+            <span className="text-xs text-neutral-500 hidden sm:inline">{sessionStatus}</span>
             {modelInfo?.model && (
-              <span className="text-xs text-neutral-500 ml-2">{modelInfo.model}</span>
+              <span className="text-xs text-neutral-500 ml-2 hidden sm:inline">{modelInfo.model}</span>
             )}
           </div>
-          {sessionStatus === "busy" && (
-            <button
-              onClick={handleStop}
-              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
-            >
-              Stop
-            </button>
-          )}
+          <div className="flex items-center gap-2 sm:gap-3">
+            {agentType === "opencode" && sessionStatus !== "busy" && messages.length > 0 && (
+              <>
+                <button
+                  onClick={handleUndo}
+                  className="text-xs underline underline-offset-4 opacity-60 transition-opacity hover:opacity-80 cursor-pointer"
+                >
+                  Undo
+                </button>
+                <button
+                  onClick={handleRedo}
+                  className="text-xs underline underline-offset-4 opacity-60 transition-opacity hover:opacity-80 cursor-pointer"
+                >
+                  Redo
+                </button>
+              </>
+            )}
+            {sessionStatus === "busy" && (
+              <button
+                onClick={handleStop}
+                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
+              >
+                Stop
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-4">
-          {!activeSessionId ? (
+        <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-3 sm:py-4">
+          {creating ? (
+            <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
+              Initializing {agentLabel}...
+            </div>
+          ) : !activeSessionId ? (
             <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Create or select a session to start
             </div>
@@ -537,6 +620,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
                     action={a.action}
                     detail={a.detail}
                     onRespond={handleApproval}
+                    agentType={agentType}
                   />
                 ))}
               <div ref={messagesEndRef} />
@@ -546,8 +630,8 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
 
         {/* Input */}
         {activeSessionId && (
-          <div className="px-4 py-3 border-t border-neutral-200">
-            <div className="flex gap-3 items-end">
+          <div className="px-3 sm:px-4 py-2 sm:py-3 border-t border-neutral-200">
+            <div className="flex gap-2 sm:gap-3 items-end">
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
@@ -564,9 +648,22 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
                 Send
               </button>
             </div>
-            <p className="text-[10px] text-neutral-500 mt-1.5">
-              Shift+Enter for new line
-            </p>
+            <div className="flex items-center gap-3 mt-1.5">
+              <p className="text-[10px] text-neutral-500 hidden sm:block">
+                Shift+Enter for new line
+              </p>
+              {agentType === "opencode" && (
+                <select
+                  value={selectedAgent}
+                  onChange={(e) => setSelectedAgent(e.target.value)}
+                  className="border-0 border-b border-neutral-200 bg-transparent px-0 py-0 text-[10px] text-neutral-500 focus:border-black focus:outline-none cursor-pointer"
+                >
+                  <option value="">build</option>
+                  <option value="plan">plan</option>
+                  <option value="general">general</option>
+                </select>
+              )}
+            </div>
           </div>
         )}
       </div>

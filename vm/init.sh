@@ -67,6 +67,12 @@ echo "nameserver 8.8.4.4" >> /etc/resolv.conf
 # Verify connectivity (best-effort, don't block boot)
 ping -c1 -W2 "${GATEWAY}" > /dev/null 2>&1 && echo "[init] Gateway reachable" || echo "[init] WARNING: Gateway unreachable"
 
+# --- Swap ---
+
+if [ -f /swapfile ]; then
+  swapon /swapfile 2>/dev/null && echo "[init] Swap enabled (1GB)" || echo "[init] WARNING: Failed to enable swap"
+fi
+
 # --- SSH Setup ---
 
 echo "[init] Configuring SSH..."
@@ -155,7 +161,12 @@ grep -q 'source ~/.env' /home/dev/.bashrc 2>/dev/null || {
 }
 chown dev:dev /home/dev/.env /home/dev/.bashrc
 
-# OpenCode server is started on-demand by the control plane (not at boot)
+# Pre-start OpenCode server so it's ready when the user creates a session
+# (avoids ~3s cold-start delay on first session creation)
+if command -v opencode &>/dev/null && [ -n "${DM_opencode_password:-}" ]; then
+  su - dev -c "source ~/.env 2>/dev/null; cd ~/repo 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${DM_opencode_password}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown" &
+  echo "[init] OpenCode server starting in background on port 5000"
+fi
 
 # --- Start user app (best-effort) ---
 

@@ -59,7 +59,7 @@ class AgentManager {
     }
   }
 
-  async createSession(envId: string, agentType: AgentType, options?: { model?: string }): Promise<AgentSession> {
+  async createSession(envId: string, agentType: AgentType, options?: { model?: string; providerID?: string; modelID?: string }): Promise<AgentSession> {
     const env = findEnvById(envId);
     if (!env) throw new Error("Environment not found");
     if (env.status !== "running") throw new Error("Environment is not running");
@@ -110,7 +110,7 @@ class AgentManager {
     return findAgentSession(sessionId)!;
   }
 
-  async sendMessage(sessionId: string, text: string): Promise<void> {
+  async sendMessage(sessionId: string, text: string, options?: { agent?: string }): Promise<void> {
     const active = this.activeSessions.get(sessionId);
     if (!active) {
       // Try to reconnect if session exists in DB but bridge is gone
@@ -140,7 +140,7 @@ class AgentManager {
       role: "system", // using system to distinguish; dashboard will check
     });
 
-    await active.bridge.sendMessage(text);
+    await active.bridge.sendMessage(text, options);
   }
 
   async interrupt(sessionId: string): Promise<void> {
@@ -159,7 +159,7 @@ class AgentManager {
     updateAgentSessionStatus(sessionId, "archived");
   }
 
-  async respondToApproval(sessionId: string, approvalId: string, decision: "accept" | "decline"): Promise<void> {
+  async respondToApproval(sessionId: string, approvalId: string, decision: "accept" | "always" | "decline"): Promise<void> {
     const active = this.activeSessions.get(sessionId);
     if (!active) throw new Error("Session not active");
 
@@ -169,6 +169,20 @@ class AgentManager {
     } else if (bridge instanceof OpenCodeBridge) {
       await bridge.respondToApproval(approvalId, decision);
     }
+  }
+
+  async revert(sessionId: string, messageId?: string): Promise<any> {
+    const active = this.activeSessions.get(sessionId);
+    if (!active) throw new Error("Session not active");
+    if (!(active.bridge instanceof OpenCodeBridge)) throw new Error("Revert is only supported for OpenCode");
+    return (active.bridge as OpenCodeBridge).revert(messageId);
+  }
+
+  async unrevert(sessionId: string): Promise<any> {
+    const active = this.activeSessions.get(sessionId);
+    if (!active) throw new Error("Session not active");
+    if (!(active.bridge instanceof OpenCodeBridge)) throw new Error("Unrevert is only supported for OpenCode");
+    return (active.bridge as OpenCodeBridge).unrevert();
   }
 
   listSessions(envId: string, agentType: AgentType): AgentSession[] {

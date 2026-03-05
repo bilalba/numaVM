@@ -18,6 +18,10 @@ db.exec(schema);
 // Column migrations (ALTER TABLE doesn't support IF NOT EXISTS in SQLite)
 try { db.exec("ALTER TABLE users ADD COLUMN github_username TEXT"); } catch { /* already exists */ }
 try { db.exec("ALTER TABLE users ADD COLUMN ssh_public_keys TEXT"); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0"); } catch { /* already exists */ }
+
+// Seed admin user
+db.prepare("UPDATE users SET is_admin = 1 WHERE email = ?").run("bilalbakhtahmad@gmail.com");
 
 export { db };
 
@@ -32,6 +36,7 @@ export interface User {
   google_id: string | null;
   avatar_url: string | null;
   ssh_public_keys: string | null;
+  is_admin: number;
   created_at: string;
 }
 

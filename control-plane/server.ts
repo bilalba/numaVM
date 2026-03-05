@@ -23,11 +23,13 @@ import { registerClaudeRoutes } from "./routes/claude.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerUserRoutes } from "./routes/user.js";
+import { registerAdminRoutes } from "./routes/admin.js";
 import { destroyAllTerminals } from "./terminal/pty-handler.js";
 import { agentManager } from "./agents/manager.js";
 import { getHealthStats } from "./services/health.js";
 import { destroyAllVMs, reconcileRunningVMs } from "./services/firecracker.js";
 import { startIdleMonitor, stopIdleMonitor } from "./services/idle-monitor.js";
+import { startSshProxy, stopSshProxy } from "./services/ssh-proxy.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -50,11 +52,12 @@ await app.register(cors, {
     // Also allow any origin on port 4002 (dashboard) to handle IP-based access
     try {
       const url = new URL(origin);
-      if (url.port === "4002") return cb(null, true);
+      if (url.port === "4002" || url.port === "4003") return cb(null, true);
     } catch {}
     cb(null, false);
   },
   credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 });
 
 // JWT verification for CLI Bearer tokens
@@ -145,6 +148,7 @@ registerClaudeRoutes(app);
 registerAgentRoutes(app);
 registerFileRoutes(app);
 registerUserRoutes(app);
+registerAdminRoutes(app);
 
 // Global error handler
 app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
@@ -159,12 +163,13 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("[unhandledRejection]", reason);
 });
 
-// Graceful shutdown
+// Graceful shutdown — VMs are NOT killed here since they run as independent
+// systemd services and should survive CP restarts (reconciled on next startup)
 const shutdown = async () => {
   stopIdleMonitor();
+  stopSshProxy();
   agentManager.destroyAll();
   destroyAllTerminals();
-  await destroyAllVMs();
   await app.close();
   process.exit(0);
 };
@@ -174,6 +179,9 @@ process.on("SIGTERM", shutdown);
 // Start
 // Reconcile in-memory VM state with any surviving Firecracker processes
 await reconcileRunningVMs();
+
+// Start SSH proxy (auth + wake-on-connect for all envs)
+await startSshProxy();
 
 // Start idle monitor (only on non-localhost deployments)
 if (baseDomain !== "localhost") {

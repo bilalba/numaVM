@@ -14,7 +14,7 @@ set -euo pipefail
 #   5. Configures NAT (iptables MASQUERADE) for outbound VM traffic
 #   6. Installs helper scripts for TAP device management
 
-FC_VERSION="${FC_VERSION:-1.10.1}"
+FC_VERSION="${FC_VERSION:-1.14.2}"
 ARCH="$(uname -m)"
 INSTALL_DIR="${INSTALL_DIR:-/opt/firecracker}"
 KERNEL_DIR="${INSTALL_DIR}/kernel"
@@ -48,8 +48,15 @@ mkdir -p "${INSTALL_DIR}/bin"
 
 if [ -f "${INSTALL_DIR}/bin/firecracker" ]; then
   CURRENT_VERSION=$("${INSTALL_DIR}/bin/firecracker" --version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
-  echo "Firecracker already installed: ${CURRENT_VERSION}"
-else
+  if [ "${CURRENT_VERSION}" = "${FC_VERSION}" ]; then
+    echo "Firecracker v${FC_VERSION} already installed"
+  else
+    echo "Firecracker upgrade: ${CURRENT_VERSION} -> ${FC_VERSION}"
+    rm -f "${INSTALL_DIR}/bin/firecracker" "${INSTALL_DIR}/bin/jailer"
+  fi
+fi
+
+if [ ! -f "${INSTALL_DIR}/bin/firecracker" ]; then
   echo "Downloading Firecracker v${FC_VERSION}..."
   FC_URL="https://github.com/firecracker-microvm/firecracker/releases/download/v${FC_VERSION}/firecracker-v${FC_VERSION}-${ARCH}.tgz"
   TMPDIR=$(mktemp -d)

@@ -12,6 +12,7 @@ import {
   revokeAllAccess,
   checkAccess,
   findUserById,
+  emitAdminEvent,
 } from "../db/client.js";
 import { allocatePorts, allocateCid, cidToVmIp } from "../services/port-allocator.js";
 import {
@@ -22,10 +23,11 @@ import {
   inspectVM,
   getInternalSshPubKey,
 } from "../services/firecracker.js";
-import { createRepo, fetchSshKeys } from "../services/github.js";
+import { fetchSshKeys } from "../services/github.js";
 import { execInVM } from "../services/vsock-ssh.js";
 import { addRoute, removeRoute } from "../services/caddy.js";
 import { ensureVMRunning } from "../services/wake.js";
+import { addSshProxyListener, removeSshProxyListener } from "../services/ssh-proxy.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
@@ -44,18 +46,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
     const vsockCid = allocateCid();
     const vmIp = cidToVmIp(vsockCid);
 
-    // Resolve GitHub repo
-    let repoFullName: string;
-    if (body.gh_repo) {
-      repoFullName = body.gh_repo;
-    } else if (!process.env.GH_PAT) {
-      return reply.status(400).send({
-        error: "GitHub token not configured. Provide an existing repo (owner/repo) or ask the admin to set GH_PAT.",
-      });
-    } else {
-      const repo = await createRepo(slug, body.private !== false);
-      repoFullName = repo.fullName;
-    }
+    // GitHub repo is optional — if provided, VM will clone it
+    const repoFullName = body.gh_repo || null;
 
     // Fetch user's SSH keys (GitHub + custom)
     const user = findUserById(request.userId);
@@ -71,7 +63,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
 
     // Generate per-env OpenCode password
     const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
-    const ghToken = process.env.GH_PAT || "";
+    const ghToken = repoFullName ? (process.env.GH_PAT || "") : null;
 
     // Insert env record early (reserves ports + CID)
     insertEnv({
@@ -102,8 +94,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
         appPort,
         sshPort,
         opencodePort,
-        ghRepo: repoFullName,
-        ghToken,
+        ghRepo: repoFullName || undefined,
+        ghToken: ghToken || undefined,
         sshKeys,
         opencodePassword,
         openaiApiKey: process.env.OPENAI_API_KEY,
@@ -123,6 +115,9 @@ export function registerEnvRoutes(app: FastifyInstance) {
     // Mark running BEFORE Caddy reload so it generates reverse_proxy (not status-page)
     updateEnvStatus(slug, "running");
 
+    // Start SSH proxy listener for this env
+    addSshProxyListener(slug, sshPort);
+
     // Register Caddy route (non-fatal)
     try {
       await addRoute(slug, appPort);
@@ -130,12 +125,14 @@ export function registerEnvRoutes(app: FastifyInstance) {
       request.log.warn({ err, slug }, "Failed to register Caddy route");
     }
 
+    emitAdminEvent("vm.created", slug, request.userId, { name: body.name, ...(repoFullName ? { repo: repoFullName } : {}) });
+
     return reply.status(201).send({
       id: slug,
       name: body.name,
       url: `http://${slug}.${getBaseDomain()}`,
-      repo_url: `https://github.com/${repoFullName}`,
-      ssh_command: `ssh dev@${getBaseDomain()} -p ${sshPort}`,
+      ...(repoFullName ? { repo_url: `https://github.com/${repoFullName}` } : {}),
+      ssh_command: `ssh dev@ssh.${getBaseDomain()} -p ${sshPort}`,
       ssh_port: sshPort,
       status: "running",
     });
@@ -151,7 +148,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
         status: e.status,
         role: e.role,
         url: `http://${e.id}.${getBaseDomain()}`,
-        repo_url: `https://github.com/${e.gh_repo}`,
+        ...(e.gh_repo ? { repo_url: `https://github.com/${e.gh_repo}` } : {}),
         created_at: e.created_at,
       })),
     };
@@ -191,8 +188,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
       name: env.name,
       status: env.status,
       url: `http://${env.id}.${getBaseDomain()}`,
-      repo_url: `https://github.com/${env.gh_repo}`,
-      ssh_command: `ssh dev@${getBaseDomain()} -p ${env.ssh_port}`,
+      ...(env.gh_repo ? { repo_url: `https://github.com/${env.gh_repo}` } : {}),
+      ssh_command: `ssh dev@ssh.${getBaseDomain()} -p ${env.ssh_port}`,
       ssh_port: env.ssh_port,
       app_port: env.app_port,
       opencode_port: env.opencode_port,
@@ -215,6 +212,9 @@ export function registerEnvRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "Only the owner can delete an environment" });
     }
 
+    // Remove SSH proxy listener
+    removeSshProxyListener(id, env.ssh_port);
+
     // Cleanup VM (best-effort) — includes TAP, iptables DNAT
     try {
       await removeVMFull(
@@ -232,6 +232,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
     // Cleanup DB
     revokeAllAccess(id);
     deleteEnv(id);
+
+    emitAdminEvent("vm.deleted", id, request.userId);
 
     return { ok: true, message: `Environment ${id} destroyed` };
   });
@@ -260,6 +262,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
       updateEnvStatus(id, "snapshotted");
 
       try { await removeRoute(id); } catch { /* ok */ }
+
+      emitAdminEvent("vm.paused", id, request.userId);
 
       return { ok: true, message: `Environment ${id} paused (snapshotted)` };
     } catch (err: any) {
@@ -290,15 +294,15 @@ export function registerEnvRoutes(app: FastifyInstance) {
       const html = `<!DOCTYPE html>
 <html>
 <head>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='700' font-size='16' fill='%23f8f4ee'%3EN%3C/text%3E%3C/svg%3E" />
   <title>${name} — Nothing here</title>
-  <meta http-equiv="refresh" content="5">
   <style>${pageStyle}</style>
 </head>
 <body>
   <div class="card">
     <h2>Nothing here yet</h2>
     <p style="margin-top: 0.75rem;">Ask your agent to serve on port <code>3000</code></p>
-    <p style="margin-top: 1.5rem; font-size: 0.625rem; color: #a3a3a3;">This page refreshes automatically.</p>
+    <p style="margin-top: 1.5rem; font-size: 0.625rem; color: #a3a3a3;">Refresh this page after your app is running.</p>
   </div>
 </body>
 </html>`;
@@ -333,8 +337,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
     const html = `<!DOCTYPE html>
 <html>
 <head>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='700' font-size='16' fill='%23f8f4ee'%3EN%3C/text%3E%3C/svg%3E" />
   <title>${name} — ${statusMessage.charAt(0).toUpperCase() + statusMessage.slice(1)}</title>
-  <meta http-equiv="refresh" content="3">
   <style>${pageStyle}</style>
 </head>
 <body>
@@ -342,12 +346,78 @@ export function registerEnvRoutes(app: FastifyInstance) {
     <div class="spinner"></div>
     <h2>${name}</h2>
     <p>Environment is ${statusMessage}...</p>
-    <p style="margin-top: 1rem;">This page refreshes automatically.</p>
+    <p style="margin-top: 1rem;">Refresh this page after a few seconds.</p>
   </div>
 </body>
 </html>`;
 
     reply.type("text/html").send(html);
+  });
+
+  /** Deduplicate SSH keys by their key data (type + base64 blob), ignoring comments. */
+  function dedupeKeys(rawKeys: string): string {
+    const seen = new Set<string>();
+    const unique: string[] = [];
+    for (const line of rawKeys.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      // Key identity is "type base64data" (first two fields)
+      const parts = trimmed.split(/\s+/);
+      const identity = parts.length >= 2 ? `${parts[0]} ${parts[1]}` : trimmed;
+      if (!seen.has(identity)) {
+        seen.add(identity);
+        unique.push(trimmed);
+      }
+    }
+    return unique.join("\n");
+  }
+
+  /** Gather all desired keys for a user (GitHub + custom + internal), deduped. */
+  async function gatherUserKeys(userId: string): Promise<string> {
+    const user = findUserById(userId);
+    const parts: string[] = [];
+
+    if (user?.github_username) {
+      const ghKeys = await fetchSshKeys(user.github_username);
+      if (ghKeys) parts.push(ghKeys);
+    }
+    if (user?.ssh_public_keys) {
+      parts.push(user.ssh_public_keys);
+    }
+
+    // Always include the internal key
+    parts.push(getInternalSshPubKey());
+
+    return dedupeKeys(parts.join("\n"));
+  }
+
+  // Check if SSH keys are already synced to the VM
+  app.get("/envs/:id/ssh-keys-status", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const env = findEnvById(id);
+    if (!env) {
+      return reply.status(404).send({ error: "Environment not found" });
+    }
+
+    const role = checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this environment" });
+    }
+
+    if (env.status !== "running" || !env.vm_ip) {
+      return { synced: false, reason: "not_running" };
+    }
+
+    try {
+      const desiredKeys = await gatherUserKeys(request.userId);
+      const currentRaw = await execInVM(env.vm_ip, [
+        "cat", "/home/dev/.ssh/authorized_keys",
+      ]);
+      const currentKeys = dedupeKeys(currentRaw);
+      return { synced: currentKeys === desiredKeys };
+    } catch {
+      return { synced: false, reason: "check_failed" };
+    }
   });
 
   // Sync SSH keys to a running VM
@@ -367,22 +437,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Environment is not running" });
     }
 
-    // Gather all keys: user's GitHub keys + custom keys + internal key
-    const user = findUserById(request.userId);
-    const parts: string[] = [];
-
-    if (user?.github_username) {
-      const ghKeys = await fetchSshKeys(user.github_username);
-      if (ghKeys) parts.push(ghKeys);
-    }
-    if (user?.ssh_public_keys) {
-      parts.push(user.ssh_public_keys);
-    }
-
-    // Always include the internal key
-    parts.push(getInternalSshPubKey());
-
-    const allKeys = parts.join("\n");
+    const allKeys = await gatherUserKeys(request.userId);
     const keysB64 = Buffer.from(allKeys).toString("base64");
 
     try {

@@ -20,8 +20,8 @@ export interface CreateVMParams {
   appPort: number;
   sshPort: number;
   opencodePort: number;
-  ghRepo: string;
-  ghToken: string;
+  ghRepo?: string;
+  ghToken?: string;
   sshKeys: string;
   opencodePassword: string;
   openaiApiKey?: string;
@@ -90,6 +90,7 @@ async function fcApi(socketPath: string, method: string, path: string, body?: an
   const args = [
     "--unix-socket", socketPath,
     "-s", "-S",
+    "-m", "30",
     "-X", method,
     "-H", "Content-Type: application/json",
     "-w", "\n%{http_code}",
@@ -172,7 +173,7 @@ function addDnat(hostPort: number, vmIp: string, vmPort: number): void {
   }
 }
 
-function removeDnat(hostPort: number, vmIp: string, vmPort: number): void {
+export function removeDnat(hostPort: number, vmIp: string, vmPort: number): void {
   const dnatRemove = process.env.DNAT_REMOVE || "/opt/firecracker/bin/remove-dnat";
   if (existsSync(dnatRemove)) {
     try { execSync(`"${dnatRemove}" "${hostPort}" "${vmIp}" "${vmPort}"`, { stdio: "pipe" }); } catch { /* ok */ }
@@ -225,8 +226,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
 
   // Write env config to a file that init.sh can read
   const envConfig = {
-    gh_repo: ghRepo,
-    gh_token: ghToken,
+    gh_repo: ghRepo || "",
+    gh_token: ghToken || "",
     ssh_keys: sshKeys,
     internal_ssh_key: getInternalSshPubKey(),
     opencode_password: opencodePassword,
@@ -255,29 +256,32 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     `dm.dns=8.8.8.8`,
     `dm.vsock_cid=${vsockCid}`,
     `dm.ssh_keys=${sshKeysB64}`,
-    `dm.gh_repo=${ghRepo}`,
-    `dm.gh_token=${ghToken}`,
+    `dm.gh_repo=${ghRepo || ""}`,
+    `dm.gh_token=${ghToken || ""}`,
     `dm.opencode_password=${opencodePassword}`,
     `dm.openai_api_key=${openaiApiKey || ""}`,
     `dm.anthropic_api_key=${anthropicApiKey || ""}`,
   ].join(" ");
 
-  // Spawn Firecracker process with log file
+  // Spawn Firecracker as a transient systemd service so it survives CP restarts.
+  // `systemd-run` (without --scope) forks the command as an independent service unit
+  // with its own cgroup, then exits immediately. The FC process lives on.
   const fcLogPath = join(dataDir, "firecracker.log");
-  const fcLogFd = (await import("node:fs")).openSync(fcLogPath, "w");
-  const fcProc = spawn(getFcBin(), [
-    "--api-sock", socketPath,
-    "--log-path", fcLogPath,
-    "--level", "Debug",
-  ], {
-    stdio: ["pipe", fcLogFd, fcLogFd],
-    detached: true,
-  });
+  execSync(
+    `systemd-run --unit fc-${slug} --description "Firecracker VM ${slug}" ` +
+    `${getFcBin()} --api-sock ${socketPath} --log-path ${fcLogPath} --level Debug`,
+    { stdio: "pipe" },
+  );
 
-  // Log early exit
-  fcProc.on("exit", (code, signal) => {
-    console.error(`[firecracker] VM ${slug} exited: code=${code} signal=${signal}`);
-  });
+  // systemd-run exits immediately; FC is now managed by systemd
+  // Get the PID from systemd
+  let fcPid = 0;
+  try {
+    fcPid = parseInt(
+      execSync(`systemctl show fc-${slug}.service -p MainPID --value`, { stdio: "pipe" }).toString().trim(),
+      10,
+    );
+  } catch { /* ok */ }
 
   // Wait for socket to be ready
   await waitForSocket(socketPath, 5000);
@@ -334,27 +338,21 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     action_type: "InstanceStart",
   });
 
-  // Set up iptables DNAT for port forwarding
+  // Set up iptables DNAT for port forwarding (SSH handled by ssh-proxy)
   addDnat(appPort, vmIp, 3000);    // app port
-  addDnat(sshPort, vmIp, 22);      // SSH port
   addDnat(opencodePort, vmIp, 5000); // OpenCode port
 
   const startedAt = new Date().toISOString();
 
-  // Track the running VM
+  // Track the running VM (process is null — managed by systemd)
   runningVMs.set(slug, {
-    process: fcProc,
-    pid: fcProc.pid!,
+    process: null,
+    pid: fcPid,
     socketPath,
     vsockCid,
     vmIp,
     tapDev,
     startedAt,
-  });
-
-  // Handle process exit
-  fcProc.on("exit", (code) => {
-    runningVMs.delete(slug);
   });
 
   // Wait for VM to be ready (SSH accessible over bridge network)
@@ -377,7 +375,7 @@ export async function stopVM(vmId: string): Promise<void> {
   } catch { /* ignore */ }
 
   // Force kill if still running
-  killVmProcess(vm);
+  killVmProcess(vm, vmId);
 
   runningVMs.delete(vmId);
 }
@@ -418,9 +416,8 @@ export async function removeVMFull(
 ): Promise<void> {
   await removeVM(vmId);
 
-  // Clean up DNAT rules
+  // Clean up DNAT rules (SSH handled by ssh-proxy, no DNAT to remove)
   removeDnat(appPort, vmIp, 3000);
-  removeDnat(sshPort, vmIp, 22);
   removeDnat(opencodePort, vmIp, 5000);
 }
 
@@ -488,7 +485,7 @@ export async function snapshotVM(vmId: string): Promise<void> {
   }
 
   // 4. Kill Firecracker process
-  killVmProcess(vm);
+  killVmProcess(vm, vmId);
 
   // 5. Clean up TAP device and DNAT rules (caller handles DNAT)
   destroyTap(vm.tapDev);
@@ -526,13 +523,21 @@ export async function restoreVM(
   // 1. Create TAP device
   createTap(tapDev, vmIp);
 
-  // 2. Spawn new Firecracker process
-  const fcProc = spawn(getFcBin(), [
-    "--api-sock", socketPath,
-  ], {
-    stdio: ["pipe", "pipe", "pipe"],
-    detached: true,
-  });
+  // 2. Spawn Firecracker as a transient systemd service so it survives CP restarts
+  const fcLogPath = join(join(getDataDir(), vmId), "firecracker.log");
+  execSync(
+    `systemd-run --unit fc-${vmId} --description "Firecracker VM ${vmId}" ` +
+    `${getFcBin()} --api-sock ${socketPath} --log-path ${fcLogPath} --level Debug`,
+    { stdio: "pipe" },
+  );
+
+  let fcPid = 0;
+  try {
+    fcPid = parseInt(
+      execSync(`systemctl show fc-${vmId}.service -p MainPID --value`, { stdio: "pipe" }).toString().trim(),
+      10,
+    );
+  } catch { /* ok */ }
 
   await waitForSocket(socketPath, 5000);
 
@@ -550,26 +555,21 @@ export async function restoreVM(
     state: "Resumed",
   });
 
-  // 5. Re-add DNAT rules
+  // 5. Re-add DNAT rules (SSH handled by ssh-proxy, no DNAT needed)
   addDnat(appPort, vmIp, 3000);
-  addDnat(sshPort, vmIp, 22);
   addDnat(opencodePort, vmIp, 5000);
 
   const startedAt = new Date().toISOString();
 
-  // Track the restored VM
+  // Track the restored VM (process is null — managed by systemd)
   runningVMs.set(vmId, {
-    process: fcProc,
-    pid: fcProc.pid!,
+    process: null,
+    pid: fcPid,
     socketPath,
     vsockCid,
     vmIp,
     tapDev,
     startedAt,
-  });
-
-  fcProc.on("exit", () => {
-    runningVMs.delete(vmId);
   });
 
   // Wait for SSH over bridge network
@@ -584,7 +584,11 @@ export async function restoreVM(
 
 // --- Process management ---
 
-function killVmProcess(vm: { process: ChildProcess | null; pid: number }): void {
+function killVmProcess(vm: { process: ChildProcess | null; pid: number }, vmId?: string): void {
+  // Try to stop the systemd transient service first
+  if (vmId) {
+    try { execSync(`systemctl stop fc-${vmId}.service 2>/dev/null`, { stdio: "pipe", timeout: 5000 }); return; } catch { /* fall through */ }
+  }
   if (vm.process && !vm.process.killed) {
     vm.process.kill("SIGTERM");
   } else if (vm.pid) {
@@ -640,9 +644,8 @@ export async function reconcileRunningVMs(): Promise<void> {
         startedAt: new Date().toISOString(), // approximate
       });
 
-      // Re-establish iptables DNAT rules (idempotent — addDnat skips if already present)
+      // Re-establish iptables DNAT rules (SSH handled by ssh-proxy, no DNAT needed)
       addDnat(env.app_port, env.vm_ip, 3000);
-      addDnat(env.ssh_port, env.vm_ip, 22);
       addDnat(env.opencode_port, env.vm_ip, 5000);
 
       console.log(`[reconcile] Re-adopted VM ${env.id} (PID ${pid}), DNAT rules restored`);

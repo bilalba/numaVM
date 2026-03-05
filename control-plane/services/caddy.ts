@@ -14,6 +14,9 @@ function getControlPlanePort(): string {
 function getDashboardPort(): string {
   return process.env.DASHBOARD_PORT || "4002";
 }
+function getAdminPort(): string {
+  return process.env.ADMIN_PORT || "4003";
+}
 
 interface EnvRoute {
   id: string;
@@ -32,19 +35,25 @@ function generateCaddyfile(envs: EnvRoute[]): string {
   const authPort = getAuthPort();
   const cpPort = getControlPlanePort();
   const dashPort = getDashboardPort();
-  const authLoginUrl = `http://auth.${domain}/login`;
+  const adminPort = getAdminPort();
+  const isLocal = domain === "localhost";
+  // Caddy auto-provisions TLS for real domains; use http:// only for localhost
+  const scheme = isLocal ? "http://" : "https://";
+  // For Cloudflare-proxied domains, use the origin certificate
+  const tlsDirective = isLocal ? "" : `\n    tls /etc/caddy/ssl/${domain}.pem /etc/caddy/ssl/${domain}.key`;
+  const authLoginUrl = `${scheme}auth.${domain}/login`;
 
   let config = `{
     admin localhost:2019
 }
 
 # Auth service — no forward_auth (it IS the auth provider)
-http://auth.${domain} {
+${scheme}auth.${domain} {${tlsDirective}
     reverse_proxy localhost:${authPort}
 }
 
 # Control plane API — skip forward_auth for CORS preflight, auth the rest
-http://api.${domain} {
+${scheme}api.${domain} {${tlsDirective}
     @options method OPTIONS
     handle @options {
         reverse_proxy localhost:${cpPort}
@@ -52,14 +61,14 @@ http://api.${domain} {
     handle {
         forward_auth localhost:${authPort} {
             uri /verify
-            copy_headers X-User-Id X-User-Email
+            copy_headers X-User-Id X-User-Email X-User-Admin
         }
         reverse_proxy localhost:${cpPort}
     }
 }
 
 # Dashboard — forward_auth, redirects to login on failure
-http://${domain} {
+${scheme}app.${domain} {${tlsDirective}
     forward_auth localhost:${authPort} {
         uri /verify
         copy_headers X-User-Id X-User-Email
@@ -69,6 +78,19 @@ http://${domain} {
         }
     }
     reverse_proxy localhost:${dashPort}
+}
+
+# Admin dashboard — forward_auth with admin header, redirects to login on failure
+${scheme}admin.${domain} {${tlsDirective}
+    forward_auth localhost:${authPort} {
+        uri /verify
+        copy_headers X-User-Id X-User-Email X-User-Admin
+        @unauthorized status 401 403
+        handle_response @unauthorized {
+            redir ${authLoginUrl}
+        }
+    }
+    reverse_proxy localhost:${adminPort}
 }
 `;
 
@@ -88,7 +110,7 @@ http://${domain} {
       // Running: proxy to VM with error fallback to status page
       config += `
 # Environment: ${env.id}
-http://${env.id}.${domain} {${forwardAuth}
+${scheme}${env.id}.${domain} {${tlsDirective}${forwardAuth}
     handle_errors {
         rewrite * /envs/${env.id}/status-page
         reverse_proxy localhost:${cpPort}
@@ -100,7 +122,7 @@ http://${env.id}.${domain} {${forwardAuth}
       // Not running: auth-gate then always show status page (triggers wake)
       config += `
 # Environment: ${env.id} (${env.status})
-http://${env.id}.${domain} {${forwardAuth}
+${scheme}${env.id}.${domain} {${tlsDirective}${forwardAuth}
     rewrite * /envs/${env.id}/status-page
     reverse_proxy localhost:${cpPort}
 }

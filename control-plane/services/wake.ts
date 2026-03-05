@@ -3,6 +3,7 @@ import {
   updateEnvStatus,
   updateEnvSnapshotPath,
   updateEnvVmInfo,
+  emitAdminEvent,
 } from "../db/client.js";
 import { restoreVM, createAndStartVM, isVmRunning, getInternalSshPubKey } from "./firecracker.js";
 import { addRoute } from "./caddy.js";
@@ -119,6 +120,8 @@ async function doWake(envId: string, env: ReturnType<typeof findEnvById>): Promi
     } catch (err) {
       console.warn(`[wake] Failed to re-register Caddy route for ${envId}: ${err}`);
     }
+
+    emitAdminEvent("vm.woke", envId, null, { hadSnapshot: hasSnapshot });
 
     // Reset idle timer so it doesn't immediately re-snapshot
     resetIdleTimer(envId);

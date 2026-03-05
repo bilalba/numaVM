@@ -102,10 +102,11 @@ export class CodexBridge implements AgentBridge {
     this.cleanup();
   }
 
-  respondToApproval(approvalId: string, decision: "accept" | "decline"): void {
+  respondToApproval(approvalId: string, decision: "accept" | "always" | "decline"): void {
     // Approval responses are sent as JSON-RPC responses to the server's request
     // The approvalId is the JSON-RPC request id from the server
-    const result = decision === "accept" ? "accept" : "decline";
+    // Codex doesn't support "always" — treat it as "accept"
+    const result = decision === "decline" ? "decline" : "accept";
     const msg = JSON.stringify({ jsonrpc: "2.0", id: approvalId, result });
     this.procStdin?.write(msg + "\n");
   }

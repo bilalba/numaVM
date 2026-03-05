@@ -2,11 +2,12 @@ interface ApprovalCardProps {
   approvalId: string;
   action: string;
   detail: unknown;
-  onRespond: (approvalId: string, decision: "accept" | "decline") => void;
+  onRespond: (approvalId: string, decision: "accept" | "always" | "decline") => void;
   responded?: boolean;
+  agentType?: "codex" | "opencode";
 }
 
-export function ApprovalCard({ approvalId, action, detail, onRespond, responded }: ApprovalCardProps) {
+export function ApprovalCard({ approvalId, action, detail, onRespond, responded, agentType }: ApprovalCardProps) {
   const detailStr = typeof detail === "string" ? detail : JSON.stringify(detail, null, 2);
 
   return (
@@ -30,6 +31,14 @@ export function ApprovalCard({ approvalId, action, detail, onRespond, responded 
           >
             Accept
           </button>
+          {agentType === "opencode" && (
+            <button
+              onClick={() => onRespond(approvalId, "always")}
+              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
+            >
+              Always Allow
+            </button>
+          )}
           <button
             onClick={() => onRespond(approvalId, "decline")}
             className="text-xs underline underline-offset-4 opacity-60 transition-opacity hover:opacity-80 cursor-pointer"

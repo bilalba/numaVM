@@ -24,7 +24,7 @@ export interface EnvSummary {
   status: string;
   role: string;
   url: string;
-  repo_url: string;
+  repo_url?: string;
   created_at: string;
 }
 
@@ -33,7 +33,7 @@ export interface EnvDetail {
   name: string;
   status: string;
   url: string;
-  repo_url: string;
+  repo_url?: string;
   ssh_command: string;
   ssh_port: number;
   app_port: number;
@@ -75,6 +75,12 @@ export interface AgentMessage {
   created_at: string;
 }
 
+export interface OpenCodeProvider {
+  id: string;
+  name: string;
+  models: { id: string; name: string }[];
+}
+
 export interface AccessEntry {
   user_id: string;
   role: string;
@@ -112,13 +118,22 @@ export interface TerminalSession {
   attached: boolean;
 }
 
+export interface User {
+  id: string;
+  email: string;
+  name?: string;
+  avatar_url?: string;
+}
+
 export const api = {
+  getUser: () => apiFetch<User>("/me"),
+
   listEnvs: () => apiFetch<{ envs: EnvSummary[] }>("/envs"),
 
   getEnv: (id: string) => apiFetch<EnvDetail>(`/envs/${id}`),
 
   createEnv: (body: { name: string; gh_repo?: string }) =>
-    apiFetch<{ id: string; name: string; url: string; repo_url: string; ssh_command: string; ssh_port: number; status: string }>(
+    apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
       "/envs",
       { method: "POST", body: JSON.stringify(body) }
     ),
@@ -133,11 +148,17 @@ export const api = {
   listFiles: (envId: string, path: string) =>
     apiFetch<{ path: string; entries: FileEntry[] }>(`/envs/${envId}/files?path=${encodeURIComponent(path)}`),
 
+  // OpenCode providers
+  getOpenCodeProviders: (envId: string) =>
+    apiFetch<{ all: OpenCodeProvider[]; default: Record<string, string>; connected: string[] }>(
+      `/envs/${envId}/opencode/providers`
+    ),
+
   // Agent session APIs
-  createAgentSession: (envId: string, agentType: "codex" | "opencode", model?: string) =>
+  createAgentSession: (envId: string, agentType: "codex" | "opencode", model?: string, providerID?: string, modelID?: string) =>
     apiFetch<AgentSession>(`/envs/${envId}/agents/${agentType}/sessions`, {
       method: "POST",
-      body: JSON.stringify(model ? { model } : {}),
+      body: JSON.stringify({ ...(model ? { model } : {}), ...(providerID && modelID ? { providerID, modelID } : {}) }),
     }),
 
   listAgentSessions: (envId: string, agentType: "codex" | "opencode") =>
@@ -148,15 +169,16 @@ export const api = {
       `/envs/${envId}/sessions/${sessionId}`
     ),
 
-  sendAgentMessage: (envId: string, sessionId: string, text: string) =>
+  sendAgentMessage: (envId: string, sessionId: string, text: string, agent?: string) =>
     apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/message`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ...(agent ? { agent } : {}) }),
     }),
 
   stopAgent: (envId: string, sessionId: string) =>
     apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/stop`, {
       method: "POST",
+      body: JSON.stringify({}),
     }),
 
   deleteAgentSession: (envId: string, sessionId: string) =>
@@ -164,7 +186,19 @@ export const api = {
       method: "DELETE",
     }),
 
-  respondToApproval: (envId: string, sessionId: string, approvalId: string, decision: "accept" | "decline") =>
+  revertMessage: (envId: string, sessionId: string, messageId?: string) =>
+    apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/revert`, {
+      method: "POST",
+      body: JSON.stringify(messageId ? { messageId } : {}),
+    }),
+
+  unrevertSession: (envId: string, sessionId: string) =>
+    apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/unrevert`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+
+  respondToApproval: (envId: string, sessionId: string, approvalId: string, decision: "accept" | "always" | "decline") =>
     apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/approval`, {
       method: "POST",
       body: JSON.stringify({ approvalId, decision }),
@@ -185,6 +219,7 @@ export const api = {
   logoutCodex: (envId: string) =>
     apiFetch<{ ok: boolean }>(`/envs/${envId}/codex/auth/logout`, {
       method: "POST",
+      body: JSON.stringify({}),
     }),
 
   // Terminal sessions
@@ -209,7 +244,11 @@ export const api = {
   syncSshKeys: (envId: string) =>
     apiFetch<{ ok: boolean; message: string }>(`/envs/${envId}/sync-ssh-keys`, {
       method: "POST",
+      body: JSON.stringify({}),
     }),
+
+  checkSshKeysStatus: (envId: string) =>
+    apiFetch<{ synced: boolean; reason?: string }>(`/envs/${envId}/ssh-keys-status`),
 
   // Access control
   listAccess: (envId: string) =>
@@ -230,6 +269,9 @@ export const api = {
   // File content + git log
   readFile: (envId: string, path: string) =>
     apiFetch<FileContent>(`/envs/${envId}/files/read?path=${encodeURIComponent(path)}`),
+
+  getFileDownloadUrl: (envId: string, path: string) =>
+    `${API_BASE}/envs/${envId}/files/download?path=${encodeURIComponent(path)}`,
 
   getGitLog: (envId: string, limit = 20) =>
     apiFetch<{ commits: GitCommit[] }>(`/envs/${envId}/git/log?limit=${limit}`),

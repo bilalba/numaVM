@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { db, findEnvById, updateEnvStatus, updateEnvSnapshotPath } from "../db/client.js";
+import { db, findEnvById, updateEnvStatus, updateEnvSnapshotPath, emitAdminEvent, insertTrafficRecord, pruneOldTraffic } from "../db/client.js";
 import { snapshotVM } from "./firecracker.js";
 import { removeRoute } from "./caddy.js";
 
@@ -26,7 +26,14 @@ interface VMTraffic {
 }
 
 const trafficMap = new Map<string, VMTraffic>();
+const snapshottingSet = new Set<string>(); // per-env concurrency guard
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+// Traffic recording: store deltas every poll (~30s)
+const RECORD_INTERVAL = 1; // every poll
+let pollCount = 0;
+const lastRecordedBytes = new Map<string, { rx: number; tx: number }>();
+let lastPruneTime = 0;
 
 function readTapBytes(tapDev: string): number {
   try {
@@ -78,8 +85,14 @@ async function pollOnce(): Promise<void> {
 
     // Less than threshold transferred in the window — snapshot
     {
+      // Skip if a snapshot is already in-flight for this env
+      if (snapshottingSet.has(env.id)) {
+        continue;
+      }
+
       console.log(`[idle-monitor] VM ${env.id} transferred only ${bytesInWindow} bytes in ${Math.round(windowDuration / 1000)}s (threshold: ${IDLE_THRESHOLD_BYTES}), snapshotting...`);
 
+      snapshottingSet.add(env.id);
       try {
         // Snapshot the VM
         await snapshotVM(env.id);
@@ -97,14 +110,48 @@ async function pollOnce(): Promise<void> {
         // Clean up traffic tracking
         trafficMap.delete(env.id);
 
-        // Clean up DNAT rules (done by snapshotVM -> stopVM)
-        // The removeDnat calls need the port info
-        const { removeDnat } = await import("./firecracker.js") as any;
-        // DNAT cleanup is handled in snapshotVM via the Firecracker process cleanup
-
+        emitAdminEvent("vm.idle_snapshotted", env.id, null, { idleBytes: bytesInWindow, windowMs: windowDuration });
         console.log(`[idle-monitor] VM ${env.id} snapshotted successfully`);
       } catch (err: any) {
         console.error(`[idle-monitor] Failed to snapshot VM ${env.id}: ${err.message}`);
+        // Reset the window so we don't immediately retry
+        trafficMap.set(env.id, { windowBytes: currentBytes, windowStart: now });
+      } finally {
+        snapshottingSet.delete(env.id);
+      }
+    }
+  }
+
+  // Record traffic deltas every RECORD_INTERVAL polls (~5min)
+  pollCount++;
+  if (pollCount >= RECORD_INTERVAL) {
+    pollCount = 0;
+    for (const env of runningEnvs) {
+      const tapDev = `tap-${env.id}`;
+      let rx = 0, tx = 0;
+      try {
+        rx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/rx_bytes`, "utf-8").trim(), 10);
+        tx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/tx_bytes`, "utf-8").trim(), 10);
+      } catch { continue; }
+
+      const prev = lastRecordedBytes.get(env.id);
+      if (prev) {
+        const deltaRx = Math.max(0, rx - prev.rx);
+        const deltaTx = Math.max(0, tx - prev.tx);
+        if (deltaRx > 0 || deltaTx > 0) {
+          insertTrafficRecord(env.id, deltaRx, deltaTx);
+        }
+      }
+      lastRecordedBytes.set(env.id, { rx, tx });
+    }
+
+    // Prune old records once per day
+    const now = Date.now();
+    if (now - lastPruneTime > 86400000) {
+      lastPruneTime = now;
+      const pruned = pruneOldTraffic(7);
+      if (pruned > 0) {
+        console.log(`[idle-monitor] Pruned ${pruned} old traffic records`);
       }
     }
   }
@@ -113,6 +160,10 @@ async function pollOnce(): Promise<void> {
   for (const slug of trafficMap.keys()) {
     const exists = runningEnvs.some((e) => e.id === slug);
     if (!exists) trafficMap.delete(slug);
+  }
+  for (const slug of lastRecordedBytes.keys()) {
+    const exists = runningEnvs.some((e) => e.id === slug);
+    if (!exists) lastRecordedBytes.delete(slug);
   }
 }
 

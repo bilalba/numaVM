@@ -20,6 +20,8 @@ export function FilesTab({ envId }: FilesTabProps) {
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [commits, setCommits] = useState<GitCommit[]>([]);
+  // On mobile, toggle between tree view and file view
+  const [mobileShowFile, setMobileShowFile] = useState(false);
 
   const loadDir = useCallback(
     async (path: string) => {
@@ -73,6 +75,7 @@ export function FilesTab({ envId }: FilesTabProps) {
   const handleFileClick = async (path: string) => {
     setFileLoading(true);
     setFileError(null);
+    setMobileShowFile(true);
     try {
       const data = await api.readFile(envId, path);
       setSelectedFile(data);
@@ -84,10 +87,22 @@ export function FilesTab({ envId }: FilesTabProps) {
     }
   };
 
+  const handleDownload = () => {
+    if (!selectedFile) return;
+    const url = api.getFileDownloadUrl(envId, selectedFile.path);
+    window.open(url, "_blank");
+  };
+
+  const handleMobileBack = () => {
+    setMobileShowFile(false);
+  };
+
+  const fileName = selectedFile?.path.split("/").pop() || "";
+
   return (
-    <div className="flex h-[calc(100vh-200px)] min-h-[400px] gap-4">
-      {/* File tree (left panel) */}
-      <div className="w-72 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col overflow-hidden">
+    <div className="flex flex-col md:flex-row h-[calc(100vh-200px)] min-h-[400px] gap-0 md:gap-4">
+      {/* File tree (left panel) — hidden on mobile when viewing a file */}
+      <div className={`${mobileShowFile ? "hidden" : "flex"} md:flex w-full md:w-72 shrink-0 bg-panel-sidebar border border-neutral-200 flex-col overflow-hidden`}>
         <div className="px-3 py-2 border-b border-neutral-200 flex items-center justify-between">
           <span className="text-xs text-neutral-500 uppercase tracking-wide">Files</span>
           <button
@@ -134,8 +149,8 @@ export function FilesTab({ envId }: FilesTabProps) {
         )}
       </div>
 
-      {/* Content viewer (right panel) */}
-      <div className="flex-1 bg-white border border-neutral-200 flex flex-col overflow-hidden">
+      {/* Content viewer (right panel) — full width on mobile when viewing a file */}
+      <div className={`${!mobileShowFile ? "hidden" : "flex"} md:flex flex-1 bg-white border border-neutral-200 flex-col overflow-hidden`}>
         {fileLoading ? (
           <div className="flex-1 flex items-center justify-center text-neutral-500 text-xs">
             Loading file...
@@ -149,17 +164,26 @@ export function FilesTab({ envId }: FilesTabProps) {
             Select a file to view its contents
           </div>
         ) : selectedFile.binary ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-neutral-500">
-            <div className="text-xs mb-1">Binary file</div>
-            <div className="text-[10px]">{selectedFile.mimeType} &middot; {formatSize(selectedFile.size)}</div>
-          </div>
+          <>
+            <FileHeader
+              path={selectedFile.path}
+              size={selectedFile.size}
+              onDownload={handleDownload}
+              onBack={handleMobileBack}
+            />
+            <div className="flex-1 flex flex-col items-center justify-center text-neutral-500">
+              <div className="text-xs mb-1">Binary file</div>
+              <div className="text-[10px]">{selectedFile.mimeType} &middot; {formatSize(selectedFile.size)}</div>
+            </div>
+          </>
         ) : (
           <>
-            {/* File header */}
-            <div className="px-4 py-2 border-b border-neutral-200 flex items-center justify-between">
-              <span className="text-xs text-neutral-500 truncate">{selectedFile.path}</span>
-              <span className="text-[10px] text-neutral-500 shrink-0 ml-4">{formatSize(selectedFile.size)}</span>
-            </div>
+            <FileHeader
+              path={selectedFile.path}
+              size={selectedFile.size}
+              onDownload={handleDownload}
+              onBack={handleMobileBack}
+            />
             {/* File content with line numbers */}
             <div className="flex-1 overflow-auto">
               <pre className="text-xs leading-5">
@@ -167,10 +191,10 @@ export function FilesTab({ envId }: FilesTabProps) {
                   <tbody>
                     {(selectedFile.content || "").split("\n").map((line, i) => (
                       <tr key={i} className="hover:bg-[#faf7f2]">
-                        <td className="text-right pr-4 pl-4 text-neutral-400 select-none w-12 align-top border-r border-neutral-100">
+                        <td className="text-right pr-3 sm:pr-4 pl-2 sm:pl-4 text-neutral-400 select-none w-8 sm:w-12 align-top border-r border-neutral-100">
                           {i + 1}
                         </td>
-                        <td className="pl-4 pr-4 whitespace-pre-wrap break-all">
+                        <td className="pl-2 sm:pl-4 pr-2 sm:pr-4 whitespace-pre-wrap break-all">
                           {line || "\u00A0"}
                         </td>
                       </tr>
@@ -181,6 +205,53 @@ export function FilesTab({ envId }: FilesTabProps) {
             </div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function FileHeader({
+  path,
+  size,
+  onDownload,
+  onBack,
+}: {
+  path: string;
+  size: number;
+  onDownload: () => void;
+  onBack: () => void;
+}) {
+  const fileName = path.split("/").pop() || path;
+
+  return (
+    <div className="px-3 sm:px-4 py-2 border-b border-neutral-200 flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        {/* Back button — mobile only */}
+        <button
+          onClick={onBack}
+          className="md:hidden text-neutral-500 transition-opacity hover:opacity-60 cursor-pointer shrink-0"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M11.354 1.646a.5.5 0 010 .708L5.707 8l5.647 5.646a.5.5 0 01-.708.708l-6-6a.5.5 0 010-.708l6-6a.5.5 0 01.708 0z" />
+          </svg>
+        </button>
+        <span className="text-xs text-neutral-500 truncate" title={path}>
+          <span className="hidden sm:inline">{path}</span>
+          <span className="sm:hidden">{fileName}</span>
+        </span>
+      </div>
+      <div className="flex items-center gap-3 shrink-0">
+        <span className="text-[10px] text-neutral-500">{formatSize(size)}</span>
+        <button
+          onClick={onDownload}
+          className="text-neutral-500 transition-opacity hover:opacity-60 cursor-pointer"
+          title="Download file"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 12l-4-4h2.5V2h3v6H12L8 12z" />
+            <path d="M14 14H2v-2h12v2z" />
+          </svg>
+        </button>
       </div>
     </div>
   );
@@ -240,7 +311,7 @@ function TreeNode({
         return (
           <div key={entry.name}>
             <div
-              className={`flex items-center py-0.5 cursor-pointer transition-opacity ${
+              className={`flex items-center py-1 sm:py-0.5 cursor-pointer transition-opacity ${
                 isSelected ? "bg-panel-chat font-semibold" : "hover:opacity-60"
               }`}
               style={{ paddingLeft: `${depth * 12 + 8}px` }}

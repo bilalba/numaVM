@@ -1,0 +1,110 @@
+const API_BASE = import.meta.env.VITE_API_URL || "//api.localhost";
+
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
+    ...options,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || `API error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export interface AdminStats {
+  envsByStatus: Record<string, number>;
+  totalEnvs: number;
+  userCount: number;
+  sessionCounts: Record<string, number>;
+  totalSessions: number;
+  messageCount: number;
+  recentEnvs: Array<{
+    id: string;
+    name: string;
+    status: string;
+    created_at: string;
+    owner_email: string;
+  }>;
+  recentEvents: AdminEvent[];
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string | null;
+  github_username: string | null;
+  avatar_url: string | null;
+  is_admin: number;
+  created_at: string;
+  provider: string;
+  env_count: number;
+}
+
+export interface AdminEnv {
+  id: string;
+  name: string;
+  owner_id: string;
+  gh_repo: string;
+  status: string;
+  vm_ip: string | null;
+  app_port: number;
+  ssh_port: number;
+  opencode_port: number;
+  created_at: string;
+  owner_email: string;
+  owner_name: string | null;
+}
+
+export interface AdminSession {
+  id: string;
+  env_id: string;
+  agent_type: string;
+  title: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  env_name: string;
+  message_count: number;
+}
+
+export interface AdminEvent {
+  id: number;
+  type: string;
+  env_id: string | null;
+  user_id: string | null;
+  metadata: string | null;
+  created_at: string;
+}
+
+export interface TrafficSummary {
+  env_id: string;
+  total_rx: number;
+  total_tx: number;
+  samples: number;
+}
+
+export interface TrafficPoint {
+  rx_bytes: number;
+  tx_bytes: number;
+  recorded_at: string;
+}
+
+export const adminApi = {
+  getStats: () => apiFetch<AdminStats>("/admin/stats"),
+  getUsers: () => apiFetch<{ users: AdminUser[] }>("/admin/users"),
+  getEnvs: () => apiFetch<{ envs: AdminEnv[] }>("/admin/envs"),
+  getSessions: (limit = 200) => apiFetch<{ sessions: AdminSession[] }>(`/admin/sessions?limit=${limit}`),
+  getEvents: (limit = 100, type?: string) =>
+    apiFetch<{ events: AdminEvent[] }>(`/admin/events?limit=${limit}${type ? `&type=${type}` : ""}`),
+  getTraffic: () => apiFetch<{ traffic: Array<{ envId: string; vmIp: string; rxBytes: number; txBytes: number; totalBytes: number }> }>("/admin/traffic"),
+  getTrafficSummary: (hours = 24) => apiFetch<{ summary: TrafficSummary[]; hours: number }>(`/admin/traffic/summary?hours=${hours}`),
+  getTrafficHistory: (envId: string, hours = 24) => apiFetch<{ envId: string; history: TrafficPoint[]; hours: number }>(`/admin/traffic/${envId}/history?hours=${hours}`),
+  getHealth: () => apiFetch<any>("/admin/health"),
+};
