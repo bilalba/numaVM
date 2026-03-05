@@ -93,6 +93,12 @@ if (ghRepoCol && ghRepoCol.notnull === 1) {
   db.pragma("foreign_keys = ON");
 }
 
+// Migrate: add cwd column to agent_sessions
+const agentSessionCols = db.pragma("table_info(agent_sessions)") as { name: string }[];
+if (!agentSessionCols.some((c) => c.name === "cwd")) {
+  db.exec("ALTER TABLE agent_sessions ADD COLUMN cwd TEXT");
+}
+
 export { db };
 
 // --- Types ---
@@ -335,6 +341,7 @@ export interface AgentSession {
   agent_type: "codex" | "opencode";
   thread_id: string | null;
   title: string | null;
+  cwd: string | null;
   status: "idle" | "busy" | "error" | "archived";
   created_at: string;
   updated_at: string;
@@ -350,11 +357,11 @@ export interface AgentMessage {
 }
 
 const insertAgentSessionStmt = db.prepare(`
-  INSERT INTO agent_sessions (id, env_id, agent_type, thread_id, title, status)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO agent_sessions (id, env_id, agent_type, thread_id, title, cwd, status)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
-export function insertAgentSession(s: Pick<AgentSession, "id" | "env_id" | "agent_type" | "thread_id" | "title" | "status">): void {
-  insertAgentSessionStmt.run(s.id, s.env_id, s.agent_type, s.thread_id, s.title, s.status);
+export function insertAgentSession(s: Pick<AgentSession, "id" | "env_id" | "agent_type" | "thread_id" | "title" | "cwd" | "status">): void {
+  insertAgentSessionStmt.run(s.id, s.env_id, s.agent_type, s.thread_id, s.title, s.cwd, s.status);
 }
 
 const findAgentSessionStmt = db.prepare("SELECT * FROM agent_sessions WHERE id = ?");

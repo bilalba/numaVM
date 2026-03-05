@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import type { AgentBridge, AgentEvent, AgentType } from "./types.js";
+import type { AgentBridge, AgentEvent, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort, CodexModel, CodexThread } from "./types.js";
 import { CodexBridge } from "./codex-bridge.js";
 import { OpenCodeBridge } from "./opencode-bridge.js";
 import { wsHub } from "./ws-hub.js";
@@ -59,7 +59,17 @@ class AgentManager {
     }
   }
 
-  async createSession(envId: string, agentType: AgentType, options?: { model?: string; providerID?: string; modelID?: string }): Promise<AgentSession> {
+  async listCodexModels(envId: string, includeHidden = false): Promise<CodexModel[]> {
+    const bridge = await this.getCodexAuthBridge(envId);
+    return bridge.listModels(includeHidden);
+  }
+
+  async listCodexThreads(envId: string, options?: { cursor?: string; limit?: number }): Promise<{ threads: CodexThread[]; nextCursor?: string }> {
+    const bridge = await this.getCodexAuthBridge(envId);
+    return bridge.listThreads(options);
+  }
+
+  async createSession(envId: string, agentType: AgentType, options?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<AgentSession> {
     const env = findEnvById(envId);
     if (!env) throw new Error("Environment not found");
     if (env.status !== "running") throw new Error("Environment is not running");
@@ -82,6 +92,7 @@ class AgentManager {
       agent_type: agentType,
       thread_id: null,
       title: null,
+      cwd: options?.cwd || null,
       status: "idle",
     });
 
@@ -110,7 +121,7 @@ class AgentManager {
     return findAgentSession(sessionId)!;
   }
 
-  async sendMessage(sessionId: string, text: string, options?: { agent?: string }): Promise<void> {
+  async sendMessage(sessionId: string, text: string, options?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<void> {
     const active = this.activeSessions.get(sessionId);
     if (!active) {
       // Try to reconnect if session exists in DB but bridge is gone
@@ -159,7 +170,7 @@ class AgentManager {
     updateAgentSessionStatus(sessionId, "archived");
   }
 
-  async respondToApproval(sessionId: string, approvalId: string, decision: "accept" | "always" | "decline"): Promise<void> {
+  async respondToApproval(sessionId: string, approvalId: string, decision: ApprovalDecision): Promise<void> {
     const active = this.activeSessions.get(sessionId);
     if (!active) throw new Error("Session not active");
 

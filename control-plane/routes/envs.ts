@@ -27,7 +27,6 @@ import { fetchSshKeys } from "../services/github.js";
 import { execInVM } from "../services/vsock-ssh.js";
 import { addRoute, removeRoute } from "../services/caddy.js";
 import { ensureVMRunning } from "../services/wake.js";
-import { addSshProxyListener, removeSshProxyListener } from "../services/ssh-proxy.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
@@ -91,6 +90,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
     try {
       const vmId = await createAndStartVM({
         slug,
+        name: body.name,
         appPort,
         sshPort,
         opencodePort,
@@ -115,9 +115,6 @@ export function registerEnvRoutes(app: FastifyInstance) {
     // Mark running BEFORE Caddy reload so it generates reverse_proxy (not status-page)
     updateEnvStatus(slug, "running");
 
-    // Start SSH proxy listener for this env
-    addSshProxyListener(slug, sshPort);
-
     // Register Caddy route (non-fatal)
     try {
       await addRoute(slug, appPort);
@@ -132,7 +129,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
       name: body.name,
       url: `http://${slug}.${getBaseDomain()}`,
       ...(repoFullName ? { repo_url: `https://github.com/${repoFullName}` } : {}),
-      ssh_command: `ssh dev@ssh.${getBaseDomain()} -p ${sshPort}`,
+      ssh_command: `ssh ${slug}@ssh.${getBaseDomain()}`,
       ssh_port: sshPort,
       status: "running",
     });
@@ -189,7 +186,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
       status: env.status,
       url: `http://${env.id}.${getBaseDomain()}`,
       ...(env.gh_repo ? { repo_url: `https://github.com/${env.gh_repo}` } : {}),
-      ssh_command: `ssh dev@ssh.${getBaseDomain()} -p ${env.ssh_port}`,
+      ssh_command: `ssh ${env.id}@ssh.${getBaseDomain()}`,
       ssh_port: env.ssh_port,
       app_port: env.app_port,
       opencode_port: env.opencode_port,
@@ -211,9 +208,6 @@ export function registerEnvRoutes(app: FastifyInstance) {
     if (role !== "owner") {
       return reply.status(403).send({ error: "Only the owner can delete an environment" });
     }
-
-    // Remove SSH proxy listener
-    removeSshProxyListener(id, env.ssh_port);
 
     // Cleanup VM (best-effort) — includes TAP, iptables DNAT
     try {
@@ -334,11 +328,15 @@ export function registerEnvRoutes(app: FastifyInstance) {
       }).catch(() => {});
     }
 
+    // Only auto-refresh for states that will resolve (waking/creating), not for errors
+    const shouldAutoRefresh = status === "snapshotted" || status === "paused" || status === "creating";
+
     const html = `<!DOCTYPE html>
 <html>
 <head>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='700' font-size='16' fill='%23f8f4ee'%3EN%3C/text%3E%3C/svg%3E" />
   <title>${name} — ${statusMessage.charAt(0).toUpperCase() + statusMessage.slice(1)}</title>
+  ${shouldAutoRefresh ? '<meta http-equiv="refresh" content="3">' : ''}
   <style>${pageStyle}</style>
 </head>
 <body>
@@ -346,7 +344,6 @@ export function registerEnvRoutes(app: FastifyInstance) {
     <div class="spinner"></div>
     <h2>${name}</h2>
     <p>Environment is ${statusMessage}...</p>
-    <p style="margin-top: 1rem;">Refresh this page after a few seconds.</p>
   </div>
 </body>
 </html>`;

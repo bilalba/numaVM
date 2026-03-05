@@ -17,6 +17,7 @@ function getDefaultMem() { return parseInt(process.env.VM_MEM_SIZE_MIB || "512",
 
 export interface CreateVMParams {
   slug: string;
+  name?: string;
   appPort: number;
   sshPort: number;
   opencodePort: number;
@@ -187,7 +188,7 @@ export function removeDnat(hostPort: number, vmIp: string, vmPort: number): void
 
 export async function createAndStartVM(params: CreateVMParams): Promise<string> {
   const {
-    slug, appPort, sshPort, opencodePort,
+    slug, name, appPort, sshPort, opencodePort,
     ghRepo, ghToken, sshKeys, opencodePassword,
     openaiApiKey, anthropicApiKey,
     vsockCid, vmIp,
@@ -242,6 +243,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     sshKeys + "\n" + getInternalSshPubKey()
   ).toString("base64");
 
+  const envNameB64 = Buffer.from(name || slug).toString("base64");
+
   const kernelArgs = [
     "console=ttyS0",
     "reboot=k",
@@ -261,6 +264,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     `dm.opencode_password=${opencodePassword}`,
     `dm.openai_api_key=${openaiApiKey || ""}`,
     `dm.anthropic_api_key=${anthropicApiKey || ""}`,
+    `dm.env_name=${envNameB64}`,
   ].join(" ");
 
   // Spawn Firecracker as a transient systemd service so it survives CP restarts.

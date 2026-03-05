@@ -1,8 +1,10 @@
+import type { ApprovalDecision } from "../lib/api";
+
 interface ApprovalCardProps {
   approvalId: string;
   action: string;
   detail: unknown;
-  onRespond: (approvalId: string, decision: "accept" | "always" | "decline") => void;
+  onRespond: (approvalId: string, decision: ApprovalDecision) => void;
   responded?: boolean;
   agentType?: "codex" | "opencode";
 }
@@ -31,6 +33,14 @@ export function ApprovalCard({ approvalId, action, detail, onRespond, responded,
           >
             Accept
           </button>
+          {agentType === "codex" && (
+            <button
+              onClick={() => onRespond(approvalId, "acceptForSession")}
+              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
+            >
+              Accept for Session
+            </button>
+          )}
           {agentType === "opencode" && (
             <button
               onClick={() => onRespond(approvalId, "always")}

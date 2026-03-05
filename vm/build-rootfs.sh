@@ -235,11 +235,6 @@ if [ -f "${SCRIPT_DIR}/init.sh" ]; then
   echo "Installed init.sh to /opt/deploymagi/init.sh"
 fi
 
-# --- Create data directory ---
-
-mkdir -p "${MOUNTDIR}/data"
-chroot "${MOUNTDIR}" chown dev:dev /data
-
 # --- Create MOTD ---
 
 cat > "${MOUNTDIR}/etc/motd" <<'MOTD'
@@ -250,8 +245,7 @@ cat > "${MOUNTDIR}/etc/motd" <<'MOTD'
  |____/ \___| .__/|_|\___/ \__, |_|  |_|\__,_|\__, |_|
              |_|            |___/              |___/
 
-  Run `claude` in ~/repo to start Claude Code.
-  Run `codex` for Codex, `opencode` for OpenCode.
+  Your project is in ~/ — run `claude`, `codex`, or `opencode` there.
 
   Your GitHub SSH keys are pre-configured.
   Set ANTHROPIC_API_KEY or run `claude /login` to authenticate.

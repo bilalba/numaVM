@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { checkAccess, findAgentSession, findEnvById, emitAdminEvent } from "../db/client.js";
 import { agentManager } from "../agents/manager.js";
 import { wsHub } from "../agents/ws-hub.js";
-import type { AgentCommand, AgentType } from "../agents/types.js";
+import type { AgentCommand, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort } from "../agents/types.js";
 import { OpenCodeBridge } from "../agents/opencode-bridge.js";
 import { spawnProcessOverVsock } from "../services/vsock-ssh.js";
 import { ensureVMRunning } from "../services/wake.js";
@@ -31,13 +31,17 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(503).send({ error: "Environment is not available. Please try again." });
     }
 
-    const body = request.body as { model?: string; providerID?: string; modelID?: string } | undefined;
+    const body = request.body as { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy } | undefined;
     const model = body?.model?.trim() || undefined;
     const providerID = body?.providerID?.trim() || undefined;
     const modelID = body?.modelID?.trim() || undefined;
+    const cwd = body?.cwd?.trim() || undefined;
+    const effort = body?.effort || undefined;
+    const approvalPolicy = body?.approvalPolicy || undefined;
+    const sandboxPolicy = body?.sandboxPolicy || undefined;
 
     try {
-      const session = await agentManager.createSession(id, type as AgentType, { model, providerID, modelID });
+      const session = await agentManager.createSession(id, type as AgentType, { model, providerID, modelID, cwd, effort, approvalPolicy, sandboxPolicy });
       emitAdminEvent("agent.session_created", id, request.userId, { agentType: type, sessionId: session.id });
       return reply.status(201).send(session);
     } catch (err: any) {
@@ -87,7 +91,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
   // POST /envs/:id/sessions/:sid/message — Send message to agent
   app.post("/envs/:id/sessions/:sid/message", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
-    const body = request.body as { text?: string; agent?: string };
+    const body = request.body as { text?: string; agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy };
 
     if (!body.text || typeof body.text !== "string" || !body.text.trim()) {
       return reply.status(400).send({ error: "text is required" });
@@ -113,7 +117,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     try {
-      await agentManager.sendMessage(sid, body.text.trim(), agent ? { agent } : undefined);
+      await agentManager.sendMessage(sid, body.text.trim(), {
+        ...(agent ? { agent } : {}),
+        ...(body.effort ? { effort: body.effort } : {}),
+        ...(body.approvalPolicy ? { approvalPolicy: body.approvalPolicy } : {}),
+        ...(body.sandboxPolicy ? { sandboxPolicy: body.sandboxPolicy } : {}),
+      });
       return { ok: true };
     } catch (err: any) {
       request.log.error({ err, sessionId: sid }, "Failed to send message");
@@ -166,8 +175,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const { id, sid } = request.params as { id: string; sid: string };
     const body = request.body as { approvalId?: string; decision?: string };
 
-    if (!body.approvalId || !body.decision || !["accept", "always", "decline"].includes(body.decision)) {
-      return reply.status(400).send({ error: "approvalId and decision (accept/always/decline) are required" });
+    const validDecisions = ["accept", "acceptForSession", "always", "decline"];
+    if (!body.approvalId || !body.decision || !validDecisions.includes(body.decision)) {
+      return reply.status(400).send({ error: "approvalId and decision (accept/acceptForSession/always/decline) are required" });
     }
 
     const role = checkAccess(id, request.userId);
@@ -176,7 +186,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     try {
-      await agentManager.respondToApproval(sid, body.approvalId, body.decision as "accept" | "always" | "decline");
+      await agentManager.respondToApproval(sid, body.approvalId, body.decision as ApprovalDecision);
       return { ok: true };
     } catch (err: any) {
       return reply.status(500).send({ error: err.message });
@@ -243,10 +253,66 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
     try {
       const bridge = new OpenCodeBridge(env.opencode_port, env.opencode_password || "", env.vm_ip);
-      const providers = await bridge.listProviders();
-      return providers;
+      const raw = await bridge.listProviders();
+      const connectedSet = new Set(raw.connected || []);
+
+      // Only return connected providers' models (these actually work)
+      const connected = (raw.all || [])
+        .filter((p: any) => connectedSet.has(p.id))
+        .map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          models: p.models
+            ? Object.values(p.models).map((m: any) => ({ id: m.id, name: m.name }))
+            : [],
+        }));
+
+      // Popular providers (matching OpenCode's UI) — show unconnected ones as "add" hints
+      const POPULAR_IDS = ["opencode-zen", "opencode-go", "anthropic", "github-copilot", "openai", "google", "openrouter", "vercel"];
+      const popular = POPULAR_IDS
+        .filter((pid) => !connectedSet.has(pid))
+        .map((pid) => {
+          const p = (raw.all || []).find((x: any) => x.id === pid);
+          return p ? { id: p.id, name: p.name, env: p.env || [] } : null;
+        })
+        .filter(Boolean);
+
+      return { connected, popular, default: raw.default || {} };
     } catch (err: any) {
       request.log.error({ err, envId: id }, "Failed to list OpenCode providers");
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
+  // GET /envs/:id/codex/models — List available Codex models via app-server
+  app.get("/envs/:id/codex/models", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = request.query as { includeHidden?: string };
+    const role = checkAccess(id, request.userId);
+    if (!role) return reply.status(403).send({ error: "No access" });
+
+    try {
+      const models = await agentManager.listCodexModels(id, query.includeHidden === "true");
+      return { models };
+    } catch (err: any) {
+      request.log.error({ err, envId: id }, "Failed to list Codex models");
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
+  // GET /envs/:id/codex/threads — List Codex threads via app-server
+  app.get("/envs/:id/codex/threads", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = request.query as { cursor?: string; limit?: string };
+    const role = checkAccess(id, request.userId);
+    if (!role) return reply.status(403).send({ error: "No access" });
+
+    try {
+      const limit = query.limit ? parseInt(query.limit, 10) : undefined;
+      const result = await agentManager.listCodexThreads(id, { cursor: query.cursor, limit });
+      return result;
+    } catch (err: any) {
+      request.log.error({ err, envId: id }, "Failed to list Codex threads");
       return reply.status(500).send({ error: err.message });
     }
   });

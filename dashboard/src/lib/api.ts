@@ -61,6 +61,7 @@ export interface AgentSession {
   agent_type: "codex" | "opencode";
   thread_id: string | null;
   title: string | null;
+  cwd: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -79,6 +80,34 @@ export interface OpenCodeProvider {
   id: string;
   name: string;
   models: { id: string; name: string }[];
+}
+
+export interface OpenCodePopularProvider {
+  id: string;
+  name: string;
+  env: string[];
+}
+
+export type ApprovalPolicy = "on-request" | "unless-allow-listed" | "never";
+export type SandboxPolicy = "read-only" | "workspace-write" | "full-access";
+export type ReasoningEffort = "low" | "medium" | "high";
+export type ApprovalDecision = "accept" | "acceptForSession" | "always" | "decline";
+
+export interface CodexModel {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+  reasoningEffort?: ReasoningEffort[];
+  inputModalities?: string[];
+  hidden?: boolean;
+}
+
+export interface CodexThread {
+  id: string;
+  title?: string;
+  model?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface AccessEntry {
@@ -150,15 +179,22 @@ export const api = {
 
   // OpenCode providers
   getOpenCodeProviders: (envId: string) =>
-    apiFetch<{ all: OpenCodeProvider[]; default: Record<string, string>; connected: string[] }>(
+    apiFetch<{ connected: OpenCodeProvider[]; popular: OpenCodePopularProvider[]; default: Record<string, string> }>(
       `/envs/${envId}/opencode/providers`
     ),
 
   // Agent session APIs
-  createAgentSession: (envId: string, agentType: "codex" | "opencode", model?: string, providerID?: string, modelID?: string) =>
+  createAgentSession: (envId: string, agentType: "codex" | "opencode", opts?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }) =>
     apiFetch<AgentSession>(`/envs/${envId}/agents/${agentType}/sessions`, {
       method: "POST",
-      body: JSON.stringify({ ...(model ? { model } : {}), ...(providerID && modelID ? { providerID, modelID } : {}) }),
+      body: JSON.stringify({
+        ...(opts?.model ? { model: opts.model } : {}),
+        ...(opts?.providerID && opts?.modelID ? { providerID: opts.providerID, modelID: opts.modelID } : {}),
+        ...(opts?.cwd ? { cwd: opts.cwd } : {}),
+        ...(opts?.effort ? { effort: opts.effort } : {}),
+        ...(opts?.approvalPolicy ? { approvalPolicy: opts.approvalPolicy } : {}),
+        ...(opts?.sandboxPolicy ? { sandboxPolicy: opts.sandboxPolicy } : {}),
+      }),
     }),
 
   listAgentSessions: (envId: string, agentType: "codex" | "opencode") =>
@@ -169,10 +205,16 @@ export const api = {
       `/envs/${envId}/sessions/${sessionId}`
     ),
 
-  sendAgentMessage: (envId: string, sessionId: string, text: string, agent?: string) =>
+  sendAgentMessage: (envId: string, sessionId: string, text: string, opts?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }) =>
     apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/message`, {
       method: "POST",
-      body: JSON.stringify({ text, ...(agent ? { agent } : {}) }),
+      body: JSON.stringify({
+        text,
+        ...(opts?.agent ? { agent: opts.agent } : {}),
+        ...(opts?.effort ? { effort: opts.effort } : {}),
+        ...(opts?.approvalPolicy ? { approvalPolicy: opts.approvalPolicy } : {}),
+        ...(opts?.sandboxPolicy ? { sandboxPolicy: opts.sandboxPolicy } : {}),
+      }),
     }),
 
   stopAgent: (envId: string, sessionId: string) =>
@@ -198,11 +240,22 @@ export const api = {
       body: JSON.stringify({}),
     }),
 
-  respondToApproval: (envId: string, sessionId: string, approvalId: string, decision: "accept" | "always" | "decline") =>
+  respondToApproval: (envId: string, sessionId: string, approvalId: string, decision: ApprovalDecision) =>
     apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/approval`, {
       method: "POST",
       body: JSON.stringify({ approvalId, decision }),
     }),
+
+  // Codex models + threads
+  getCodexModels: (envId: string, includeHidden = false) =>
+    apiFetch<{ models: CodexModel[] }>(
+      `/envs/${envId}/codex/models${includeHidden ? "?includeHidden=true" : ""}`
+    ),
+
+  getCodexThreads: (envId: string, cursor?: string, limit?: number) =>
+    apiFetch<{ threads: CodexThread[]; nextCursor?: string }>(
+      `/envs/${envId}/codex/threads${cursor || limit ? `?${cursor ? `cursor=${cursor}` : ""}${cursor && limit ? "&" : ""}${limit ? `limit=${limit}` : ""}` : ""}`
+    ),
 
   // Codex auth
   getCodexAuthStatus: (envId: string, refresh = false) =>

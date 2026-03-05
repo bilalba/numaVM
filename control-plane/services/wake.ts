@@ -152,6 +152,7 @@ async function createFreshVM(
 
   await createAndStartVM({
     slug: envId,
+    name: env.name,
     appPort: env.app_port,
     sshPort: env.ssh_port,
     opencodePort: env.opencode_port,

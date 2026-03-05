@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { api, type AgentSession, type AgentMessage, type OpenCodeProvider } from "../lib/api";
+import { api, type AgentSession, type AgentMessage, type OpenCodeProvider, type OpenCodePopularProvider, type FileEntry, type CodexModel, type ApprovalDecision, type ReasoningEffort, type ApprovalPolicy, type SandboxPolicy } from "../lib/api";
 import { useAgentSocket, type AgentEvent } from "../hooks/useAgentSocket";
 import { ChatMessage, StreamingMessage, StreamingReasoning } from "./ChatMessage";
 import { ApprovalCard } from "./ApprovalCard";
+import { CommandPalette } from "./CommandPalette";
+import { useCommandPalette } from "../hooks/useCommandPalette";
 import { useToast } from "./Toast";
 import { relativeTime } from "../lib/time";
 
@@ -33,8 +35,19 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const [modelInfo, setModelInfo] = useState<{ model?: string; provider?: string } | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
   const [openCodeProviders, setOpenCodeProviders] = useState<OpenCodeProvider[]>([]);
+  const [openCodePopular, setOpenCodePopular] = useState<OpenCodePopularProvider[]>([]);
   const [selectedOpenCodeModel, setSelectedOpenCodeModel] = useState("");
+  const [showModelPicker, setShowModelPicker] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState("");
+  const [sessionCwd, setSessionCwd] = useState<string>("/home/dev");
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [folderPath, setFolderPath] = useState("/home/dev");
+  const [folderEntries, setFolderEntries] = useState<FileEntry[]>([]);
+  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
+  const [selectedEffort, setSelectedEffort] = useState<ReasoningEffort | null>(null);
+  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>("on-request");
+  const [sandboxPolicy, setSandboxPolicy] = useState<SandboxPolicy>("full-access");
   const [codexAuth, setCodexAuth] = useState<{
     checked: boolean;
     authenticated: boolean;
@@ -47,6 +60,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   }>({ checked: false, authenticated: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+  const { isOpen: paletteOpen, open: openPalette, close: closePalette } = useCommandPalette();
 
   const { connected, addListener } = useAgentSocket(envId);
 
@@ -63,11 +77,20 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     });
   }, [envId, agentType]);
 
+  // Fetch Codex models when authenticated
+  useEffect(() => {
+    if (agentType !== "codex" || !codexAuth.authenticated) return;
+    api.getCodexModels(envId).then((data) => {
+      setCodexModels(data.models || []);
+    }).catch(() => {});
+  }, [envId, agentType, codexAuth.authenticated]);
+
   // Fetch OpenCode providers on mount
   useEffect(() => {
     if (agentType !== "opencode") return;
     api.getOpenCodeProviders(envId).then((data) => {
-      setOpenCodeProviders(data.all || []);
+      setOpenCodeProviders(data.connected || []);
+      setOpenCodePopular(data.popular || []);
     }).catch(() => {});
   }, [envId, agentType]);
 
@@ -96,6 +119,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
       .then((data) => {
         setMessages(data.messages);
         setSessionStatus(data.session.status);
+        if (data.session.cwd) setSessionCwd(data.session.cwd);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -215,7 +239,15 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
         providerID = p;
         modelID = m.join(":");
       }
-      const session = await api.createAgentSession(envId, agentType, selectedModel || undefined, providerID, modelID);
+      const session = await api.createAgentSession(envId, agentType, {
+        model: selectedModel || undefined,
+        providerID,
+        modelID,
+        cwd: sessionCwd || undefined,
+        effort: selectedEffort || undefined,
+        approvalPolicy: agentType === "codex" ? approvalPolicy : undefined,
+        sandboxPolicy: agentType === "codex" ? sandboxPolicy : undefined,
+      });
       setSessions((prev) => [session, ...prev]);
       setActiveSessionId(session.id);
       setMessages([]);
@@ -253,7 +285,12 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
 
     try {
       const agentMode = agentType === "opencode" && selectedAgent ? selectedAgent : undefined;
-      await api.sendAgentMessage(envId, activeSessionId, text, agentMode);
+      await api.sendAgentMessage(envId, activeSessionId, text, {
+        agent: agentMode,
+        effort: agentType === "codex" && selectedEffort ? selectedEffort : undefined,
+        approvalPolicy: agentType === "codex" ? approvalPolicy : undefined,
+        sandboxPolicy: agentType === "codex" ? sandboxPolicy : undefined,
+      });
     } catch (err: any) {
       setSessionStatus("error");
     } finally {
@@ -271,7 +308,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   };
 
   const handleApproval = useCallback(
-    async (approvalId: string, decision: "accept" | "always" | "decline") => {
+    async (approvalId: string, decision: ApprovalDecision) => {
       if (!activeSessionId) return;
       try {
         await api.respondToApproval(envId, activeSessionId, approvalId, decision);
@@ -354,28 +391,79 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     }
   };
 
+  const handleSignOut = async () => {
+    try {
+      await api.logoutCodex(envId);
+      setCodexAuth({ checked: true, authenticated: false });
+    } catch (err: any) {
+      toast(`Sign out failed: ${err.message}`, "error");
+    }
+  };
+
+  const handleArchiveSession = async () => {
+    if (!activeSessionId) return;
+    try {
+      await api.deleteAgentSession(envId, activeSessionId);
+      setSessions((prev) => prev.filter((s) => s.id !== activeSessionId));
+      setActiveSessionId(sessions.length > 1 ? sessions.find((s) => s.id !== activeSessionId)?.id || null : null);
+      setMessages([]);
+      setStreamingText("");
+      setApprovals([]);
+    } catch (err: any) {
+      toast(`Archive failed: ${err.message}`, "error");
+    }
+  };
+
+  const browseFolders = useCallback(async (path: string) => {
+    setLoadingFolders(true);
+    try {
+      const data = await api.listFiles(envId, path);
+      setFolderPath(path);
+      setFolderEntries(data.entries.filter((e) => e.type === "dir"));
+    } catch {
+      toast("Failed to list directories", "error");
+    } finally {
+      setLoadingFolders(false);
+    }
+  }, [envId, toast]);
+
+  const openFolderPicker = useCallback(() => {
+    setShowFolderPicker(true);
+    browseFolders(sessionCwd || "/home/dev");
+  }, [sessionCwd, browseFolders]);
+
   const agentLabel = agentType === "codex" ? "Codex" : "OpenCode";
 
-  const codexModelOptions = [
-    { value: "", label: "Default" },
-    { value: "o4-mini", label: "o4-mini" },
-    { value: "o3", label: "o3" },
-    { value: "codex-mini-latest", label: "codex-mini" },
-  ];
+  // Build Codex model options from dynamic list, with hardcoded fallback
+  const codexModelOptions: { value: string; label: string }[] = [{ value: "", label: "Default" }];
+  if (codexModels.length > 0) {
+    for (const m of codexModels) {
+      codexModelOptions.push({ value: m.id, label: m.displayName });
+    }
+  } else {
+    codexModelOptions.push(
+      { value: "o4-mini", label: "o4-mini" },
+      { value: "o3", label: "o3" },
+      { value: "codex-mini-latest", label: "codex-mini" },
+    );
+  }
 
-  // Build OpenCode model options from providers (grouped by provider)
-  const openCodeModelOptions: { value: string; label: string }[] = [{ value: "", label: "Default" }];
+  // Build OpenCode model options from connected providers
+  const openCodeModelOptions: { value: string; label: string; group?: string }[] = [];
   for (const provider of openCodeProviders) {
     for (const model of provider.models) {
       openCodeModelOptions.push({
         value: `${provider.id}:${model.id}`,
-        label: `${model.name || model.id}`,
+        label: model.name || model.id,
+        group: provider.name || provider.id,
       });
     }
   }
 
-  const modelOptions = agentType === "codex" ? codexModelOptions : openCodeModelOptions;
-  const noOpenCodeProviders = agentType === "opencode" && openCodeProviders.length === 0;
+  // Get display name for selected OpenCode model
+  const selectedOpenCodeModelLabel = openCodeModelOptions.find((o) => o.value === selectedOpenCodeModel)?.label || "Default";
+
+  const modelOptions = agentType === "codex" ? codexModelOptions : [{ value: "", label: "Default" }, ...openCodeModelOptions];
 
   // Show Codex login dialog if not authenticated
   if (agentType === "codex" && codexAuth.checked && !codexAuth.authenticated) {
@@ -479,10 +567,75 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
       {/* Session sidebar — horizontal scrollable strip on mobile, vertical sidebar on desktop */}
       <div className="md:w-56 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col">
         <div className="p-2 sm:p-3 border-b border-neutral-200 flex md:flex-col items-center md:items-stretch gap-2">
-          {modelOptions.length > 1 ? (
+          {agentType === "opencode" ? (
+            <div className="relative min-w-0 flex-1 md:flex-none md:w-full">
+              <button
+                onClick={() => setShowModelPicker(!showModelPicker)}
+                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black text-left cursor-pointer hover:border-black transition-colors truncate"
+              >
+                {selectedOpenCodeModelLabel}
+              </button>
+              {showModelPicker && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowModelPicker(false)} />
+                  <div className="absolute left-0 top-full mt-1 z-50 w-64 bg-white border border-neutral-200 shadow-lg max-h-80 overflow-y-auto">
+                    {/* Default option */}
+                    <button
+                      onClick={() => { setSelectedOpenCodeModel(""); setShowModelPicker(false); }}
+                      className={`w-full text-left px-3 py-2 text-xs hover:bg-neutral-50 cursor-pointer ${!selectedOpenCodeModel ? "font-semibold" : ""}`}
+                    >
+                      Default
+                    </button>
+                    {/* Connected providers with models */}
+                    {openCodeProviders.map((provider) => (
+                      <div key={provider.id}>
+                        <div className="px-3 pt-3 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider">
+                          {provider.name || provider.id}
+                        </div>
+                        {provider.models.map((model) => {
+                          const val = `${provider.id}:${model.id}`;
+                          return (
+                            <button
+                              key={val}
+                              onClick={() => { setSelectedOpenCodeModel(val); setShowModelPicker(false); }}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-50 cursor-pointer flex items-center justify-between ${selectedOpenCodeModel === val ? "font-semibold" : ""}`}
+                            >
+                              <span>{model.name || model.id}</span>
+                              {selectedOpenCodeModel === val && <span className="text-neutral-400">&#10003;</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+                    {/* Popular unconnected providers */}
+                    {openCodePopular.length > 0 && (
+                      <>
+                        <div className="px-3 pt-4 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider border-t border-neutral-100 mt-2">
+                          Add provider
+                        </div>
+                        {openCodePopular.map((p) => (
+                          <div
+                            key={p.id}
+                            className="px-3 py-1.5 text-xs text-neutral-400 flex items-center justify-between"
+                            title={`Set ${p.env[0] || "API key"} in the VM terminal`}
+                          >
+                            <span>{p.name}</span>
+                            <span className="text-[10px]">{p.env[0]?.replace(/_API_KEY|_TOKEN/, "")}</span>
+                          </div>
+                        ))}
+                        <p className="px-3 py-2 text-[10px] text-neutral-400 border-t border-neutral-100 mt-1">
+                          Set API keys in terminal to connect
+                        </p>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : modelOptions.length > 1 ? (
             <select
-              value={agentType === "opencode" ? selectedOpenCodeModel : selectedModel}
-              onChange={(e) => agentType === "opencode" ? setSelectedOpenCodeModel(e.target.value) : setSelectedModel(e.target.value)}
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
               className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black focus:border-black focus:outline-none cursor-pointer min-w-0 flex-1 md:flex-none md:w-full"
             >
               {modelOptions.map((opt) => (
@@ -491,11 +644,14 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
                 </option>
               ))}
             </select>
-          ) : noOpenCodeProviders ? (
-            <p className="text-[10px] text-neutral-400 py-1 hidden md:block">
-              No providers configured. Set API keys in the VM to enable model selection.
-            </p>
           ) : null}
+          <button
+            onClick={openFolderPicker}
+            className="text-[10px] text-neutral-500 truncate py-0.5 cursor-pointer hover:text-black transition-colors text-left hidden md:block"
+            title={`Working directory: ${sessionCwd}`}
+          >
+            cwd: {sessionCwd.replace("/home/dev/", "~/")}
+          </button>
           <button
             onClick={handleCreateSession}
             disabled={creating}
@@ -559,6 +715,13 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
             )}
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={openPalette}
+              className="text-[10px] text-neutral-400 border border-neutral-200 px-1.5 py-0.5 hover:border-neutral-400 hover:text-neutral-600 cursor-pointer transition-colors hidden sm:inline-flex items-center gap-1"
+              title="Command palette"
+            >
+              <kbd className="text-[9px]">{navigator.platform?.includes("Mac") ? "\u2318" : "Ctrl+"}K</kbd>
+            </button>
             {agentType === "opencode" && sessionStatus !== "busy" && messages.length > 0 && (
               <>
                 <button
@@ -663,10 +826,98 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
                   <option value="general">general</option>
                 </select>
               )}
+              {agentType === "codex" && selectedEffort && (
+                <span className="text-[10px] text-neutral-400">effort: {selectedEffort}</span>
+              )}
             </div>
           </div>
         )}
       </div>
+
+      {/* Command Palette */}
+      <CommandPalette
+        isOpen={paletteOpen}
+        onClose={closePalette}
+        agentType={agentType}
+        codexModels={codexModels}
+        sessions={sessions}
+        currentModel={selectedModel}
+        currentEffort={selectedEffort}
+        currentApprovalPolicy={approvalPolicy}
+        currentSandboxPolicy={sandboxPolicy}
+        isAuthenticated={codexAuth.authenticated}
+        onSelectModel={(id) => setSelectedModel(id)}
+        onSelectEffort={(e) => setSelectedEffort(e)}
+        onNewSession={handleCreateSession}
+        onSwitchSession={(id) => {
+          setActiveSessionId(id);
+          setStreamingText("");
+          setApprovals([]);
+        }}
+        onArchiveSession={handleArchiveSession}
+        onChangeCwd={openFolderPicker}
+        onApprovalPolicy={(p) => setApprovalPolicy(p)}
+        onSandboxPolicy={(p) => setSandboxPolicy(p)}
+        onSignOut={handleSignOut}
+      />
+
+      {/* Folder picker modal */}
+      {showFolderPicker && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setShowFolderPicker(false)}>
+          <div className="bg-white border border-neutral-300 w-80 max-h-96 flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-3 py-2 border-b border-neutral-200 flex items-center justify-between">
+              <span className="text-xs font-semibold">Select working directory</span>
+              <button onClick={() => setShowFolderPicker(false)} className="text-xs text-neutral-500 hover:text-black cursor-pointer">&times;</button>
+            </div>
+            <div className="px-3 py-2 border-b border-neutral-200">
+              <p className="text-[10px] text-neutral-500 truncate">{folderPath}</p>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {folderPath !== "/" && (
+                <button
+                  onClick={() => browseFolders(folderPath.split("/").slice(0, -1).join("/") || "/")}
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-50 cursor-pointer text-neutral-500"
+                >
+                  ..
+                </button>
+              )}
+              {loadingFolders ? (
+                <p className="text-xs text-neutral-500 px-3 py-2">Loading...</p>
+              ) : folderEntries.length === 0 ? (
+                <p className="text-xs text-neutral-500 px-3 py-2">No subdirectories</p>
+              ) : (
+                folderEntries.map((entry) => (
+                  <button
+                    key={entry.name}
+                    onClick={() => browseFolders(`${folderPath === "/" ? "" : folderPath}/${entry.name}`)}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-50 cursor-pointer flex items-center gap-1.5"
+                  >
+                    <span className="text-neutral-400">/</span>
+                    {entry.name}
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="px-3 py-2 border-t border-neutral-200 flex justify-end gap-2">
+              <button
+                onClick={() => setShowFolderPicker(false)}
+                className="text-xs text-neutral-500 hover:text-black cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setSessionCwd(folderPath);
+                  setShowFolderPicker(false);
+                }}
+                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
+              >
+                Select
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

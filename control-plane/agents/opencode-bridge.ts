@@ -1,4 +1,4 @@
-import type { AgentBridge, AgentEvent, AgentType } from "./types.js";
+import type { AgentBridge, AgentEvent, AgentType, ApprovalDecision } from "./types.js";
 import { execInVM } from "../services/vsock-ssh.js";
 
 /**
@@ -24,6 +24,8 @@ export class OpenCodeBridge implements AgentBridge {
   private reasoningParts = new Set<string>();
   private selectedModel: { providerID: string; modelID: string } | null = null;
 
+  private cwd: string | undefined;
+
   constructor(
     private opencodePort: number,
     private opencodePassword: string,
@@ -44,14 +46,38 @@ export class OpenCodeBridge implements AgentBridge {
   /**
    * Ensure the OpenCode server is running inside the VM.
    * Checks via HTTP, starts via SSH if not running, polls until ready.
+   * If cwd is specified and differs from the running server's cwd, restarts it.
    */
-  async ensureRunning(): Promise<void> {
+  async ensureRunning(cwd?: string): Promise<void> {
     // Fast path: already running and responding
+    let isRunning = false;
     try {
       await this.httpRequest("GET", "/session");
-      return;
+      isRunning = true;
     } catch {
       // Not responding — need to check/start
+    }
+
+    // If running and a specific cwd is requested, check if we need to restart
+    if (isRunning && cwd) {
+      try {
+        const currentCwd = await execInVM(this.vmIp, [
+          "bash", "-c", "readlink /proc/$(pgrep -f 'opencode serve' | head -1)/cwd",
+        ], { timeoutMs: 5000 });
+        if (currentCwd.trim() && currentCwd.trim() !== cwd) {
+          // Kill the running server so we restart in the new cwd
+          await execInVM(this.vmIp, ["pkill", "-f", "opencode serve"], { timeoutMs: 5000 }).catch(() => {});
+          // Wait for it to die
+          await new Promise((r) => setTimeout(r, 500));
+          isRunning = false;
+        } else {
+          return; // Already running in the right directory
+        }
+      } catch {
+        return; // Can't check cwd, assume it's fine
+      }
+    } else if (isRunning) {
+      return;
     }
 
     // Check if process exists but not yet ready
@@ -75,14 +101,14 @@ export class OpenCodeBridge implements AgentBridge {
       }
 
       // Start OpenCode server (SSH connects as dev by default)
-      // Must cd to repo dir — opencode needs a project directory
-      // Source ~/.env to pick up API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+      // Source ~/.env to pick up API keys and DEPLOYMAGI_WORK_DIR
       // disown prevents bash from sending SIGHUP when SSH session ends
+      const cdCmd = cwd ? `cd '${cwd}'` : "source ~/.env 2>/dev/null; cd \"${DEPLOYMAGI_WORK_DIR:-$HOME}\"";
       await execInVM(
         this.vmIp,
         [
           "bash", "-c",
-          `source ~/.env 2>/dev/null; cd ~/repo 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
+          `source ~/.env 2>/dev/null; ${cdCmd} 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
         ],
         { timeoutMs: 5000 },
       );
@@ -123,6 +149,7 @@ export class OpenCodeBridge implements AgentBridge {
       method,
       headers: {
         "Content-Type": "application/json",
+        Accept: "application/json",
         Authorization: this.authHeader,
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -142,12 +169,14 @@ export class OpenCodeBridge implements AgentBridge {
 
   async listProviders(): Promise<any> {
     await this.ensureRunning();
-    return this.httpRequest("GET", "/provider/");
+    return this.httpRequest("GET", "/provider");
   }
 
-  async start(envSlug: string, options?: { model?: string; providerID?: string; modelID?: string }): Promise<string> {
-    // Ensure server is running before creating a session
-    await this.ensureRunning();
+  async start(envSlug: string, options?: { model?: string; cwd?: string; providerID?: string; modelID?: string }): Promise<string> {
+    this.cwd = options?.cwd;
+
+    // Ensure server is running before creating a session (restart if cwd changed)
+    await this.ensureRunning(this.cwd);
 
     // Store model selection for use in sendMessage
     if (options?.providerID && options?.modelID) {
@@ -211,7 +240,7 @@ export class OpenCodeBridge implements AgentBridge {
    * Respond to a permission/approval request.
    * OpenCode uses: "once" (allow this time), "always" (allow permanently), "reject" (deny).
    */
-  async respondToApproval(approvalId: string, decision: "accept" | "always" | "decline"): Promise<void> {
+  async respondToApproval(approvalId: string, decision: ApprovalDecision): Promise<void> {
     if (!this.opencodeSessionId) throw new Error("No active session");
 
     const response = decision === "always" ? "always" : decision === "accept" ? "once" : "reject";

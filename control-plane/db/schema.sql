@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   agent_type  TEXT NOT NULL CHECK(agent_type IN ('codex', 'opencode')),
   thread_id   TEXT,
   title       TEXT,
+  cwd         TEXT,
   status      TEXT NOT NULL DEFAULT 'idle'
               CHECK(status IN ('idle', 'busy', 'error', 'archived')),
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,

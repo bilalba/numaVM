@@ -46,7 +46,16 @@ GATEWAY="${DM_gateway:-172.16.0.1}"
 DNS="${DM_dns:-8.8.8.8}"
 VSOCK_CID="${DM_vsock_cid:-3}"
 
-echo "[init] VM IP: ${VM_IP}, Gateway: ${GATEWAY}, CID: ${VSOCK_CID}"
+# Decode env name from base64 and sanitize for use as directory name
+ENV_NAME=""
+if [ -n "${DM_env_name:-}" ]; then
+  ENV_NAME=$(echo "${DM_env_name}" | base64 -d 2>/dev/null || echo "")
+fi
+# Sanitize: lowercase, replace non-alphanumeric with hyphens, collapse multiple hyphens
+SAFE_DIR_NAME=$(echo "${ENV_NAME:-workspace}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
+[ -z "${SAFE_DIR_NAME}" ] && SAFE_DIR_NAME="workspace"
+
+echo "[init] VM IP: ${VM_IP}, Gateway: ${GATEWAY}, CID: ${VSOCK_CID}, Dir: ${SAFE_DIR_NAME}"
 
 # --- Networking ---
 
@@ -125,25 +134,32 @@ su - dev -c 'git config --global user.name "Agent"' 2>/dev/null
 GH_REPO="${DM_gh_repo:-}"
 GH_TOKEN="${DM_gh_token:-}"
 
-if [ ! -d /data/repo/.git ]; then
-  if [ -n "${GH_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
-    echo "[init] Cloning ${GH_REPO}..."
-    git clone "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" /data/repo 2>/dev/null || {
-      echo "[init] WARNING: git clone failed, creating empty repo"
-      mkdir -p /data/repo && cd /data/repo && git init
+# Determine working directory — clone into /home/dev/ naturally
+WORK_DIR="/home/dev/${SAFE_DIR_NAME}"
+
+if [ -n "${GH_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
+  # Extract repo name from owner/repo for the clone target
+  REPO_NAME="${GH_REPO##*/}"
+  CLONE_DIR="/home/dev/${REPO_NAME}"
+
+  if [ ! -d "${CLONE_DIR}/.git" ]; then
+    echo "[init] Cloning ${GH_REPO} into ${CLONE_DIR}..."
+    su - dev -c "git clone 'https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
+      echo "[init] WARNING: git clone failed, creating empty workspace"
+      su - dev -c "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
+      CLONE_DIR=""
     }
   else
-    echo "[init] No GH_REPO/GH_TOKEN, creating empty repo"
-    mkdir -p /data/repo && cd /data/repo && git init
+    echo "[init] Repo exists at ${CLONE_DIR}, pulling..."
+    su - dev -c "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
   fi
-  chown -R dev:dev /data/repo
-else
-  echo "[init] Repo exists, pulling..."
-  cd /data/repo && git pull --ff-only 2>/dev/null || true
-fi
 
-ln -sf /data/repo /home/dev/repo 2>/dev/null || true
-chown -R dev:dev /data 2>/dev/null || true
+  # Use the cloned repo dir as the working dir
+  [ -n "${CLONE_DIR}" ] && WORK_DIR="${CLONE_DIR}"
+else
+  echo "[init] No GH_REPO/GH_TOKEN, creating empty workspace"
+  su - dev -c "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init" 2>/dev/null
+fi
 
 # --- Persist env vars for SSH sessions ---
 
@@ -153,6 +169,7 @@ export GH_TOKEN="${GH_TOKEN}"
 export OPENAI_API_KEY="${DM_openai_api_key:-}"
 export ANTHROPIC_API_KEY="${DM_anthropic_api_key:-}"
 export OPENCODE_SERVER_PASSWORD="${DM_opencode_password:-}"
+export DEPLOYMAGI_WORK_DIR="${WORK_DIR}"
 EOF
 
 # Source .env in bashrc if not already
@@ -164,21 +181,21 @@ chown dev:dev /home/dev/.env /home/dev/.bashrc
 # Pre-start OpenCode server so it's ready when the user creates a session
 # (avoids ~3s cold-start delay on first session creation)
 if command -v opencode &>/dev/null && [ -n "${DM_opencode_password:-}" ]; then
-  su - dev -c "source ~/.env 2>/dev/null; cd ~/repo 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${DM_opencode_password}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown" &
-  echo "[init] OpenCode server starting in background on port 5000"
+  su - dev -c "source ~/.env 2>/dev/null; cd '${WORK_DIR}' 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${DM_opencode_password}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown" &
+  echo "[init] OpenCode server starting in background on port 5000 (cwd: ${WORK_DIR})"
 fi
 
 # --- Start user app (best-effort) ---
 
-cd /data/repo 2>/dev/null || true
+cd "${WORK_DIR}" 2>/dev/null || true
 export PORT=3000
 
 if [ -f package.json ]; then
   echo "[init] Starting Node.js app..."
-  su - dev -c 'cd /data/repo && npm install 2>/dev/null && pm2 start npm --name app -- start' 2>/dev/null || true
+  su - dev -c "cd '${WORK_DIR}' && npm install 2>/dev/null && pm2 start npm --name app -- start" 2>/dev/null || true
 elif [ -f requirements.txt ]; then
   pip install -r requirements.txt --break-system-packages 2>/dev/null || true
-  [ -f app.py ] && su - dev -c 'cd /data/repo && pm2 start "python3 app.py" --name app' 2>/dev/null || true
+  [ -f app.py ] && su - dev -c "cd '${WORK_DIR}' && pm2 start 'python3 app.py' --name app" 2>/dev/null || true
 fi
 
 echo "[init] DeployMagi VM ready"

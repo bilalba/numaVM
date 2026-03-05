@@ -12,11 +12,9 @@ const { Server, Client, utils } = ssh2;
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
-import { findEnvBySshPort, findAllEnvs, getAuthorizedUsersForEnv } from "../db/client.js";
+import { findEnvById, getAuthorizedUsersForEnv } from "../db/client.js";
 import { ensureVMRunning } from "./wake.js";
 import { getInternalSshKeyPath, isVmRunning } from "./firecracker.js";
-
-// --- Config ---
 
 function getDataDir() { return process.env.DATA_DIR || "/data/envs"; }
 
@@ -39,9 +37,13 @@ function getHostKey(): Buffer {
   return hostKeyData;
 }
 
-// --- Active listeners ---
+function getSshProxyPort(): number {
+  return parseInt(process.env.SSH_PROXY_PORT || "22", 10);
+}
 
-const listeners = new Map<number, InstanceType<typeof Server>>();
+// --- Active listener ---
+
+let sshServer: InstanceType<typeof Server> | null = null;
 
 // --- Key matching ---
 
@@ -91,14 +93,8 @@ function isKeyAuthorized(clientKey: { algo: string; data: Buffer }, authorizedKe
 
 // --- Connection handler ---
 
-function handleConnection(port: number, client: Connection, _info: ClientInfo) {
-  const env = findEnvBySshPort(port);
-  if (!env) {
-    console.warn(`[ssh-proxy] No env found for port ${port}`);
-    client.end();
-    return;
-  }
-
+function handleConnection(client: Connection, _info: ClientInfo) {
+  let env: ReturnType<typeof findEnvById> = undefined;
   let authenticatedUser: string | null = null;
 
   client.on("authentication", (ctx: AuthContext) => {
@@ -107,6 +103,14 @@ function handleConnection(port: number, client: Connection, _info: ClientInfo) {
     }
 
     if (ctx.method !== "publickey") {
+      return ctx.reject(["publickey"]);
+    }
+
+    // Username = env slug (e.g., "env-50u9xs")
+    const envSlug = ctx.username;
+    env = findEnvById(envSlug);
+    if (!env) {
+      console.warn(`[ssh-proxy] No env found for slug "${envSlug}"`);
       return ctx.reject(["publickey"]);
     }
 
@@ -130,6 +134,7 @@ function handleConnection(port: number, client: Connection, _info: ClientInfo) {
   });
 
   client.on("ready", () => {
+    if (!env) { client.end(); return; }
     console.log(`[ssh-proxy] Client authenticated for ${env.id} (user: ${authenticatedUser})`);
 
     client.on("session", (accept, reject) => {
@@ -207,6 +212,8 @@ function handleConnection(port: number, client: Connection, _info: ClientInfo) {
           clientChan.close();
           return;
         }
+
+        let retriedAfterSnapshot = false;
 
         // Wake VM if needed — write status to stderr so it doesn't interfere with pipes/scp
         const needsWake = !isVmRunning(env.id);
@@ -301,6 +308,21 @@ function handleConnection(port: number, client: Connection, _info: ClientInfo) {
 
             upstream.on("error", (err) => {
               console.error(`[ssh-proxy] Upstream error for ${env.id}: ${err.message}`);
+              // VM may have been snapshotted mid-connection — try waking once
+              if (!needsWake && !retriedAfterSnapshot) {
+                retriedAfterSnapshot = true;
+                clientChan.stderr.write("Environment went to sleep, waking... ");
+                ensureVMRunning(env.id)
+                  .then(() => {
+                    clientChan.stderr.write("ready.\r\n");
+                    connectUpstream(env, clientChan, opts);
+                  })
+                  .catch((wakeErr) => {
+                    clientChan.stderr.write(`failed: ${wakeErr.message}\r\n`);
+                    clientChan.close();
+                  });
+                return;
+              }
               clientChan.stderr.write(`Connection error: ${err.message}\r\n`);
               clientChan.close();
             });
@@ -377,7 +399,7 @@ function handleConnection(port: number, client: Connection, _info: ClientInfo) {
   client.on("error", (err) => {
     // Client disconnected or protocol error — expected for rejected auth
     if (err.message !== "read ECONNRESET") {
-      console.warn(`[ssh-proxy] Client error on port ${port}: ${err.message}`);
+      console.warn(`[ssh-proxy] Client error: ${err.message}`);
     }
   });
 
@@ -389,90 +411,39 @@ function handleConnection(port: number, client: Connection, _info: ClientInfo) {
 // --- Public API ---
 
 /**
- * Start SSH proxy listeners for all existing envs.
- * Also cleans up legacy SSH DNAT rules.
+ * Start the single SSH proxy listener.
+ * Routes connections by username (env slug).
  */
 export async function startSshProxy(): Promise<void> {
   const hostKey = getHostKey();
-  const envs = findAllEnvs();
-
-  console.log(`[ssh-proxy] Starting SSH proxy for ${envs.length} env(s)...`);
-
-  // Clean up legacy SSH DNAT rules (loop to handle duplicates — iptables -D only removes one at a time)
-  const { removeDnat } = await import("./firecracker.js");
-  for (const env of envs) {
-    if (env.vm_ip && env.ssh_port) {
-      for (let i = 0; i < 5; i++) {
-        try {
-          removeDnat(env.ssh_port, env.vm_ip, 22);
-        } catch { break; /* no more matching rules */ }
-      }
-    }
-  }
-
-  // Start listeners
-  for (const env of envs) {
-    if (env.ssh_port) {
-      createListener(env.ssh_port, hostKey);
-    }
-  }
-}
-
-/**
- * Stop all SSH proxy listeners.
- */
-export function stopSshProxy(): void {
-  console.log(`[ssh-proxy] Stopping ${listeners.size} listener(s)...`);
-  for (const [port, server] of listeners) {
-    try {
-      server.close();
-    } catch { /* ok */ }
-  }
-  listeners.clear();
-}
-
-/**
- * Add a listener for a newly created env.
- */
-export function addSshProxyListener(envId: string, sshPort: number): void {
-  if (listeners.has(sshPort)) return;
-  const hostKey = getHostKey();
-  createListener(sshPort, hostKey);
-  console.log(`[ssh-proxy] Added listener for ${envId} on port ${sshPort}`);
-}
-
-/**
- * Remove a listener for a destroyed env.
- */
-export function removeSshProxyListener(envId: string, sshPort: number): void {
-  const server = listeners.get(sshPort);
-  if (server) {
-    server.close();
-    listeners.delete(sshPort);
-    console.log(`[ssh-proxy] Removed listener for ${envId} on port ${sshPort}`);
-  }
-}
-
-// --- Internal ---
-
-function createListener(port: number, hostKey: Buffer): void {
-  if (listeners.has(port)) return;
+  const port = getSshProxyPort();
 
   const server = new Server({ hostKeys: [hostKey] }, (client, info) => {
-    handleConnection(port, client, info);
+    handleConnection(client, info);
   });
 
   server.on("error", (err: any) => {
     if (err.code === "EADDRINUSE") {
-      console.warn(`[ssh-proxy] Port ${port} in use, skipping`);
+      console.error(`[ssh-proxy] Port ${port} in use — cannot start SSH proxy`);
       return;
     }
-    console.error(`[ssh-proxy] Server error on port ${port}: ${err.message}`);
+    console.error(`[ssh-proxy] Server error: ${err.message}`);
   });
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(`[ssh-proxy] Listening on port ${port}`);
+    console.log(`[ssh-proxy] Listening on port ${port} (username = env slug)`);
   });
 
-  listeners.set(port, server);
+  sshServer = server;
+}
+
+/**
+ * Stop the SSH proxy listener.
+ */
+export function stopSshProxy(): void {
+  if (sshServer) {
+    console.log(`[ssh-proxy] Stopping listener...`);
+    sshServer.close();
+    sshServer = null;
+  }
 }

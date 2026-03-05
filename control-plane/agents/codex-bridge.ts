@@ -1,6 +1,6 @@
 import { type ChildProcess } from "node:child_process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import type { AgentBridge, AgentEvent, AgentType } from "./types.js";
+import type { AgentBridge, AgentEvent, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort, CodexModel, CodexThread } from "./types.js";
 import { spawnProcessOverVsock } from "../services/vsock-ssh.js";
 
 /**
@@ -28,14 +28,17 @@ export class CodexBridge implements AgentBridge {
     for (const l of this.listeners) l(event);
   }
 
-  async start(vmIp: string | number, options?: { model?: string }): Promise<string> {
+  async start(vmIp: string | number, options?: { model?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<string> {
     // Accept VM IP string (e.g. "172.16.0.3")
     const ip = typeof vmIp === "number" ? String(vmIp) : vmIp;
     if (!ip) {
       throw new Error("CodexBridge.start requires a VM IP address (string)");
     }
 
-    const vsock = spawnProcessOverVsock(ip, "codex app-server");
+    const cmd = options?.cwd
+      ? `cd ${options.cwd} && codex app-server`
+      : "codex app-server";
+    const vsock = spawnProcessOverVsock(ip, cmd);
     this.proc = vsock.process;
     this.procStdin = vsock.stdin;
 
@@ -69,26 +72,38 @@ export class CodexBridge implements AgentBridge {
     // Send initialized notification
     this.rpcNotify("initialized", {});
 
-    // Create a thread — pass model if specified, otherwise let server pick default
+    // Create a thread — pass model + policies if specified
     const threadParams: Record<string, unknown> = {};
-    if (options?.model) {
-      threadParams.model = options.model;
-    }
+    if (options?.model) threadParams.model = options.model;
+    if (options?.effort) threadParams.reasoningEffort = options.effort;
+    if (options?.approvalPolicy) threadParams.approvalPolicy = options.approvalPolicy;
+    if (options?.sandboxPolicy) threadParams.sandboxPolicy = options.sandboxPolicy;
     const threadResult = await this.rpcCall("thread/start", threadParams);
 
     this.threadId = threadResult?.thread?.id || null;
+
+    // Emit session.info with model from thread/start response
+    const threadModel = threadResult?.thread?.model || options?.model;
+    if (threadModel) {
+      this.emit({ type: "session.info", model: threadModel });
+    }
+
     return this.threadId || "";
   }
 
-  async sendMessage(text: string): Promise<void> {
+  async sendMessage(text: string, options?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<void> {
     if (!this.threadId) throw new Error("No active thread");
 
     // turn/start is a request — sends user input and streams events back
-    this.rpcCall("turn/start", {
+    const turnParams: Record<string, unknown> = {
       threadId: this.threadId,
       input: [{ type: "text", text }],
-      approvalPolicy: "on-request",
-    }).catch((err) => {
+      approvalPolicy: options?.approvalPolicy || "on-request",
+    };
+    if (options?.effort) turnParams.reasoningEffort = options.effort;
+    if (options?.sandboxPolicy) turnParams.sandboxPolicy = options.sandboxPolicy;
+
+    this.rpcCall("turn/start", turnParams).catch((err) => {
       this.emit({ type: "error", message: err.message, code: "turn_error" });
     });
   }
@@ -102,13 +117,51 @@ export class CodexBridge implements AgentBridge {
     this.cleanup();
   }
 
-  respondToApproval(approvalId: string, decision: "accept" | "always" | "decline"): void {
+  respondToApproval(approvalId: string, decision: ApprovalDecision): void {
     // Approval responses are sent as JSON-RPC responses to the server's request
     // The approvalId is the JSON-RPC request id from the server
-    // Codex doesn't support "always" — treat it as "accept"
-    const result = decision === "decline" ? "decline" : "accept";
+    // Codex supports "accept", "acceptForSession", and "decline"
+    let result: string;
+    if (decision === "decline") {
+      result = "decline";
+    } else if (decision === "acceptForSession") {
+      result = "acceptForSession";
+    } else {
+      // "accept" or "always" → "accept"
+      result = "accept";
+    }
     const msg = JSON.stringify({ jsonrpc: "2.0", id: approvalId, result });
     this.procStdin?.write(msg + "\n");
+  }
+
+  // --- Protocol discovery methods ---
+
+  async listModels(includeHidden = false): Promise<CodexModel[]> {
+    const result = await this.rpcCall("model/list", { includeHidden });
+    const models = result?.models || [];
+    return models.map((m: any) => ({
+      id: m.id,
+      displayName: m.displayName || m.id,
+      isDefault: !!m.isDefault,
+      reasoningEffort: m.reasoningEffort,
+      inputModalities: m.inputModalities,
+      hidden: !!m.hidden,
+    }));
+  }
+
+  async listThreads(options?: { cursor?: string; limit?: number }): Promise<{ threads: CodexThread[]; nextCursor?: string }> {
+    const params: Record<string, unknown> = {};
+    if (options?.cursor) params.cursor = options.cursor;
+    if (options?.limit) params.limit = options.limit;
+    const result = await this.rpcCall("thread/list", params);
+    const threads = (result?.threads || []).map((t: any) => ({
+      id: t.id,
+      title: t.title,
+      model: t.model,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+    }));
+    return { threads, nextCursor: result?.nextCursor };
   }
 
   // --- Auth methods via app-server JSON-RPC ---
@@ -303,7 +356,7 @@ export class CodexBridge implements AgentBridge {
         break;
 
       case "item/reasoning/summaryTextDelta":
-        // Could show reasoning if desired
+        this.emit({ type: "reasoning.delta", text: params?.delta || "" });
         break;
 
       case "account/updated":
