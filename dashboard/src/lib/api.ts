@@ -1,12 +1,15 @@
 const API_BASE = import.meta.env.VITE_API_URL || "//api.localhost";
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    ...options?.headers as Record<string, string>,
+  };
+  if (options?.body) {
+    headers["Content-Type"] = "application/json";
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
+    headers,
     ...options,
   });
 
@@ -152,6 +155,16 @@ export interface User {
   email: string;
   name?: string;
   avatar_url?: string;
+  github_username?: string;
+  has_github_token?: boolean;
+}
+
+export interface GitHubRepo {
+  fullName: string;
+  name: string;
+  owner: string;
+  private: boolean;
+  updatedAt: string;
 }
 
 export const api = {
@@ -303,6 +316,27 @@ export const api = {
   checkSshKeysStatus: (envId: string) =>
     apiFetch<{ synced: boolean; reason?: string }>(`/envs/${envId}/ssh-keys-status`),
 
+  // GitHub repo access
+  getGithubStatus: () =>
+    apiFetch<{ connected: boolean; username: string | null }>("/me/github"),
+
+  disconnectGithub: () =>
+    apiFetch<{ ok: boolean }>("/me/github", { method: "DELETE" }),
+
+  listGithubRepos: (query?: string, page?: number) => {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    if (page) params.set("page", String(page));
+    const qs = params.toString();
+    return apiFetch<{ repos: GitHubRepo[]; hasMore: boolean }>(`/me/repos${qs ? `?${qs}` : ""}`);
+  },
+
+  createGithubRepo: (name: string, isPrivate: boolean) =>
+    apiFetch<{ fullName: string; cloneUrl: string }>("/me/repos", {
+      method: "POST",
+      body: JSON.stringify({ name, private: isPrivate }),
+    }),
+
   // Access control
   listAccess: (envId: string) =>
     apiFetch<{ access: AccessEntry[] }>(`/envs/${envId}/access`),
@@ -329,6 +363,14 @@ export const api = {
   getGitLog: (envId: string, limit = 20) =>
     apiFetch<{ commits: GitCommit[] }>(`/envs/${envId}/git/log?limit=${limit}`),
 };
+
+export function githubConnectUrl(redirect: string): string {
+  const apiHost = import.meta.env.VITE_API_URL?.replace(/^\/\//, "") || "api.localhost";
+  // Derive auth origin from API host: api.numavm.com → auth.numavm.com
+  const authHost = apiHost.replace(/^api\./, "auth.");
+  const protocol = window.location.protocol;
+  return `${protocol}//${authHost}/auth/github/repo?redirect=${encodeURIComponent(redirect)}`;
+}
 
 export function terminalWsUrl(
   envId: string,

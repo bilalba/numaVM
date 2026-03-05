@@ -176,7 +176,30 @@ EOF
 grep -q 'source ~/.env' /home/dev/.bashrc 2>/dev/null || {
   echo 'source ~/.env 2>/dev/null' >> /home/dev/.bashrc
 }
-chown dev:dev /home/dev/.env /home/dev/.bashrc
+
+# Also write ~/.ssh/environment for non-interactive SSH sessions (e.g. exec commands, agents)
+cat > /home/dev/.ssh/environment <<EOF
+GH_REPO=${GH_REPO}
+GH_TOKEN=${GH_TOKEN}
+OPENAI_API_KEY=${DM_openai_api_key:-}
+ANTHROPIC_API_KEY=${DM_anthropic_api_key:-}
+OPENCODE_SERVER_PASSWORD=${DM_opencode_password:-}
+DEPLOYMAGI_WORK_DIR=${WORK_DIR}
+EOF
+chmod 600 /home/dev/.ssh/environment
+
+# Enable PermitUserEnvironment in sshd
+grep -q 'PermitUserEnvironment' /etc/ssh/sshd_config || {
+  echo 'PermitUserEnvironment yes' >> /etc/ssh/sshd_config
+}
+
+# Set up git credential helper so git clone/push works with GH_TOKEN automatically
+if [ -n "${GH_TOKEN}" ]; then
+  su - dev -c "git config --global credential.helper '!f() { echo username=x-access-token; echo password=\$GH_TOKEN; }; f'"
+  su - dev -c "git config --global user.name '${DM_github_username:-dev}'"
+fi
+
+chown dev:dev /home/dev/.env /home/dev/.bashrc /home/dev/.ssh/environment
 
 # Pre-start OpenCode server so it's ready when the user creates a session
 # (avoids ~3s cold-start delay on first session creation)

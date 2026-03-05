@@ -46,9 +46,9 @@ export class OpenCodeBridge implements AgentBridge {
   /**
    * Ensure the OpenCode server is running inside the VM.
    * Checks via HTTP, starts via SSH if not running, polls until ready.
-   * If cwd is specified and differs from the running server's cwd, restarts it.
+   * CWD is handled per-request via x-opencode-directory header, not here.
    */
-  async ensureRunning(cwd?: string): Promise<void> {
+  async ensureRunning(): Promise<void> {
     // Fast path: already running and responding
     let isRunning = false;
     try {
@@ -58,25 +58,9 @@ export class OpenCodeBridge implements AgentBridge {
       // Not responding — need to check/start
     }
 
-    // If running and a specific cwd is requested, check if we need to restart
-    if (isRunning && cwd) {
-      try {
-        const currentCwd = await execInVM(this.vmIp, [
-          "bash", "-c", "readlink /proc/$(pgrep -f 'opencode serve' | head -1)/cwd",
-        ], { timeoutMs: 5000 });
-        if (currentCwd.trim() && currentCwd.trim() !== cwd) {
-          // Kill the running server so we restart in the new cwd
-          await execInVM(this.vmIp, ["pkill", "-f", "opencode serve"], { timeoutMs: 5000 }).catch(() => {});
-          // Wait for it to die
-          await new Promise((r) => setTimeout(r, 500));
-          isRunning = false;
-        } else {
-          return; // Already running in the right directory
-        }
-      } catch {
-        return; // Can't check cwd, assume it's fine
-      }
-    } else if (isRunning) {
+    // CWD is now handled per-request via the x-opencode-directory header,
+    // so we don't need to restart the server when the cwd changes.
+    if (isRunning) {
       return;
     }
 
@@ -103,12 +87,11 @@ export class OpenCodeBridge implements AgentBridge {
       // Start OpenCode server (SSH connects as dev by default)
       // Source ~/.env to pick up API keys and DEPLOYMAGI_WORK_DIR
       // disown prevents bash from sending SIGHUP when SSH session ends
-      const cdCmd = cwd ? `cd '${cwd}'` : "source ~/.env 2>/dev/null; cd \"${DEPLOYMAGI_WORK_DIR:-$HOME}\"";
       await execInVM(
         this.vmIp,
         [
           "bash", "-c",
-          `source ~/.env 2>/dev/null; ${cdCmd} 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
+          `source ~/.env 2>/dev/null; cd "\${DEPLOYMAGI_WORK_DIR:-$HOME}" 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
         ],
         { timeoutMs: 5000 },
       );
@@ -145,13 +128,19 @@ export class OpenCodeBridge implements AgentBridge {
   }
 
   private async httpRequest(method: string, path: string, body?: any): Promise<any> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: this.authHeader,
+    };
+    // Pass working directory via OpenCode's directory header so sessions
+    // operate in the user-chosen cwd instead of the server's startup dir
+    if (this.cwd) {
+      headers["x-opencode-directory"] = this.cwd;
+    }
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: this.authHeader,
-      },
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
 
@@ -175,8 +164,8 @@ export class OpenCodeBridge implements AgentBridge {
   async start(envSlug: string, options?: { model?: string; cwd?: string; providerID?: string; modelID?: string }): Promise<string> {
     this.cwd = options?.cwd;
 
-    // Ensure server is running before creating a session (restart if cwd changed)
-    await this.ensureRunning(this.cwd);
+    // Ensure server is running before creating a session
+    await this.ensureRunning();
 
     // Store model selection for use in sendMessage
     if (options?.providerID && options?.modelID) {
@@ -295,8 +284,12 @@ export class OpenCodeBridge implements AgentBridge {
   }
 
   private async readSSE(signal: AbortSignal): Promise<void> {
+    const headers: Record<string, string> = { Authorization: this.authHeader };
+    if (this.cwd) {
+      headers["x-opencode-directory"] = this.cwd;
+    }
     const res = await fetch(`${this.baseUrl}/event`, {
-      headers: { Authorization: this.authHeader },
+      headers,
       signal,
     });
 

@@ -135,6 +135,7 @@ export interface User {
   google_id: string | null;
   avatar_url: string | null;
   ssh_public_keys: string | null;
+  github_token: string | null;
   is_admin: number;
   created_at: string;
 }
@@ -144,6 +145,13 @@ const updateUserSshKeysStmt = db.prepare(
 );
 export function updateUserSshKeys(userId: string, keys: string | null): void {
   updateUserSshKeysStmt.run(keys, userId);
+}
+
+const clearUserGithubTokenStmt = db.prepare(
+  "UPDATE users SET github_token = NULL WHERE id = ?"
+);
+export function clearUserGithubToken(userId: string): void {
+  clearUserGithubTokenStmt.run(userId);
 }
 
 // --- Env CRUD ---

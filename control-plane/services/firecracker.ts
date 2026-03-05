@@ -23,6 +23,7 @@ export interface CreateVMParams {
   opencodePort: number;
   ghRepo?: string;
   ghToken?: string;
+  githubUsername?: string;
   sshKeys: string;
   opencodePassword: string;
   openaiApiKey?: string;
@@ -189,7 +190,7 @@ export function removeDnat(hostPort: number, vmIp: string, vmPort: number): void
 export async function createAndStartVM(params: CreateVMParams): Promise<string> {
   const {
     slug, name, appPort, sshPort, opencodePort,
-    ghRepo, ghToken, sshKeys, opencodePassword,
+    ghRepo, ghToken, githubUsername, sshKeys, opencodePassword,
     openaiApiKey, anthropicApiKey,
     vsockCid, vmIp,
     vcpuCount = getDefaultVcpu(),
@@ -261,6 +262,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     `dm.ssh_keys=${sshKeysB64}`,
     `dm.gh_repo=${ghRepo || ""}`,
     `dm.gh_token=${ghToken || ""}`,
+    `dm.github_username=${githubUsername || ""}`,
     `dm.opencode_password=${opencodePassword}`,
     `dm.openai_api_key=${openaiApiKey || ""}`,
     `dm.anthropic_api_key=${anthropicApiKey || ""}`,

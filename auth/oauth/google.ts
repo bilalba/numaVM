@@ -17,7 +17,7 @@ const google = new arctic.Google(
 
 export function registerGoogleRoutes(app: FastifyInstance) {
   app.get("/auth/google", async (request, reply) => {
-    const redirect = (request.query as Record<string, string>).redirect || "/";
+    const redirect = (request.query as Record<string, string>).redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
     const state = arctic.generateState();
     const codeVerifier = arctic.generateCodeVerifier();
 
@@ -54,7 +54,7 @@ export function registerGoogleRoutes(app: FastifyInstance) {
     const state = query.state;
     const storedState = request.cookies.oauth_state;
     const codeVerifier = request.cookies.oauth_code_verifier;
-    const redirect = request.cookies.oauth_redirect || "/";
+    const redirect = request.cookies.oauth_redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
 
     if (!code || !state || state !== storedState || !codeVerifier) {
       return reply.status(400).send("Invalid OAuth state");

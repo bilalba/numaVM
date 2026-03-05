@@ -19,6 +19,7 @@ db.exec(schema);
 try { db.exec("ALTER TABLE users ADD COLUMN github_username TEXT"); } catch { /* already exists */ }
 try { db.exec("ALTER TABLE users ADD COLUMN ssh_public_keys TEXT"); } catch { /* already exists */ }
 try { db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0"); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE users ADD COLUMN github_token TEXT"); } catch { /* already exists */ }
 
 // Seed admin user
 db.prepare("UPDATE users SET is_admin = 1 WHERE email = ?").run("bilalbakhtahmad@gmail.com");
@@ -36,6 +37,7 @@ export interface User {
   google_id: string | null;
   avatar_url: string | null;
   ssh_public_keys: string | null;
+  github_token: string | null;
   is_admin: number;
   created_at: string;
 }
@@ -45,6 +47,13 @@ const updateUserSshKeysStmt = db.prepare(
 );
 export function updateUserSshKeys(userId: string, keys: string | null): void {
   updateUserSshKeysStmt.run(keys, userId);
+}
+
+const updateUserGithubTokenStmt = db.prepare(
+  "UPDATE users SET github_token = ? WHERE id = ?"
+);
+export function updateUserGithubToken(userId: string, token: string | null): void {
+  updateUserGithubTokenStmt.run(token, userId);
 }
 
 const findUserByEmailStmt = db.prepare("SELECT * FROM users WHERE email = ?");

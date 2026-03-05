@@ -62,7 +62,14 @@ export function registerEnvRoutes(app: FastifyInstance) {
 
     // Generate per-env OpenCode password
     const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
-    const ghToken = repoFullName ? (process.env.GH_PAT || "") : null;
+
+    // Always pass user's GitHub token to VM (for git push), fall back to platform GH_PAT
+    const ghToken = user?.github_token || process.env.GH_PAT || null;
+    if (repoFullName && !ghToken) {
+      return reply.status(400).send({
+        error: "GitHub not connected. Please connect your GitHub account first to use repo cloning.",
+      });
+    }
 
     // Insert env record early (reserves ports + CID)
     insertEnv({
@@ -96,6 +103,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
         opencodePort,
         ghRepo: repoFullName || undefined,
         ghToken: ghToken || undefined,
+        githubUsername: user?.github_username || undefined,
         sshKeys,
         opencodePassword,
         openaiApiKey: process.env.OPENAI_API_KEY,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type EnvSummary } from "../lib/api";
+import { api, githubConnectUrl, type EnvSummary, type GitHubRepo } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { SshKeysPanel } from "../components/SshKeysPanel";
 import { relativeTime } from "../lib/time";
@@ -122,8 +122,19 @@ export function EnvList() {
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
   const [showSshKeys, setShowSshKeys] = useState(false);
+  const [githubStatus, setGithubStatus] = useState<{ connected: boolean; username: string | null } | null>(null);
+  const [repoMode, setRepoMode] = useState<"none" | "existing" | "new">("none");
+  const [repoSearch, setRepoSearch] = useState("");
+  const [repos, setRepos] = useState<GitHubRepo[]>([]);
+  const [reposLoading, setReposLoading] = useState(false);
+  const [reposHasMore, setReposHasMore] = useState(false);
+  const [reposPage, setReposPage] = useState(1);
+  const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadEnvs = () => {
     api
@@ -133,7 +144,42 @@ export function EnvList() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(loadEnvs, []);
+  useEffect(() => {
+    loadEnvs();
+    api.getGithubStatus().then(setGithubStatus).catch(() => {});
+  }, []);
+
+  const loadRepos = (query: string, page: number) => {
+    setReposLoading(true);
+    api.listGithubRepos(query || undefined, page)
+      .then((data) => {
+        setRepos(page === 1 ? data.repos : (prev) => [...prev, ...data.repos]);
+        setReposHasMore(data.hasMore);
+        setReposPage(page);
+      })
+      .catch(() => {})
+      .finally(() => setReposLoading(false));
+  };
+
+  useEffect(() => {
+    if (repoMode !== "existing") return;
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => {
+      loadRepos(repoSearch, 1);
+    }, repoSearch ? 300 : 0);
+    return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
+  }, [repoSearch, repoMode]);
+
+  const resetRepoState = () => {
+    setRepoMode("none");
+    setRepoSearch("");
+    setRepos([]);
+    setReposHasMore(false);
+    setReposPage(1);
+    setSelectedRepo(null);
+    setNewRepoName("");
+    setNewRepoPrivate(true);
+  };
 
   const handleDelete = async (env: EnvSummary) => {
     try {
@@ -161,14 +207,29 @@ export function EnvList() {
     }
   };
 
+  const canCreate = () => {
+    if (!newName.trim()) return false;
+    if (repoMode === "existing" && !selectedRepo) return false;
+    if (repoMode === "new" && !newRepoName.trim()) return false;
+    return true;
+  };
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newName.trim()) return;
+    if (!canCreate()) return;
     setCreating(true);
     try {
-      await api.createEnv({ name: newName.trim() });
+      let ghRepo: string | undefined;
+      if (repoMode === "existing" && selectedRepo) {
+        ghRepo = selectedRepo;
+      } else if (repoMode === "new" && newRepoName.trim()) {
+        const created = await api.createGithubRepo(newRepoName.trim(), newRepoPrivate);
+        ghRepo = created.fullName;
+      }
+      await api.createEnv({ name: newName.trim(), gh_repo: ghRepo });
       setNewName("");
       setShowCreate(false);
+      resetRepoState();
       setLoading(true);
       loadEnvs();
     } catch (err: any) {
@@ -191,7 +252,10 @@ export function EnvList() {
             {showSshKeys ? "Close" : "SSH Keys"}
           </button>
           <button
-            onClick={() => setShowCreate(!showCreate)}
+            onClick={() => {
+              setShowCreate(!showCreate);
+              if (showCreate) resetRepoState();
+            }}
             className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
           >
             {showCreate ? "Cancel" : "New Environment"}
@@ -202,6 +266,36 @@ export function EnvList() {
       {showSshKeys && (
         <div className="mb-6">
           <SshKeysPanel />
+        </div>
+      )}
+
+      {/* GitHub connection banner */}
+      {githubStatus && !githubStatus.connected && (
+        <div className="mb-6 border border-neutral-200 px-5 py-4 flex items-center justify-between bg-panel-chat">
+          <span className="text-xs text-neutral-600">
+            Connect GitHub to clone and push to your repositories
+          </span>
+          <a
+            href={githubConnectUrl(window.location.href)}
+            className="text-xs font-medium underline underline-offset-4 transition-opacity hover:opacity-60 shrink-0 ml-4"
+          >
+            Connect GitHub
+          </a>
+        </div>
+      )}
+      {githubStatus?.connected && (
+        <div className="mb-6 border border-neutral-200 px-5 py-4 flex items-center justify-between bg-panel-chat">
+          <span className="text-xs text-neutral-600">
+            GitHub connected{githubStatus.username ? ` as ${githubStatus.username}` : ""}
+          </span>
+          <button
+            onClick={() => {
+              api.disconnectGithub().then(() => setGithubStatus({ connected: false, username: null }));
+            }}
+            className="text-xs text-neutral-400 underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer shrink-0 ml-4"
+          >
+            Disconnect
+          </button>
         </div>
       )}
 
@@ -226,12 +320,109 @@ export function EnvList() {
             </div>
             <button
               type="submit"
-              disabled={creating || !newName.trim()}
+              disabled={creating || !canCreate()}
               className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer shrink-0 pb-1"
             >
               {creating ? "Creating..." : "Create"}
             </button>
           </div>
+
+          {/* Repo picker — only when GitHub is connected */}
+          {githubStatus?.connected && (
+            <div className="mt-4 pt-4 border-t border-neutral-200">
+              <label className="text-xs text-neutral-600 mb-2 block">Repository</label>
+              <div className="flex gap-4 text-xs mb-3">
+                {(["none", "existing", "new"] as const).map((mode) => (
+                  <label key={mode} className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="repoMode"
+                      checked={repoMode === mode}
+                      onChange={() => {
+                        setRepoMode(mode);
+                        setSelectedRepo(null);
+                        setRepoSearch("");
+                        setNewRepoName("");
+                      }}
+                      className="accent-black w-3 h-3"
+                    />
+                    <span className="text-neutral-700">
+                      {mode === "none" ? "No repo" : mode === "existing" ? "Existing repo" : "Create new repo"}
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              {repoMode === "existing" && (
+                <div>
+                  <input
+                    type="text"
+                    value={repoSearch}
+                    onChange={(e) => setRepoSearch(e.target.value)}
+                    placeholder="Search repositories..."
+                    className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none mb-2"
+                  />
+                  <div className="max-h-48 overflow-y-auto">
+                    {reposLoading && repos.length === 0 ? (
+                      <p className="text-xs text-neutral-500 py-2">Loading...</p>
+                    ) : repos.length === 0 ? (
+                      <p className="text-xs text-neutral-500 py-2">No repositories found</p>
+                    ) : (
+                      repos.map((repo) => (
+                        <button
+                          key={repo.fullName}
+                          type="button"
+                          onClick={() => setSelectedRepo(repo.fullName)}
+                          className={`w-full text-left px-3 py-2 text-xs border transition-colors cursor-pointer mb-1 ${
+                            selectedRepo === repo.fullName
+                              ? "border-black bg-white"
+                              : "border-neutral-200 bg-neutral-50 hover:border-neutral-300"
+                          }`}
+                        >
+                          <span className="font-medium">{repo.fullName}</span>
+                          {repo.private && <span className="text-neutral-400 ml-2">private</span>}
+                        </button>
+                      ))
+                    )}
+                    {reposHasMore && (
+                      <button
+                        type="button"
+                        onClick={() => loadRepos(repoSearch, reposPage + 1)}
+                        disabled={reposLoading}
+                        className="text-xs underline underline-offset-4 text-neutral-500 hover:text-neutral-700 transition-colors cursor-pointer py-1 disabled:opacity-30"
+                      >
+                        {reposLoading ? "Loading..." : "Load more"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {repoMode === "new" && (
+                <div className="flex gap-4 items-end">
+                  <div className="flex-1">
+                    <input
+                      type="text"
+                      value={newRepoName}
+                      onChange={(e) => setNewRepoName(e.target.value)}
+                      placeholder="Repository name"
+                      maxLength={100}
+                      className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none"
+                    />
+                  </div>
+                  <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer shrink-0 pb-1">
+                    <input
+                      type="checkbox"
+                      checked={newRepoPrivate}
+                      onChange={(e) => setNewRepoPrivate(e.target.checked)}
+                      className="accent-black w-3 h-3"
+                    />
+                    Private
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
         </form>
       )}
 

@@ -39,9 +39,9 @@ const loginHtml = readFileSync(
 app.get("/login", async (request, reply) => {
   const query = request.query as Record<string, string>;
   const cliRedirect = query.cli_redirect;
-  const redirect = cliRedirect || query.redirect || "/";
-  const redirectParam =
-    redirect !== "/" ? `?redirect=${encodeURIComponent(redirect)}` : "";
+  const appUrl = `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
+  const redirect = cliRedirect || query.redirect || appUrl;
+  const redirectParam = `?redirect=${encodeURIComponent(redirect)}`;
 
   const html = loginHtml.replace(/__REDIRECT_PARAM__/g, redirectParam);
   reply.type("text/html").send(html);

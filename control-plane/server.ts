@@ -132,12 +132,13 @@ app.get("/health", async () => {
 app.get("/me", async (request) => {
   const { db } = await import("./db/client.js");
   const user = db
-    .prepare("SELECT id, email, name, avatar_url FROM users WHERE id = ?")
-    .get(request.userId) as { id: string; email: string; name: string; avatar_url: string } | undefined;
+    .prepare("SELECT id, email, name, avatar_url, github_username, github_token FROM users WHERE id = ?")
+    .get(request.userId) as { id: string; email: string; name: string; avatar_url: string; github_username: string | null; github_token: string | null } | undefined;
   if (!user) {
-    return { id: request.userId, email: request.userEmail };
+    return { id: request.userId, email: request.userEmail, has_github_token: false };
   }
-  return user;
+  const { github_token, ...rest } = user;
+  return { ...rest, has_github_token: !!github_token };
 });
 
 // Register route modules

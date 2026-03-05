@@ -1,10 +1,11 @@
 import * as arctic from "arctic";
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
-import { upsertUserFromGithub } from "../db/client.js";
+import { upsertUserFromGithub, updateUserGithubToken, findUserByGithubId, findUserByEmail } from "../db/client.js";
 import {
   createSessionJWT,
   setSessionCookie,
+  getSessionFromRequest,
   isCliRedirect,
   buildCliRedirectUrl,
 } from "../session.js";
@@ -31,7 +32,7 @@ interface GitHubEmail {
 
 export function registerGithubRoutes(app: FastifyInstance) {
   app.get("/auth/github", async (request, reply) => {
-    const redirect = (request.query as Record<string, string>).redirect || "/";
+    const redirect = (request.query as Record<string, string>).redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
     const state = arctic.generateState();
 
     reply.setCookie("oauth_state", state, {
@@ -51,12 +52,41 @@ export function registerGithubRoutes(app: FastifyInstance) {
     return reply.redirect(url.toString());
   });
 
+  // Step 2: Repo-scope OAuth (for users who want to grant repo access)
+  app.get("/auth/github/repo", async (request, reply) => {
+    const redirect = (request.query as Record<string, string>).redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
+    const state = arctic.generateState();
+
+    reply.setCookie("oauth_state", state, {
+      path: "/",
+      httpOnly: true,
+      maxAge: 600,
+      sameSite: "lax",
+    });
+    reply.setCookie("oauth_redirect", redirect, {
+      path: "/",
+      httpOnly: true,
+      maxAge: 600,
+      sameSite: "lax",
+    });
+    reply.setCookie("oauth_flow", "repo", {
+      path: "/",
+      httpOnly: true,
+      maxAge: 600,
+      sameSite: "lax",
+    });
+
+    const url = github.createAuthorizationURL(state, ["user:email", "repo"]);
+    return reply.redirect(url.toString());
+  });
+
   app.get("/auth/github/callback", async (request, reply) => {
     const query = request.query as Record<string, string>;
     const code = query.code;
     const state = query.state;
     const storedState = request.cookies.oauth_state;
-    const redirect = request.cookies.oauth_redirect || "/";
+    const redirect = request.cookies.oauth_redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
+    const flow = request.cookies.oauth_flow || "login";
 
     if (!code || !state || state !== storedState) {
       return reply.status(400).send("Invalid OAuth state");
@@ -86,6 +116,25 @@ export function registerGithubRoutes(app: FastifyInstance) {
       return reply.status(400).send("Could not retrieve email from GitHub");
     }
 
+    reply.clearCookie("oauth_state", { path: "/" });
+    reply.clearCookie("oauth_redirect", { path: "/" });
+    reply.clearCookie("oauth_flow", { path: "/" });
+
+    if (flow === "repo") {
+      // Repo-scope flow: save the token to the currently logged-in user
+      // Try session cookie first (most reliable), then GitHub ID, then email
+      const session = await getSessionFromRequest(request);
+      const existingUser = session
+        ? { id: session.sub }
+        : findUserByGithubId(String(ghUser.id)) ?? (email ? findUserByEmail(email) : null);
+      if (existingUser) {
+        updateUserGithubToken(existingUser.id, accessToken);
+      }
+      // Redirect back to dashboard (user is already logged in)
+      return reply.redirect(redirect);
+    }
+
+    // Normal login flow
     const user = upsertUserFromGithub({
       id: nanoid(),
       email,
@@ -96,9 +145,6 @@ export function registerGithubRoutes(app: FastifyInstance) {
     });
 
     const jwt = await createSessionJWT(user.id, user.email);
-
-    reply.clearCookie("oauth_state", { path: "/" });
-    reply.clearCookie("oauth_redirect", { path: "/" });
 
     // CLI auth: redirect with token in query param instead of setting cookie
     if (isCliRedirect(redirect)) {

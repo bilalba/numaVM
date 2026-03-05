@@ -36,7 +36,7 @@ export class CodexBridge implements AgentBridge {
     }
 
     const cmd = options?.cwd
-      ? `cd ${options.cwd} && codex app-server`
+      ? `cd '${options.cwd}' && codex app-server`
       : "codex app-server";
     const vsock = spawnProcessOverVsock(ip, cmd);
     this.proc = vsock.process;
