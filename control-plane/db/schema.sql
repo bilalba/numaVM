@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS envs (
+CREATE TABLE IF NOT EXISTS vms (
   id                TEXT PRIMARY KEY,
   name              TEXT NOT NULL,
   owner_id          TEXT NOT NULL,
@@ -20,13 +20,13 @@ CREATE TABLE IF NOT EXISTS envs (
   mem_size_mib      INTEGER NOT NULL DEFAULT 512
 );
 
-CREATE INDEX IF NOT EXISTS idx_envs_owner ON envs(owner_id);
-CREATE INDEX IF NOT EXISTS idx_envs_status ON envs(status);
+CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);
+CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
 
 -- Agent sessions (Codex + OpenCode)
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id          TEXT PRIMARY KEY,
-  env_id      TEXT NOT NULL REFERENCES envs(id),
+  vm_id       TEXT NOT NULL REFERENCES vms(id),
   agent_type  TEXT NOT NULL CHECK(agent_type IN ('codex', 'opencode')),
   thread_id   TEXT,
   title       TEXT,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_agent_sessions_env ON agent_sessions(env_id);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_vm ON agent_sessions(vm_id);
 
 -- Agent messages (conversation history)
 CREATE TABLE IF NOT EXISTS agent_messages (
@@ -54,20 +54,20 @@ CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_
 -- VM traffic history (recorded every 5min by idle monitor)
 CREATE TABLE IF NOT EXISTS vm_traffic (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  env_id      TEXT NOT NULL,
+  vm_id       TEXT NOT NULL,
   rx_bytes    INTEGER NOT NULL,
   tx_bytes    INTEGER NOT NULL,
   recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_vm_traffic_env ON vm_traffic(env_id);
+CREATE INDEX IF NOT EXISTS idx_vm_traffic_vm ON vm_traffic(vm_id);
 CREATE INDEX IF NOT EXISTS idx_vm_traffic_time ON vm_traffic(recorded_at);
 
 -- Admin events (audit log for admin dashboard)
 CREATE TABLE IF NOT EXISTS admin_events (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   type       TEXT NOT NULL,
-  env_id     TEXT,
+  vm_id      TEXT,
   user_id    TEXT,
   metadata   TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP

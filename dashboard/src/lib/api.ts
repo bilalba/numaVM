@@ -21,7 +21,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export interface EnvSummary {
+export interface VMSummary {
   id: string;
   name: string;
   status: string;
@@ -43,7 +43,7 @@ export interface RamQuota {
   trial_expires_at: string | null;
 }
 
-export interface EnvDetail {
+export interface VMDetail {
   id: string;
   name: string;
   status: string;
@@ -81,7 +81,7 @@ export interface ClaudeSession {
 
 export interface AgentSession {
   id: string;
-  env_id: string;
+  vm_id: string;
   agent_type: "codex" | "opencode";
   thread_id: string | null;
   title: string | null;
@@ -206,49 +206,49 @@ export interface GitHubRepo {
 export const api = {
   getUser: () => apiFetch<User>("/me"),
 
-  listEnvs: () => apiFetch<{ envs: EnvSummary[] }>("/envs"),
+  listVMs: () => apiFetch<{ vms: VMSummary[] }>("/vms"),
 
-  getEnv: (id: string) => apiFetch<EnvDetail>(`/envs/${id}`),
+  getVM: (id: string) => apiFetch<VMDetail>(`/vms/${id}`),
 
-  createEnv: (body: { name: string; gh_repo?: string; mem_size_mib?: number }) =>
+  createVM: (body: { name: string; gh_repo?: string; mem_size_mib?: number }) =>
     apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
-      "/envs",
+      "/vms",
       { method: "POST", body: JSON.stringify(body) }
     ),
 
-  getRamQuota: () => apiFetch<RamQuota>("/envs/quota"),
+  getRamQuota: () => apiFetch<RamQuota>("/vms/quota"),
 
-  deleteEnv: (id: string) =>
-    apiFetch<{ ok: boolean }>(`/envs/${id}`, { method: "DELETE" }),
+  deleteVM: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${id}`, { method: "DELETE" }),
 
-  cloneEnv: (id: string, name?: string) =>
+  cloneVM: (id: string, name?: string) =>
     apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
-      `/envs/${id}/clone`,
+      `/vms/${id}/clone`,
       { method: "POST", body: JSON.stringify(name ? { name } : {}) }
     ),
 
-  pauseEnv: (id: string) =>
-    apiFetch<{ ok: boolean; message: string }>(`/envs/${id}/pause`, {
+  pauseVM: (id: string) =>
+    apiFetch<{ ok: boolean; message: string }>(`/vms/${id}/pause`, {
       method: "POST",
       body: JSON.stringify({}),
     }),
 
-  getClaudeSessions: (envId: string) =>
-    apiFetch<{ sessions: ClaudeSession[] }>(`/envs/${envId}/claude/sessions`),
+  getClaudeSessions: (vmId: string) =>
+    apiFetch<{ sessions: ClaudeSession[] }>(`/vms/${vmId}/claude/sessions`),
 
   // File browser
-  listFiles: (envId: string, path: string) =>
-    apiFetch<{ path: string; entries: FileEntry[] }>(`/envs/${envId}/files?path=${encodeURIComponent(path)}`),
+  listFiles: (vmId: string, path: string) =>
+    apiFetch<{ path: string; entries: FileEntry[] }>(`/vms/${vmId}/files?path=${encodeURIComponent(path)}`),
 
   // OpenCode providers
-  getOpenCodeProviders: (envId: string) =>
+  getOpenCodeProviders: (vmId: string) =>
     apiFetch<{ connected: OpenCodeProvider[]; popular: OpenCodePopularProvider[]; default: Record<string, string> }>(
-      `/envs/${envId}/opencode/providers`
+      `/vms/${vmId}/opencode/providers`
     ),
 
   // Agent session APIs
-  createAgentSession: (envId: string, agentType: "codex" | "opencode", opts?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }) =>
-    apiFetch<AgentSession>(`/envs/${envId}/agents/${agentType}/sessions`, {
+  createAgentSession: (vmId: string, agentType: "codex" | "opencode", opts?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }) =>
+    apiFetch<AgentSession>(`/vms/${vmId}/agents/${agentType}/sessions`, {
       method: "POST",
       body: JSON.stringify({
         ...(opts?.model ? { model: opts.model } : {}),
@@ -260,16 +260,16 @@ export const api = {
       }),
     }),
 
-  listAgentSessions: (envId: string, agentType: "codex" | "opencode") =>
-    apiFetch<{ sessions: AgentSession[] }>(`/envs/${envId}/agents/${agentType}/sessions`),
+  listAgentSessions: (vmId: string, agentType: "codex" | "opencode") =>
+    apiFetch<{ sessions: AgentSession[] }>(`/vms/${vmId}/agents/${agentType}/sessions`),
 
-  getAgentSession: (envId: string, sessionId: string) =>
+  getAgentSession: (vmId: string, sessionId: string) =>
     apiFetch<{ session: AgentSession; messages: AgentMessage[] }>(
-      `/envs/${envId}/sessions/${sessionId}`
+      `/vms/${vmId}/sessions/${sessionId}`
     ),
 
-  sendAgentMessage: (envId: string, sessionId: string, text: string, opts?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }) =>
-    apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/message`, {
+  sendAgentMessage: (vmId: string, sessionId: string, text: string, opts?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/message`, {
       method: "POST",
       body: JSON.stringify({
         text,
@@ -280,70 +280,70 @@ export const api = {
       }),
     }),
 
-  stopAgent: (envId: string, sessionId: string) =>
-    apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/stop`, {
+  stopAgent: (vmId: string, sessionId: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/stop`, {
       method: "POST",
       body: JSON.stringify({}),
     }),
 
-  deleteAgentSession: (envId: string, sessionId: string) =>
-    apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}`, {
+  deleteAgentSession: (vmId: string, sessionId: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}`, {
       method: "DELETE",
     }),
 
-  revertMessage: (envId: string, sessionId: string, messageId?: string) =>
-    apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/revert`, {
+  revertMessage: (vmId: string, sessionId: string, messageId?: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/revert`, {
       method: "POST",
       body: JSON.stringify(messageId ? { messageId } : {}),
     }),
 
-  unrevertSession: (envId: string, sessionId: string) =>
-    apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/unrevert`, {
+  unrevertSession: (vmId: string, sessionId: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/unrevert`, {
       method: "POST",
       body: JSON.stringify({}),
     }),
 
-  respondToApproval: (envId: string, sessionId: string, approvalId: string, decision: ApprovalDecision) =>
-    apiFetch<{ ok: boolean }>(`/envs/${envId}/sessions/${sessionId}/approval`, {
+  respondToApproval: (vmId: string, sessionId: string, approvalId: string, decision: ApprovalDecision) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/approval`, {
       method: "POST",
       body: JSON.stringify({ approvalId, decision }),
     }),
 
   // Codex models + threads
-  getCodexModels: (envId: string, includeHidden = false) =>
+  getCodexModels: (vmId: string, includeHidden = false) =>
     apiFetch<{ models: CodexModel[] }>(
-      `/envs/${envId}/codex/models${includeHidden ? "?includeHidden=true" : ""}`
+      `/vms/${vmId}/codex/models${includeHidden ? "?includeHidden=true" : ""}`
     ),
 
-  getCodexThreads: (envId: string, cursor?: string, limit?: number) =>
+  getCodexThreads: (vmId: string, cursor?: string, limit?: number) =>
     apiFetch<{ threads: CodexThread[]; nextCursor?: string }>(
-      `/envs/${envId}/codex/threads${cursor || limit ? `?${cursor ? `cursor=${cursor}` : ""}${cursor && limit ? "&" : ""}${limit ? `limit=${limit}` : ""}` : ""}`
+      `/vms/${vmId}/codex/threads${cursor || limit ? `?${cursor ? `cursor=${cursor}` : ""}${cursor && limit ? "&" : ""}${limit ? `limit=${limit}` : ""}` : ""}`
     ),
 
   // Codex auth
-  getCodexAuthStatus: (envId: string, refresh = false) =>
+  getCodexAuthStatus: (vmId: string, refresh = false) =>
     apiFetch<{ authenticated: boolean; authMode?: string; account?: any; error?: string }>(
-      `/envs/${envId}/codex/auth/status${refresh ? "?refresh=true" : ""}`
+      `/vms/${vmId}/codex/auth/status${refresh ? "?refresh=true" : ""}`
     ),
 
-  startCodexLogin: (envId: string, mode: "chatgpt" | "apikey" = "chatgpt", apiKey?: string) =>
-    apiFetch<any>(`/envs/${envId}/codex/auth/login`, {
+  startCodexLogin: (vmId: string, mode: "chatgpt" | "apikey" = "chatgpt", apiKey?: string) =>
+    apiFetch<any>(`/vms/${vmId}/codex/auth/login`, {
       method: "POST",
       body: JSON.stringify({ mode, ...(apiKey ? { apiKey } : {}) }),
     }),
 
-  logoutCodex: (envId: string) =>
-    apiFetch<{ ok: boolean }>(`/envs/${envId}/codex/auth/logout`, {
+  logoutCodex: (vmId: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/codex/auth/logout`, {
       method: "POST",
       body: JSON.stringify({}),
     }),
 
   // Terminal sessions
-  listTerminalSessions: (envId: string) =>
-    apiFetch<{ sessions: TerminalSession[] }>(`/envs/${envId}/terminal/sessions`),
+  listTerminalSessions: (vmId: string) =>
+    apiFetch<{ sessions: TerminalSession[] }>(`/vms/${vmId}/terminal/sessions`),
 
-  deleteTerminalSession: (envId: string, name: string) =>
-    apiFetch<{ ok: boolean }>(`/envs/${envId}/terminal/sessions/${encodeURIComponent(name)}`, {
+  deleteTerminalSession: (vmId: string, name: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/terminal/sessions/${encodeURIComponent(name)}`, {
       method: "DELETE",
     }),
 
@@ -357,14 +357,14 @@ export const api = {
       body: JSON.stringify({ keys }),
     }),
 
-  syncSshKeys: (envId: string) =>
-    apiFetch<{ ok: boolean; message: string }>(`/envs/${envId}/sync-ssh-keys`, {
+  syncSshKeys: (vmId: string) =>
+    apiFetch<{ ok: boolean; message: string }>(`/vms/${vmId}/sync-ssh-keys`, {
       method: "POST",
       body: JSON.stringify({}),
     }),
 
-  checkSshKeysStatus: (envId: string) =>
-    apiFetch<{ synced: boolean; reason?: string }>(`/envs/${envId}/ssh-keys-status`),
+  checkSshKeysStatus: (vmId: string) =>
+    apiFetch<{ synced: boolean; reason?: string }>(`/vms/${vmId}/ssh-keys-status`),
 
   // GitHub repo access
   getGithubStatus: () =>
@@ -413,30 +413,30 @@ export const api = {
     }),
 
   // Access control
-  listAccess: (envId: string) =>
-    apiFetch<{ access: AccessEntry[] }>(`/envs/${envId}/access`),
+  listAccess: (vmId: string) =>
+    apiFetch<{ access: AccessEntry[] }>(`/vms/${vmId}/access`),
 
-  grantAccess: (envId: string, email: string, role: string) =>
-    apiFetch<{ ok: boolean; message: string }>(`/envs/${envId}/access`, {
+  grantAccess: (vmId: string, email: string, role: string) =>
+    apiFetch<{ ok: boolean; message: string }>(`/vms/${vmId}/access`, {
       method: "POST",
       body: JSON.stringify({ email, role }),
     }),
 
-  revokeAccess: (envId: string, email: string) =>
-    apiFetch<{ ok: boolean; message: string }>(`/envs/${envId}/access`, {
+  revokeAccess: (vmId: string, email: string) =>
+    apiFetch<{ ok: boolean; message: string }>(`/vms/${vmId}/access`, {
       method: "POST",
       body: JSON.stringify({ email, role: null }),
     }),
 
   // File content + git log
-  readFile: (envId: string, path: string) =>
-    apiFetch<FileContent>(`/envs/${envId}/files/read?path=${encodeURIComponent(path)}`),
+  readFile: (vmId: string, path: string) =>
+    apiFetch<FileContent>(`/vms/${vmId}/files/read?path=${encodeURIComponent(path)}`),
 
-  getFileDownloadUrl: (envId: string, path: string) =>
-    `${API_BASE}/envs/${envId}/files/download?path=${encodeURIComponent(path)}`,
+  getFileDownloadUrl: (vmId: string, path: string) =>
+    `${API_BASE}/vms/${vmId}/files/download?path=${encodeURIComponent(path)}`,
 
-  getGitLog: (envId: string, limit = 20) =>
-    apiFetch<{ commits: GitCommit[] }>(`/envs/${envId}/git/log?limit=${limit}`),
+  getGitLog: (vmId: string, limit = 20) =>
+    apiFetch<{ commits: GitCommit[] }>(`/vms/${vmId}/git/log?limit=${limit}`),
 };
 
 export function githubConnectUrl(redirect: string): string {
@@ -448,7 +448,7 @@ export function githubConnectUrl(redirect: string): string {
 }
 
 export function terminalWsUrl(
-  envId: string,
+  vmId: string,
   cols: number,
   rows: number,
   session?: string
@@ -456,16 +456,16 @@ export function terminalWsUrl(
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host =
     import.meta.env.VITE_API_URL?.replace(/^\/\//, "") || "api.localhost";
-  let url = `${protocol}//${host}/envs/${envId}/terminal?cols=${cols}&rows=${rows}`;
+  let url = `${protocol}//${host}/vms/${vmId}/terminal?cols=${cols}&rows=${rows}`;
   if (session) {
     url += `&session=${encodeURIComponent(session)}`;
   }
   return url;
 }
 
-export function agentWsUrl(envId: string): string {
+export function agentWsUrl(vmId: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host =
     import.meta.env.VITE_API_URL?.replace(/^\/\//, "") || "api.localhost";
-  return `${protocol}//${host}/envs/${envId}/ws`;
+  return `${protocol}//${host}/vms/${vmId}/ws`;
 }

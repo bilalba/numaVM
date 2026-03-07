@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { findEnvById, checkAccess } from "../db/client.js";
+import { findVMById, checkAccess } from "../db/client.js";
 import { execInVM } from "../services/vsock-ssh.js";
 
 interface ClaudeSession {
@@ -10,21 +10,21 @@ interface ClaudeSession {
 }
 
 export function registerClaudeRoutes(app: FastifyInstance) {
-  app.get("/envs/:id/claude/sessions", async (request, reply) => {
+  app.get("/vms/:id/claude/sessions", async (request, reply) => {
     const { id } = request.params as { id: string };
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const env = findEnvById(id);
-    if (!env || !env.vm_ip) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm || !vm.vm_ip) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     try {
-      const output = await execInVM(env.vm_ip, [
+      const output = await execInVM(vm.vm_ip, [
         "bash",
         "-c",
         `find /home/dev/.claude/projects -name '*.json' -path '*/sessions/*' 2>/dev/null | while read f; do echo "---FILE:$f"; cat "$f" 2>/dev/null; done`,

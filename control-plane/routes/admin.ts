@@ -21,8 +21,8 @@ export function registerAdminRoutes(app: FastifyInstance) {
 
   // GET /admin/stats — Overview numbers
   app.get("/admin/stats", async () => {
-    const envsByStatus = db.prepare(
-      "SELECT status, COUNT(*) as count FROM envs GROUP BY status"
+    const vmsByStatus = db.prepare(
+      "SELECT status, COUNT(*) as count FROM vms GROUP BY status"
     ).all() as { status: string; count: number }[];
 
     const userCount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }).count;
@@ -33,8 +33,8 @@ export function registerAdminRoutes(app: FastifyInstance) {
 
     const messageCount = (db.prepare("SELECT COUNT(*) as count FROM agent_messages").get() as { count: number }).count;
 
-    const recentEnvs = db.prepare(
-      "SELECT e.id, e.name, e.status, e.created_at, u.email as owner_email FROM envs e LEFT JOIN users u ON u.id = e.owner_id ORDER BY e.created_at DESC LIMIT 10"
+    const recentVMs = db.prepare(
+      "SELECT v.id, v.name, v.status, v.created_at, u.email as owner_email FROM vms v LEFT JOIN users u ON u.id = v.owner_id ORDER BY v.created_at DESC LIMIT 10"
     ).all();
 
     const recentEvents = db.prepare(
@@ -42,13 +42,13 @@ export function registerAdminRoutes(app: FastifyInstance) {
     ).all();
 
     return {
-      envsByStatus: Object.fromEntries(envsByStatus.map(r => [r.status, r.count])),
-      totalEnvs: envsByStatus.reduce((sum, r) => sum + r.count, 0),
+      vmsByStatus: Object.fromEntries(vmsByStatus.map(r => [r.status, r.count])),
+      totalVMs: vmsByStatus.reduce((sum, r) => sum + r.count, 0),
       userCount,
       sessionCounts: Object.fromEntries(sessionCounts.map(r => [r.status, r.count])),
       totalSessions: sessionCounts.reduce((sum, r) => sum + r.count, 0),
       messageCount,
-      recentEnvs,
+      recentVMs,
       recentEvents,
     };
   });
@@ -60,9 +60,9 @@ export function registerAdminRoutes(app: FastifyInstance) {
         CASE WHEN u.github_id IS NOT NULL THEN 'github'
              WHEN u.google_id IS NOT NULL THEN 'google'
              ELSE 'email' END as provider,
-        COUNT(ea.env_id) as env_count
+        COUNT(va.vm_id) as vm_count
       FROM users u
-      LEFT JOIN env_access ea ON ea.user_id = u.id
+      LEFT JOIN vm_access va ON va.user_id = u.id
       GROUP BY u.id
       ORDER BY u.created_at DESC
     `).all();
@@ -70,44 +70,44 @@ export function registerAdminRoutes(app: FastifyInstance) {
     return { users };
   });
 
-  // GET /admin/envs — All environments
-  app.get("/admin/envs", async () => {
-    const envs = db.prepare(`
-      SELECT e.*, u.email as owner_email, u.name as owner_name
-      FROM envs e
-      LEFT JOIN users u ON u.id = e.owner_id
-      ORDER BY e.created_at DESC
+  // GET /admin/vms — All VMs
+  app.get("/admin/vms", async () => {
+    const vms = db.prepare(`
+      SELECT v.*, u.email as owner_email, u.name as owner_name
+      FROM vms v
+      LEFT JOIN users u ON u.id = v.owner_id
+      ORDER BY v.created_at DESC
     `).all();
 
-    return { envs };
+    return { vms };
   });
 
-  // GET /admin/envs/:id — Detailed env info
-  app.get("/admin/envs/:id", async (request, reply) => {
+  // GET /admin/vms/:id — Detailed VM info
+  app.get("/admin/vms/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const env = db.prepare(`
-      SELECT e.*, u.email as owner_email, u.name as owner_name
-      FROM envs e
-      LEFT JOIN users u ON u.id = e.owner_id
-      WHERE e.id = ?
+    const vm = db.prepare(`
+      SELECT v.*, u.email as owner_email, u.name as owner_name
+      FROM vms v
+      LEFT JOIN users u ON u.id = v.owner_id
+      WHERE v.id = ?
     `).get(id) as any;
 
-    if (!env) return reply.status(404).send({ error: "Environment not found" });
+    if (!vm) return reply.status(404).send({ error: "VM not found" });
 
     const access = db.prepare(`
-      SELECT ea.user_id, ea.role, u.email, u.name
-      FROM env_access ea
-      LEFT JOIN users u ON u.id = ea.user_id
-      WHERE ea.env_id = ?
+      SELECT va.user_id, va.role, u.email, u.name
+      FROM vm_access va
+      LEFT JOIN users u ON u.id = va.user_id
+      WHERE va.vm_id = ?
     `).all(id);
 
     const sessions = db.prepare(
-      "SELECT * FROM agent_sessions WHERE env_id = ? ORDER BY updated_at DESC"
+      "SELECT * FROM agent_sessions WHERE vm_id = ? ORDER BY updated_at DESC"
     ).all(id);
 
     const messageCount = (db.prepare(
-      "SELECT COUNT(*) as count FROM agent_messages WHERE session_id IN (SELECT id FROM agent_sessions WHERE env_id = ?)"
+      "SELECT COUNT(*) as count FROM agent_messages WHERE session_id IN (SELECT id FROM agent_sessions WHERE vm_id = ?)"
     ).get(id) as { count: number }).count;
 
     let vmStatus = null;
@@ -115,23 +115,23 @@ export function registerAdminRoutes(app: FastifyInstance) {
       vmStatus = await inspectVM(id);
     } catch { /* VM may not exist */ }
 
-    return { env, access, sessions, messageCount, vmStatus };
+    return { vm, access, sessions, messageCount, vmStatus };
   });
 
   // GET /admin/traffic — TAP traffic for running VMs
   app.get("/admin/traffic", async () => {
-    const runningEnvs = db.prepare(
-      "SELECT id, vm_ip FROM envs WHERE status = 'running'"
+    const runningVMs = db.prepare(
+      "SELECT id, vm_ip FROM vms WHERE status = 'running'"
     ).all() as { id: string; vm_ip: string }[];
 
-    const traffic = runningEnvs.map(env => {
-      const tapDev = `tap-${env.id}`;
+    const traffic = runningVMs.map(vm => {
+      const tapDev = `tap-${vm.id}`;
       let rx = 0, tx = 0;
       try {
         rx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/rx_bytes`, "utf-8").trim(), 10);
         tx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/tx_bytes`, "utf-8").trim(), 10);
       } catch { /* TAP device not found */ }
-      return { envId: env.id, vmIp: env.vm_ip, rxBytes: rx, txBytes: tx, totalBytes: rx + tx };
+      return { vmId: vm.id, vmIp: vm.vm_ip, rxBytes: rx, txBytes: tx, totalBytes: rx + tx };
     });
 
     return { traffic };
@@ -151,7 +151,7 @@ export function registerAdminRoutes(app: FastifyInstance) {
     const query = request.query as { hours?: string };
     const hours = Math.min(parseInt(query.hours || "24", 10), 168);
     const history = getTrafficHistory(id, hours);
-    return { envId: id, history, hours };
+    return { vmId: id, history, hours };
   });
 
   // GET /admin/sessions — All agent sessions
@@ -160,10 +160,10 @@ export function registerAdminRoutes(app: FastifyInstance) {
     const limit = Math.min(parseInt(query.limit || "200", 10), 500);
 
     const sessions = db.prepare(`
-      SELECT s.*, e.name as env_name,
+      SELECT s.*, v.name as vm_name,
         (SELECT COUNT(*) FROM agent_messages WHERE session_id = s.id) as message_count
       FROM agent_sessions s
-      LEFT JOIN envs e ON e.id = s.env_id
+      LEFT JOIN vms v ON v.id = s.vm_id
       ORDER BY s.updated_at DESC
       LIMIT ?
     `).all(limit);
@@ -196,7 +196,7 @@ export function registerAdminRoutes(app: FastifyInstance) {
     const stats = await getHealthStats();
 
     const portInfo = db.prepare(
-      "SELECT COUNT(*) as used FROM envs WHERE status != 'error'"
+      "SELECT COUNT(*) as used FROM vms WHERE status != 'error'"
     ).get() as { used: number };
 
     return {

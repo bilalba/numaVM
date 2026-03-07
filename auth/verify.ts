@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { getSessionFromRequest } from "./session.js";
-import { checkEnvAccess, findUserById } from "./db/client.js";
+import { checkVMAccess, findUserById } from "./db/client.js";
 
 export function registerVerifyRoute(app: FastifyInstance) {
   app.get("/verify", async (request, reply) => {
@@ -20,13 +20,13 @@ export function registerVerifyRoute(app: FastifyInstance) {
       (request.headers.host as string) ||
       "";
 
-    // Check if this is an env-specific subdomain (matches env-xxx and env-xxx-pages)
-    const envMatch = forwardedHost.match(/^(env-[a-z0-9]+)\./)
-    if (envMatch) {
-      const envId = envMatch[1];
-      const role = checkEnvAccess(envId, user.id);
+    // Check if this is a VM-specific subdomain (matches vm-xxx and vm-xxx-pages)
+    const vmMatch = forwardedHost.match(/^(vm-[a-z0-9]+)\./)
+    if (vmMatch) {
+      const vmId = vmMatch[1];
+      const role = checkVMAccess(vmId, user.id);
       if (!role) {
-        return reply.status(403).send("No access to this environment");
+        return reply.status(403).send("No access to this VM");
       }
     }
 

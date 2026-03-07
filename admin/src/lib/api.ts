@@ -19,13 +19,13 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export interface AdminStats {
-  envsByStatus: Record<string, number>;
-  totalEnvs: number;
+  vmsByStatus: Record<string, number>;
+  totalVMs: number;
   userCount: number;
   sessionCounts: Record<string, number>;
   totalSessions: number;
   messageCount: number;
-  recentEnvs: Array<{
+  recentVMs: Array<{
     id: string;
     name: string;
     status: string;
@@ -44,10 +44,10 @@ export interface AdminUser {
   is_admin: number;
   created_at: string;
   provider: string;
-  env_count: number;
+  vm_count: number;
 }
 
-export interface AdminEnv {
+export interface AdminVM {
   id: string;
   name: string;
   owner_id: string;
@@ -64,27 +64,27 @@ export interface AdminEnv {
 
 export interface AdminSession {
   id: string;
-  env_id: string;
+  vm_id: string;
   agent_type: string;
   title: string | null;
   status: string;
   created_at: string;
   updated_at: string;
-  env_name: string;
+  vm_name: string;
   message_count: number;
 }
 
 export interface AdminEvent {
   id: number;
   type: string;
-  env_id: string | null;
+  vm_id: string | null;
   user_id: string | null;
   metadata: string | null;
   created_at: string;
 }
 
 export interface TrafficSummary {
-  env_id: string;
+  vm_id: string;
   total_rx: number;
   total_tx: number;
   samples: number;
@@ -99,12 +99,12 @@ export interface TrafficPoint {
 export const adminApi = {
   getStats: () => apiFetch<AdminStats>("/admin/stats"),
   getUsers: () => apiFetch<{ users: AdminUser[] }>("/admin/users"),
-  getEnvs: () => apiFetch<{ envs: AdminEnv[] }>("/admin/envs"),
+  getVMs: () => apiFetch<{ vms: AdminVM[] }>("/admin/vms"),
   getSessions: (limit = 200) => apiFetch<{ sessions: AdminSession[] }>(`/admin/sessions?limit=${limit}`),
   getEvents: (limit = 100, type?: string) =>
     apiFetch<{ events: AdminEvent[] }>(`/admin/events?limit=${limit}${type ? `&type=${type}` : ""}`),
-  getTraffic: () => apiFetch<{ traffic: Array<{ envId: string; vmIp: string; rxBytes: number; txBytes: number; totalBytes: number }> }>("/admin/traffic"),
+  getTraffic: () => apiFetch<{ traffic: Array<{ vmId: string; vmIp: string; rxBytes: number; txBytes: number; totalBytes: number }> }>("/admin/traffic"),
   getTrafficSummary: (hours = 24) => apiFetch<{ summary: TrafficSummary[]; hours: number }>(`/admin/traffic/summary?hours=${hours}`),
-  getTrafficHistory: (envId: string, hours = 24) => apiFetch<{ envId: string; history: TrafficPoint[]; hours: number }>(`/admin/traffic/${envId}/history?hours=${hours}`),
+  getTrafficHistory: (vmId: string, hours = 24) => apiFetch<{ vmId: string; history: TrafficPoint[]; hours: number }>(`/admin/traffic/${vmId}/history?hours=${hours}`),
   getHealth: () => apiFetch<any>("/admin/health"),
 };

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { db, findEnvById, updateEnvStatus, updateEnvSnapshotPath, emitAdminEvent, insertTrafficRecord, pruneOldTraffic } from "../db/client.js";
+import { db, findVMById, updateVMStatus, updateVMSnapshotPath, emitAdminEvent, insertTrafficRecord, pruneOldTraffic } from "../db/client.js";
 import { snapshotVM } from "./firecracker.js";
 import { removeRoute } from "./caddy.js";
 
@@ -26,7 +26,7 @@ interface VMTraffic {
 }
 
 const trafficMap = new Map<string, VMTraffic>();
-const snapshottingSet = new Set<string>(); // per-env concurrency guard
+const snapshottingSet = new Set<string>(); // per-VM concurrency guard
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 // Traffic recording: store deltas every poll (~30s)
@@ -47,23 +47,23 @@ function readTapBytes(tapDev: string): number {
 
 async function pollOnce(): Promise<void> {
   // Get all running VMs
-  const runningEnvs = db.prepare(
-    "SELECT id, vsock_cid, app_port, ssh_port, opencode_port, vm_ip FROM envs WHERE status = 'running'"
+  const runningVMs = db.prepare(
+    "SELECT id, vsock_cid, app_port, ssh_port, opencode_port, vm_ip FROM vms WHERE status = 'running'"
   ).all() as { id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; vm_ip: string }[];
 
   const now = Date.now();
 
-  for (const env of runningEnvs) {
-    const tapDev = `tap-${env.id}`;
+  for (const vm of runningVMs) {
+    const tapDev = `tap-${vm.id}`;
     const currentBytes = readTapBytes(tapDev);
 
     if (currentBytes < 0) continue; // TAP not available
 
-    const prev = trafficMap.get(env.id);
+    const prev = trafficMap.get(vm.id);
 
     if (!prev) {
       // First observation — start a measurement window
-      trafficMap.set(env.id, { windowBytes: currentBytes, windowStart: now });
+      trafficMap.set(vm.id, { windowBytes: currentBytes, windowStart: now });
       continue;
     }
 
@@ -79,45 +79,45 @@ async function pollOnce(): Promise<void> {
 
     if (bytesInWindow >= IDLE_THRESHOLD_BYTES) {
       // Enough traffic — reset the window
-      trafficMap.set(env.id, { windowBytes: currentBytes, windowStart: now });
+      trafficMap.set(vm.id, { windowBytes: currentBytes, windowStart: now });
       continue;
     }
 
     // Less than threshold transferred in the window — snapshot
     {
-      // Skip if a snapshot is already in-flight for this env
-      if (snapshottingSet.has(env.id)) {
+      // Skip if a snapshot is already in-flight for this VM
+      if (snapshottingSet.has(vm.id)) {
         continue;
       }
 
-      console.log(`[idle-monitor] VM ${env.id} transferred only ${bytesInWindow} bytes in ${Math.round(windowDuration / 1000)}s (threshold: ${IDLE_THRESHOLD_BYTES}), snapshotting...`);
+      console.log(`[idle-monitor] VM ${vm.id} transferred only ${bytesInWindow} bytes in ${Math.round(windowDuration / 1000)}s (threshold: ${IDLE_THRESHOLD_BYTES}), snapshotting...`);
 
-      snapshottingSet.add(env.id);
+      snapshottingSet.add(vm.id);
       try {
         // Snapshot the VM
-        await snapshotVM(env.id);
+        await snapshotVM(vm.id);
 
         // Update DB
-        const snapshotPath = `${process.env.DATA_DIR || "/data/envs"}/${env.id}/snapshot`;
-        updateEnvSnapshotPath(env.id, snapshotPath);
-        updateEnvStatus(env.id, "snapshotted");
+        const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${vm.id}/snapshot`;
+        updateVMSnapshotPath(vm.id, snapshotPath);
+        updateVMStatus(vm.id, "snapshotted");
 
         // Remove Caddy route (requests will hit status page / trigger wake)
         try {
-          await removeRoute(env.id);
+          await removeRoute(vm.id);
         } catch { /* ok */ }
 
         // Clean up traffic tracking
-        trafficMap.delete(env.id);
+        trafficMap.delete(vm.id);
 
-        emitAdminEvent("vm.idle_snapshotted", env.id, null, { idleBytes: bytesInWindow, windowMs: windowDuration });
-        console.log(`[idle-monitor] VM ${env.id} snapshotted successfully`);
+        emitAdminEvent("vm.idle_snapshotted", vm.id, null, { idleBytes: bytesInWindow, windowMs: windowDuration });
+        console.log(`[idle-monitor] VM ${vm.id} snapshotted successfully`);
       } catch (err: any) {
-        console.error(`[idle-monitor] Failed to snapshot VM ${env.id}: ${err.message}`);
+        console.error(`[idle-monitor] Failed to snapshot VM ${vm.id}: ${err.message}`);
         // Reset the window so we don't immediately retry
-        trafficMap.set(env.id, { windowBytes: currentBytes, windowStart: now });
+        trafficMap.set(vm.id, { windowBytes: currentBytes, windowStart: now });
       } finally {
-        snapshottingSet.delete(env.id);
+        snapshottingSet.delete(vm.id);
       }
     }
   }
@@ -126,23 +126,23 @@ async function pollOnce(): Promise<void> {
   pollCount++;
   if (pollCount >= RECORD_INTERVAL) {
     pollCount = 0;
-    for (const env of runningEnvs) {
-      const tapDev = `tap-${env.id}`;
+    for (const vm of runningVMs) {
+      const tapDev = `tap-${vm.id}`;
       let rx = 0, tx = 0;
       try {
         rx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/rx_bytes`, "utf-8").trim(), 10);
         tx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/tx_bytes`, "utf-8").trim(), 10);
       } catch { continue; }
 
-      const prev = lastRecordedBytes.get(env.id);
+      const prev = lastRecordedBytes.get(vm.id);
       if (prev) {
         const deltaRx = Math.max(0, rx - prev.rx);
         const deltaTx = Math.max(0, tx - prev.tx);
         if (deltaRx > 0 || deltaTx > 0) {
-          insertTrafficRecord(env.id, deltaRx, deltaTx);
+          insertTrafficRecord(vm.id, deltaRx, deltaTx);
         }
       }
-      lastRecordedBytes.set(env.id, { rx, tx });
+      lastRecordedBytes.set(vm.id, { rx, tx });
     }
 
     // Prune old records once per day
@@ -158,11 +158,11 @@ async function pollOnce(): Promise<void> {
 
   // Clean up stale entries for VMs that no longer exist
   for (const slug of trafficMap.keys()) {
-    const exists = runningEnvs.some((e) => e.id === slug);
+    const exists = runningVMs.some((e) => e.id === slug);
     if (!exists) trafficMap.delete(slug);
   }
   for (const slug of lastRecordedBytes.keys()) {
-    const exists = runningEnvs.some((e) => e.id === slug);
+    const exists = runningVMs.some((e) => e.id === slug);
     if (!exists) lastRecordedBytes.delete(slug);
   }
 }

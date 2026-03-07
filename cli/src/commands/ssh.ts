@@ -4,7 +4,7 @@ import { api } from "../client.js";
 import { getApiUrl } from "../config.js";
 import { spin } from "../util/spinner.js";
 
-interface Env {
+interface VM {
   id: string;
   slug: string;
   name: string;
@@ -15,29 +15,29 @@ interface Env {
 export function registerSshCommand(program: Command) {
   program
     .command("ssh <name>")
-    .description("SSH into an environment")
+    .description("SSH into a VM")
     .option("--user <user>", "SSH user", "dev")
     .action(async (name: string, opts: { user: string }) => {
-      const spinner = spin("Resolving environment...");
+      const spinner = spin("Resolving VM...");
 
       try {
-        const env = await resolveEnv(name);
+        const vm = await resolveVM(name);
         spinner.stop();
 
-        if (!env.ssh_port) {
-          console.error("Environment does not have an SSH port assigned.");
+        if (!vm.ssh_port) {
+          console.error("VM does not have an SSH port assigned.");
           process.exit(1);
         }
 
-        if (env.status !== "running") {
-          console.error(`Environment is ${env.status}. It must be running to SSH in.`);
+        if (vm.status !== "running") {
+          console.error(`VM is ${vm.status}. It must be running to SSH in.`);
           process.exit(1);
         }
 
         const host = new URL(getApiUrl()).hostname;
         const args = [
           `${opts.user}@${host}`,
-          "-p", String(env.ssh_port),
+          "-p", String(vm.ssh_port),
           "-o", "StrictHostKeyChecking=no",
           "-o", "UserKnownHostsFile=/dev/null",
         ];
@@ -52,18 +52,18 @@ export function registerSshCommand(program: Command) {
     });
 }
 
-async function resolveEnv(nameOrId: string): Promise<Env> {
+async function resolveVM(nameOrId: string): Promise<VM> {
   try {
-    return await api<Env>(`/envs/${nameOrId}`);
+    return await api<VM>(`/vms/${nameOrId}`);
   } catch {
     // Fall through
   }
-  const envs = await api<Env[]>("/envs");
-  const match = envs.find(
+  const vms = await api<VM[]>("/vms");
+  const match = vms.find(
     (e) => e.name === nameOrId || e.slug === nameOrId || e.id === nameOrId,
   );
   if (!match) {
-    throw new Error(`Environment "${nameOrId}" not found`);
+    throw new Error(`VM "${nameOrId}" not found`);
   }
-  return api<Env>(`/envs/${match.id}`);
+  return api<VM>(`/vms/${match.id}`);
 }

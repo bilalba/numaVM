@@ -5,7 +5,7 @@ The admin dashboard at `admin.numavm.com` provides platform-wide observability �
 ## Access
 
 - **URL**: `https://admin.numavm.com` (production), `http://localhost:4003` (dev)
-- **Auth**: Only users with `is_admin=1` in the `users` table can access admin routes. The admin user is seeded on auth service startup for `bilalbakhtahmad@gmail.com`.
+- **Auth**: Only users with `is_admin=1` in the `users` table can access admin routes. The admin user is seeded on auth service startup using the `ADMIN_EMAIL` env var.
 - **Auth flow**: Caddy `forward_auth` → auth `/verify` returns `X-User-Admin: true` header → control plane admin routes check it
 - **Dev mode**: With `DEV_MODE=true`, set the dev-user as admin in the DB: `UPDATE users SET is_admin = 1 WHERE id = 'dev-user'`
 
@@ -75,7 +75,7 @@ CREATE TABLE admin_events (
 
 - Added via `ALTER TABLE` migration in `auth/db/client.ts` (runs on startup, idempotent)
 - `INTEGER DEFAULT 0` — `1` = admin, `0` = regular user
-- Seeded: `bilalbakhtahmad@gmail.com` is set to `is_admin = 1` on every auth startup
+- Seeded: The `ADMIN_EMAIL` env var determines which user gets `is_admin = 1` on every auth startup
 - Referenced in both `auth/db/client.ts` and `control-plane/db/client.ts` `User` interfaces
 
 ### `admin_events` table

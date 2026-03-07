@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
-import { EnvList } from "./pages/EnvList";
-import { EnvDetail } from "./pages/EnvDetail";
+import { VMList } from "./pages/VMList";
+import { VMDetail } from "./pages/VMDetail";
 import { Deploy } from "./pages/Deploy";
 import { Plan } from "./pages/Plan";
 import { Settings } from "./pages/Settings";
@@ -12,9 +12,9 @@ export function App() {
     <>
       <Header />
       <Routes>
-        <Route path="/" element={<EnvList />} />
+        <Route path="/" element={<VMList />} />
         <Route path="/deploy" element={<Deploy />} />
-        <Route path="/env/:slug" element={<EnvDetail />} />
+        <Route path="/vm/:slug" element={<VMDetail />} />
         <Route path="/plan" element={<Plan />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/link-ssh" element={<LinkSshKey />} />

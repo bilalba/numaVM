@@ -40,9 +40,9 @@ const columns: Column<AdminUser>[] = [
     ),
   },
   {
-    key: "env_count",
-    label: "Envs",
-    render: (row) => <span>{row.env_count}</span>,
+    key: "vm_count",
+    label: "VMs",
+    render: (row) => <span>{row.vm_count}</span>,
   },
   {
     key: "created_at",

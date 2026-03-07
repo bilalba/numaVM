@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { findEnvById, checkAccess } from "../db/client.js";
+import { findVMById, checkAccess } from "../db/client.js";
 import { inspectVM } from "../services/firecracker.js";
 import { execInVM } from "../services/vsock-ssh.js";
 import { createTerminal } from "../terminal/pty-handler.js";
@@ -15,38 +15,38 @@ export interface TmuxSession {
 export function registerTerminalRoutes(app: FastifyInstance) {
   // WebSocket terminal — now accepts ?session=<name> query param
   app.get(
-    "/envs/:id/terminal",
+    "/vms/:id/terminal",
     { websocket: true },
     async (socket, request) => {
       const { id } = request.params as { id: string };
 
       const role = checkAccess(id, request.userId);
       if (!role) {
-        socket.close(4003, "No access to this environment");
+        socket.close(4003, "No access to this VM");
         return;
       }
 
-      const env = findEnvById(id);
-      if (!env || !env.vm_ip) {
-        socket.close(4004, "Environment not found or no VM");
+      const vm = findVMById(id);
+      if (!vm || !vm.vm_ip) {
+        socket.close(4004, "VM not found");
         return;
       }
 
       // Auto-wake snapshotted VMs before opening terminal
       try {
-        await ensureVMRunning(env.id);
+        await ensureVMRunning(vm.id);
       } catch (err: any) {
         if (err instanceof QuotaExceededError) {
           socket.close(4008, "RAM quota exceeded");
         } else {
-          request.log.error({ err, envId: id }, "Failed to wake VM for terminal");
+          request.log.error({ err, vmId: id }, "Failed to wake VM for terminal");
           socket.close(4005, "VM is not running");
         }
         return;
       }
 
       try {
-        const status = await inspectVM(env.id);
+        const status = await inspectVM(vm.id);
         if (!status.running) {
           socket.close(4005, "VM is not running");
           return;
@@ -66,9 +66,9 @@ export function registerTerminalRoutes(app: FastifyInstance) {
       const sessionName = query.session || "main";
 
       createTerminal({
-        vmIp: env.vm_ip,
+        vmIp: vm.vm_ip,
         ws: socket,
-        envId: env.id,
+        vmId: vm.id,
         cols: isNaN(cols) ? 80 : cols,
         rows: isNaN(rows) ? 24 : rows,
         sessionName,
@@ -77,21 +77,21 @@ export function registerTerminalRoutes(app: FastifyInstance) {
   );
 
   // List tmux sessions inside the VM
-  app.get("/envs/:id/terminal/sessions", async (request, reply) => {
+  app.get("/vms/:id/terminal/sessions", async (request, reply) => {
     const { id } = request.params as { id: string };
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const env = findEnvById(id);
-    if (!env || !env.vm_ip) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm || !vm.vm_ip) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     try {
-      const output = await execInVM(env.vm_ip, [
+      const output = await execInVM(vm.vm_ip, [
         "bash", "-c",
         "tmux list-sessions -F '#{session_name}:#{session_windows}:#{session_created}:#{session_attached}' 2>/dev/null || true",
       ]);
@@ -118,7 +118,7 @@ export function registerTerminalRoutes(app: FastifyInstance) {
 
   // Kill a tmux session
   app.delete(
-    "/envs/:id/terminal/sessions/:name",
+    "/vms/:id/terminal/sessions/:name",
     async (request, reply) => {
       const { id, name } = request.params as { id: string; name: string };
 
@@ -126,12 +126,12 @@ export function registerTerminalRoutes(app: FastifyInstance) {
       if (!role) {
         return reply
           .status(403)
-          .send({ error: "No access to this environment" });
+          .send({ error: "No access to this VM" });
       }
 
-      const env = findEnvById(id);
-      if (!env || !env.vm_ip) {
-        return reply.status(404).send({ error: "Environment not found" });
+      const vm = findVMById(id);
+      if (!vm || !vm.vm_ip) {
+        return reply.status(404).send({ error: "VM not found" });
       }
 
       // Validate session name to prevent injection
@@ -142,7 +142,7 @@ export function registerTerminalRoutes(app: FastifyInstance) {
       }
 
       try {
-        await execInVM(env.vm_ip, [
+        await execInVM(vm.vm_ip, [
           "bash", "-c",
           `tmux kill-session -t ${name} 2>/dev/null || true`,
         ]);

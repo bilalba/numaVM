@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { api, githubConnectUrl, type EnvSummary, type GitHubRepo, type RamQuota } from "../lib/api";
+import { useNavigate, useLocation } from "react-router-dom";
+import { api, githubConnectUrl, type VMSummary, type GitHubRepo, type RamQuota } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { SshKeysPanel } from "../components/SshKeysPanel";
 import { relativeTime } from "../lib/time";
@@ -12,15 +12,16 @@ const statusColors: Record<string, string> = {
   error: "bg-red-500",
   snapshotted: "bg-blue-500",
   paused: "bg-blue-500",
+  pausing: "bg-yellow-500",
 };
 
-function EnvCardMenu({
-  env,
+function VMCardMenu({
+  vm,
   onDelete,
   onClone,
   onPause,
 }: {
-  env: EnvSummary;
+  vm: VMSummary;
   onDelete: () => void;
   onClone: () => void;
   onPause: () => void;
@@ -61,7 +62,7 @@ function EnvCardMenu({
       {open && (
         <div className="absolute right-0 top-6 z-50 min-w-[160px] bg-white border border-neutral-200 shadow-sm py-1">
           <a
-            href={env.url}
+            href={vm.url}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
@@ -78,9 +79,9 @@ function EnvCardMenu({
             }}
             className="block w-full text-left px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-100 transition-colors cursor-pointer"
           >
-            Clone Environment
+            Clone VM
           </button>
-          {env.role === "owner" && env.status === "running" && (
+          {vm.role === "owner" && vm.status === "running" && (
             <button
               onClick={(e) => {
                 e.preventDefault();
@@ -90,10 +91,10 @@ function EnvCardMenu({
               }}
               className="block w-full text-left px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-100 transition-colors cursor-pointer"
             >
-              Pause Environment
+              Pause VM
             </button>
           )}
-          {env.role === "owner" && (
+          {vm.role === "owner" && (
             <>
               <div className="border-t border-neutral-200 my-1" />
               {confirming ? (
@@ -118,7 +119,7 @@ function EnvCardMenu({
                   }}
                   className="block w-full text-left px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
                 >
-                  Delete Environment
+                  Delete VM
                 </button>
               )}
             </>
@@ -129,8 +130,8 @@ function EnvCardMenu({
   );
 }
 
-export function EnvList() {
-  const [envs, setEnvs] = useState<EnvSummary[]>([]);
+export function VMList() {
+  const [vms, setVMs] = useState<VMSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -149,14 +150,19 @@ export function EnvList() {
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [memSizeMib, setMemSizeMib] = useState(512);
   const [ramQuota, setRamQuota] = useState<RamQuota | null>(null);
+  const [pausingIds, setPausingIds] = useState<Set<string>>(new Set());
+  const [githubBannerDismissed, setGithubBannerDismissed] = useState(() => {
+    try { return sessionStorage.getItem("github-banner-dismissed") === "1"; } catch { return false; }
+  });
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const loadEnvs = () => {
+  const loadVMs = () => {
     api
-      .listEnvs()
-      .then((data) => setEnvs(data.envs))
+      .listVMs()
+      .then((data) => setVMs(data.vms))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   };
@@ -165,8 +171,24 @@ export function EnvList() {
     api.getRamQuota().then(setRamQuota).catch(() => {});
   };
 
+  // Handle incoming pause from VMDetail page
   useEffect(() => {
-    loadEnvs();
+    const state = location.state as { pausingVmId?: string; pausingVmName?: string } | null;
+    if (!state?.pausingVmId) return;
+    const { pausingVmId, pausingVmName } = state;
+    // Clear the location state so refresh doesn't re-trigger
+    window.history.replaceState({}, "");
+    setPausingIds((prev) => new Set(prev).add(pausingVmId));
+    api.pauseVM(pausingVmId).then(
+      () => { toast(`Paused ${pausingVmName || pausingVmId}`, "success"); loadVMs(); loadQuota(); },
+      (err: any) => toast(err.message, "error"),
+    ).finally(() => {
+      setPausingIds((prev) => { const next = new Set(prev); next.delete(pausingVmId); return next; });
+    });
+  }, [location.state]);
+
+  useEffect(() => {
+    loadVMs();
     loadQuota();
     api.getGithubStatus().then(setGithubStatus).catch(() => {});
   }, []);
@@ -204,31 +226,31 @@ export function EnvList() {
     setMemSizeMib(512);
   };
 
-  const handleDelete = async (env: EnvSummary) => {
+  const handleDelete = async (vm: VMSummary) => {
     try {
-      await api.deleteEnv(env.id);
-      toast(`Deleted ${env.name}`, "success");
-      loadEnvs();
+      await api.deleteVM(vm.id);
+      toast(`Deleted ${vm.name}`, "success");
+      loadVMs();
       loadQuota();
     } catch (err: any) {
       toast(err.message, "error");
     }
   };
 
-  const handleClone = async (env: EnvSummary) => {
-    const isRunning = env.status === "running";
+  const handleClone = async (vm: VMSummary) => {
+    const isRunning = vm.status === "running";
     const msg = isRunning
-      ? `This will briefly pause "${env.name}" to copy its disk state. It will resume automatically after cloning.\n\nContinue?`
-      : `Clone "${env.name}"? This will create a copy with the same files and configuration.`;
+      ? `This will briefly pause "${vm.name}" to copy its disk state. It will resume automatically after cloning.\n\nContinue?`
+      : `Clone "${vm.name}"? This will create a copy with the same files and configuration.`;
     if (!window.confirm(msg)) return;
 
     setCreating(true);
-    toast("Cloning environment...", "info");
+    toast("Cloning VM...", "info");
     try {
-      const result = await api.cloneEnv(env.id);
+      const result = await api.cloneVM(vm.id);
       toast(`Cloned as ${result.name}`, "success");
       setLoading(true);
-      loadEnvs();
+      loadVMs();
     } catch (err: any) {
       toast(err.message, "error");
     } finally {
@@ -236,14 +258,17 @@ export function EnvList() {
     }
   };
 
-  const handlePause = async (env: EnvSummary) => {
-    if (!window.confirm(`Pause "${env.name}"? The environment will be snapshotted and can be resumed later.`)) return;
+  const handlePause = async (vm: VMSummary) => {
+    if (!window.confirm(`Pause "${vm.name}"? The VM will be snapshotted and can be resumed later.`)) return;
+    setPausingIds((prev) => new Set(prev).add(vm.id));
     try {
-      await api.pauseEnv(env.id);
-      toast(`Paused ${env.name}`, "success");
-      loadEnvs();
+      await api.pauseVM(vm.id);
+      toast(`Paused ${vm.name}`, "success");
+      loadVMs();
     } catch (err: any) {
       toast(err.message, "error");
+    } finally {
+      setPausingIds((prev) => { const next = new Set(prev); next.delete(vm.id); return next; });
     }
   };
 
@@ -266,12 +291,12 @@ export function EnvList() {
         const created = await api.createGithubRepo(newRepoName.trim(), newRepoPrivate);
         ghRepo = created.fullName;
       }
-      await api.createEnv({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib });
+      await api.createVM({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib });
       setNewName("");
       setShowCreate(false);
       resetRepoState();
       setLoading(true);
-      loadEnvs();
+      loadVMs();
       loadQuota();
     } catch (err: any) {
       setError(err.message);
@@ -284,7 +309,7 @@ export function EnvList() {
   return (
     <div className="max-w-5xl mx-auto px-6 py-8">
       <div className="flex items-center justify-between mb-8">
-        <h1 className="text-2xl font-semibold">Environments</h1>
+        <h1 className="text-2xl font-semibold">VMs</h1>
         <div className="flex items-center gap-4">
           <button
             onClick={() => setShowSshKeys(!showSshKeys)}
@@ -299,7 +324,7 @@ export function EnvList() {
             }}
             className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
           >
-            {showCreate ? "Cancel" : "New Environment"}
+            {showCreate ? "Cancel" : "New VM"}
           </button>
         </div>
       </div>
@@ -310,33 +335,32 @@ export function EnvList() {
         </div>
       )}
 
-      {/* GitHub connection banner */}
-      {githubStatus && !githubStatus.connected && (
+      {/* GitHub connection banner (dismissable, only when not connected) */}
+      {githubStatus && !githubStatus.connected && !githubBannerDismissed && (
         <div className="mb-6 border border-neutral-200 px-5 py-4 flex items-center justify-between bg-panel-chat">
           <span className="text-xs text-neutral-600">
             Connect GitHub to clone and push to your repositories
           </span>
-          <a
-            href={githubConnectUrl(window.location.href)}
-            className="text-xs font-medium underline underline-offset-4 transition-opacity hover:opacity-60 shrink-0 ml-4"
-          >
-            Connect GitHub
-          </a>
-        </div>
-      )}
-      {githubStatus?.connected && (
-        <div className="mb-6 border border-neutral-200 px-5 py-4 flex items-center justify-between bg-panel-chat">
-          <span className="text-xs text-neutral-600">
-            GitHub connected{githubStatus.username ? ` as ${githubStatus.username}` : ""}
-          </span>
-          <button
-            onClick={() => {
-              api.disconnectGithub().then(() => setGithubStatus({ connected: false, username: null }));
-            }}
-            className="text-xs text-neutral-400 underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer shrink-0 ml-4"
-          >
-            Disconnect
-          </button>
+          <div className="flex items-center gap-3 shrink-0 ml-4">
+            <a
+              href={githubConnectUrl(window.location.href)}
+              className="text-xs font-medium underline underline-offset-4 transition-opacity hover:opacity-60"
+            >
+              Connect GitHub
+            </a>
+            <button
+              onClick={() => {
+                setGithubBannerDismissed(true);
+                try { sessionStorage.setItem("github-banner-dismissed", "1"); } catch {}
+              }}
+              className="text-neutral-400 hover:text-neutral-600 transition-colors cursor-pointer"
+              title="Dismiss"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M3 3l8 8M11 3l-8 8" />
+              </svg>
+            </button>
+          </div>
         </div>
       )}
 
@@ -352,7 +376,7 @@ export function EnvList() {
                 type="text"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="Environment name"
+                placeholder="VM name"
                 maxLength={64}
                 className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none"
                 autoFocus
@@ -517,23 +541,23 @@ export function EnvList() {
       )}
 
       {loading ? (
-        <p className="text-neutral-500 text-xs">Loading environments...</p>
-      ) : envs.length === 0 ? (
+        <p className="text-neutral-500 text-xs">Loading VMs...</p>
+      ) : vms.length === 0 ? (
         <div className="text-center py-16">
           <h2 className="text-2xl font-semibold mb-3">Welcome to NumaVM</h2>
           <p className="text-xs text-neutral-600 mb-8 max-w-lg mx-auto">
-            Create always-on development environments with built-in AI agents, web terminals, and team collaboration.
+            Create always-on development VMs with built-in AI agents, web terminals, and team collaboration.
           </p>
           <button
             onClick={() => setShowCreate(true)}
             className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer mb-12"
           >
-            Create Your First Environment
+            Create Your First VM
           </button>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 max-w-3xl mx-auto text-left">
             <div className="bg-panel-chat border border-neutral-200 p-5">
               <div className="text-sm font-semibold mb-2">Terminal</div>
-              <p className="text-xs text-neutral-600">Full web terminal with SSH access to your persistent environment.</p>
+              <p className="text-xs text-neutral-600">Full web terminal with SSH access to your persistent VM.</p>
             </div>
             <div className="bg-panel-chat border border-neutral-200 p-5">
               <div className="text-sm font-semibold mb-2">AI Agents</div>
@@ -541,43 +565,47 @@ export function EnvList() {
             </div>
             <div className="bg-panel-chat border border-neutral-200 p-5">
               <div className="text-sm font-semibold mb-2">Collaboration</div>
-              <p className="text-xs text-neutral-600">Share environments with your team using role-based access control.</p>
+              <p className="text-xs text-neutral-600">Share VMs with your team using role-based access control.</p>
             </div>
           </div>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {envs.map((env) => (
+          {vms.map((vm) => {
+            const isPausing = pausingIds.has(vm.id);
+            const displayStatus = isPausing ? "pausing" : vm.status;
+            return (
             <div
-              key={env.id}
-              onClick={() => navigate(`/env/${env.id}`)}
-              className="bg-panel-chat border border-neutral-200 p-5 transition-opacity hover:opacity-80 cursor-pointer"
+              key={vm.id}
+              onClick={() => !isPausing && navigate(`/vm/${vm.id}`)}
+              className={`bg-panel-chat border border-neutral-200 p-5 transition-opacity cursor-pointer ${isPausing ? "opacity-60" : "hover:opacity-80"}`}
             >
               <div className="flex items-center gap-2 mb-2">
                 <span
-                  className={`w-1.5 h-1.5 rounded-full ${statusColors[env.status] || "bg-neutral-400"}`}
+                  className={`w-1.5 h-1.5 rounded-full ${isPausing ? "bg-yellow-500 animate-pulse" : statusColors[vm.status] || "bg-neutral-400"}`}
                 />
-                <span className="text-sm font-semibold truncate flex-1">{env.name}</span>
-                <EnvCardMenu
-                  env={env}
-                  onDelete={() => handleDelete(env)}
-                  onClone={() => handleClone(env)}
-                  onPause={() => handlePause(env)}
+                <span className="text-sm font-semibold truncate flex-1">{vm.name}</span>
+                <VMCardMenu
+                  vm={vm}
+                  onDelete={() => handleDelete(vm)}
+                  onClone={() => handleClone(vm)}
+                  onPause={() => handlePause(vm)}
                 />
               </div>
-              <p className="text-xs text-neutral-500 mb-3">{env.id}</p>
+              <p className="text-xs text-neutral-500 mb-3">{vm.id}</p>
               <div className="flex items-center justify-between text-xs text-neutral-500">
-                <span className="capitalize">{env.role}</span>
+                <span className="capitalize">{isPausing ? "Pausing..." : vm.role}</span>
                 <span>
-                  {env.mem_size_mib >= 1024
-                    ? `${(env.mem_size_mib / 1024).toFixed(env.mem_size_mib % 1024 ? 2 : 0)} GB`
-                    : `${env.mem_size_mib} MB`}
+                  {vm.mem_size_mib >= 1024
+                    ? `${(vm.mem_size_mib / 1024).toFixed(vm.mem_size_mib % 1024 ? 2 : 0)} GB`
+                    : `${vm.mem_size_mib} MB`}
                   {" RAM"}
                 </span>
-                <span>{relativeTime(env.created_at)}</span>
+                <span>{relativeTime(vm.created_at)}</span>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

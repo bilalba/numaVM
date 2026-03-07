@@ -1,16 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import {
-  findEnvById,
+  findVMById,
   checkAccess,
   grantAccess,
   revokeAccess,
-  getEnvAccess,
+  getVMAccess,
   findUserByEmail,
 } from "../db/client.js";
 
 export function registerAccessRoutes(app: FastifyInstance) {
   // Grant or revoke access
-  app.post("/envs/:id/access", async (request, reply) => {
+  app.post("/vms/:id/access", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { email?: string; role?: string | null };
 
@@ -18,9 +18,9 @@ export function registerAccessRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "email is required" });
     }
 
-    const env = findEnvById(id);
-    if (!env) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const callerRole = checkAccess(id, request.userId);
@@ -53,20 +53,20 @@ export function registerAccessRoutes(app: FastifyInstance) {
   });
 
   // List users with access
-  app.get("/envs/:id/access", async (request, reply) => {
+  app.get("/vms/:id/access", async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const env = findEnvById(id);
-    if (!env) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const access = getEnvAccess(id);
+    const access = getVMAccess(id);
     return { access };
   });
 }

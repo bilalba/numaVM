@@ -5,7 +5,7 @@ const docker = new Dockerode({
 });
 
 function getDataDir() {
-  return process.env.DATA_DIR || "/data/envs";
+  return process.env.DATA_DIR || "/data/vms";
 }
 const envImage = process.env.ENV_IMAGE || "numavm-env";
 

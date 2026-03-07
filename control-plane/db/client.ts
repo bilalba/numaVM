@@ -11,20 +11,39 @@ const db: DatabaseType = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
-// Run schema migrations
+// --- Migration: rename envs → vms, env_access → vm_access, env_id → vm_id ---
+// Check if old table names exist and migrate
+const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(t => t.name);
+if (tables.includes("envs") && !tables.includes("vms")) {
+  db.pragma("foreign_keys = OFF");
+  db.exec(`
+    ALTER TABLE envs RENAME TO vms;
+    ALTER TABLE agent_sessions RENAME COLUMN env_id TO vm_id;
+    ALTER TABLE vm_traffic RENAME COLUMN env_id TO vm_id;
+    ALTER TABLE admin_events RENAME COLUMN env_id TO vm_id;
+  `);
+  db.pragma("foreign_keys = ON");
+}
+if (tables.includes("env_access") && !tables.includes("vm_access")) {
+  db.pragma("foreign_keys = OFF");
+  db.exec(`
+    ALTER TABLE env_access RENAME TO vm_access;
+    ALTER TABLE vm_access RENAME COLUMN env_id TO vm_id;
+  `);
+  db.pragma("foreign_keys = ON");
+}
+
+// Run schema (creates tables if they don't exist)
 const schema = readFileSync(join(__dirname, "schema.sql"), "utf-8");
 db.exec(schema);
 
-// Migrate existing envs table: add Firecracker columns + update CHECK constraint
-const envColumns = db.pragma("table_info(envs)") as { name: string }[];
-const colNames = new Set(envColumns.map((c) => c.name));
+// Migrate existing vms table: add Firecracker columns + update CHECK constraint
+const vmColumns = db.pragma("table_info(vms)") as { name: string }[];
+const colNames = new Set(vmColumns.map((c) => c.name));
 if (!colNames.has("vm_ip")) {
-  // Need to recreate table to add columns AND update the status CHECK constraint
-  // (SQLite doesn't support ALTER COLUMN or modifying constraints)
-  // Temporarily disable FK checks for the migration
   db.pragma("foreign_keys = OFF");
   db.exec(`
-    CREATE TABLE IF NOT EXISTS envs_new (
+    CREATE TABLE IF NOT EXISTS vms_new (
       id                TEXT PRIMARY KEY,
       name              TEXT NOT NULL,
       owner_id          TEXT NOT NULL,
@@ -43,28 +62,26 @@ if (!colNames.has("vm_ip")) {
                         CHECK(status IN ('creating', 'running', 'stopped', 'paused', 'snapshotted', 'error')),
       created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-    INSERT INTO envs_new (id, name, owner_id, gh_repo, gh_token, container_id, app_port, ssh_port, opencode_port, opencode_password, status, created_at)
-      SELECT id, name, owner_id, gh_repo, gh_token, container_id, app_port, ssh_port, opencode_port, opencode_password, status, created_at FROM envs;
-    DROP TABLE envs;
-    ALTER TABLE envs_new RENAME TO envs;
-    CREATE INDEX IF NOT EXISTS idx_envs_owner ON envs(owner_id);
-    CREATE INDEX IF NOT EXISTS idx_envs_status ON envs(status);
+    INSERT INTO vms_new (id, name, owner_id, gh_repo, gh_token, container_id, app_port, ssh_port, opencode_port, opencode_password, status, created_at)
+      SELECT id, name, owner_id, gh_repo, gh_token, container_id, app_port, ssh_port, opencode_port, opencode_password, status, created_at FROM vms;
+    DROP TABLE vms;
+    ALTER TABLE vms_new RENAME TO vms;
+    CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
   `);
   db.pragma("foreign_keys = ON");
 }
 
 // Migrate: make gh_repo/gh_token nullable (was NOT NULL in earlier schema)
-// Clean up any leftover temp table from a previously failed migration
-db.exec("DROP TABLE IF EXISTS envs_mig2");
-const ghRepoCol = (db.pragma("table_info(envs)") as { name: string; notnull: number }[])
+db.exec("DROP TABLE IF EXISTS vms_mig2");
+const ghRepoCol = (db.pragma("table_info(vms)") as { name: string; notnull: number }[])
   .find((c) => c.name === "gh_repo");
 if (ghRepoCol && ghRepoCol.notnull === 1) {
   db.pragma("foreign_keys = OFF");
-  // Build envs_mig2 with all current columns from envs (including any added like pages_port)
-  const currentCols = (db.pragma("table_info(envs)") as { name: string }[]).map((c) => c.name);
+  const currentCols = (db.pragma("table_info(vms)") as { name: string }[]).map((c) => c.name);
   const colList = currentCols.join(", ");
   db.exec(`
-    CREATE TABLE envs_mig2 (
+    CREATE TABLE vms_mig2 (
       id                TEXT PRIMARY KEY,
       name              TEXT NOT NULL,
       owner_id          TEXT NOT NULL,
@@ -84,25 +101,25 @@ if (ghRepoCol && ghRepoCol.notnull === 1) {
       created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
       pages_port        INTEGER UNIQUE
     );
-    INSERT INTO envs_mig2 (${colList}) SELECT ${colList} FROM envs;
-    DROP TABLE envs;
-    ALTER TABLE envs_mig2 RENAME TO envs;
-    CREATE INDEX IF NOT EXISTS idx_envs_owner ON envs(owner_id);
-    CREATE INDEX IF NOT EXISTS idx_envs_status ON envs(status);
+    INSERT INTO vms_mig2 (${colList}) SELECT ${colList} FROM vms;
+    DROP TABLE vms;
+    ALTER TABLE vms_mig2 RENAME TO vms;
+    CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
   `);
   db.pragma("foreign_keys = ON");
 }
 
-// Migrate: add mem_size_mib column to envs
-const envCols2 = db.pragma("table_info(envs)") as { name: string }[];
-if (!envCols2.some((c) => c.name === "mem_size_mib")) {
-  db.exec("ALTER TABLE envs ADD COLUMN mem_size_mib INTEGER NOT NULL DEFAULT 512");
+// Migrate: add mem_size_mib column to vms
+const vmCols2 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols2.some((c) => c.name === "mem_size_mib")) {
+  db.exec("ALTER TABLE vms ADD COLUMN mem_size_mib INTEGER NOT NULL DEFAULT 512");
 }
 
-// Migrate: add status_detail column to envs (real-time progress during creation)
-const envCols3 = db.pragma("table_info(envs)") as { name: string }[];
-if (!envCols3.some((c) => c.name === "status_detail")) {
-  db.exec("ALTER TABLE envs ADD COLUMN status_detail TEXT");
+// Migrate: add status_detail column to vms (real-time progress during creation)
+const vmCols3 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols3.some((c) => c.name === "status_detail")) {
+  db.exec("ALTER TABLE vms ADD COLUMN status_detail TEXT");
 }
 
 // Migrate: add plan columns to users
@@ -124,7 +141,7 @@ export { db };
 
 // --- Types ---
 
-export interface Env {
+export interface VM {
   id: string;
   name: string;
   owner_id: string;
@@ -145,7 +162,7 @@ export interface Env {
   mem_size_mib: number;
 }
 
-export interface EnvWithRole extends Env {
+export interface VMWithRole extends VM {
   role: string;
 }
 
@@ -180,71 +197,71 @@ export function clearUserGithubToken(userId: string): void {
   clearUserGithubTokenStmt.run(userId);
 }
 
-// --- Env CRUD ---
+// --- VM CRUD ---
 
-const insertEnvStmt = db.prepare(`
-  INSERT INTO envs (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib)
+const insertVMStmt = db.prepare(`
+  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
-export function insertEnv(env: Omit<Env, "created_at">): void {
-  insertEnvStmt.run(
-    env.id, env.name, env.owner_id, env.gh_repo, env.gh_token,
-    env.container_id, env.vm_ip, env.vsock_cid, env.vm_pid, env.snapshot_path,
-    env.app_port, env.ssh_port, env.opencode_port,
-    env.opencode_password, env.status, env.mem_size_mib
+export function insertVM(vm: Omit<VM, "created_at">): void {
+  insertVMStmt.run(
+    vm.id, vm.name, vm.owner_id, vm.gh_repo, vm.gh_token,
+    vm.container_id, vm.vm_ip, vm.vsock_cid, vm.vm_pid, vm.snapshot_path,
+    vm.app_port, vm.ssh_port, vm.opencode_port,
+    vm.opencode_password, vm.status, vm.mem_size_mib
   );
 }
 
-const findEnvByIdStmt = db.prepare("SELECT * FROM envs WHERE id = ?");
-export function findEnvById(id: string): Env | undefined {
-  return findEnvByIdStmt.get(id) as Env | undefined;
+const findVMByIdStmt = db.prepare("SELECT * FROM vms WHERE id = ?");
+export function findVMById(id: string): VM | undefined {
+  return findVMByIdStmt.get(id) as VM | undefined;
 }
 
-const findEnvsByUserStmt = db.prepare(`
-  SELECT e.*, ea.role FROM envs e
-  INNER JOIN env_access ea ON ea.env_id = e.id
-  WHERE ea.user_id = ?
-  ORDER BY e.created_at DESC
+const findVMsByUserStmt = db.prepare(`
+  SELECT v.*, va.role FROM vms v
+  INNER JOIN vm_access va ON va.vm_id = v.id
+  WHERE va.user_id = ?
+  ORDER BY v.created_at DESC
 `);
-export function findEnvsByUser(userId: string): EnvWithRole[] {
-  return findEnvsByUserStmt.all(userId) as EnvWithRole[];
+export function findVMsByUser(userId: string): VMWithRole[] {
+  return findVMsByUserStmt.all(userId) as VMWithRole[];
 }
 
-const updateEnvStatusStmt = db.prepare("UPDATE envs SET status = ? WHERE id = ?");
-export function updateEnvStatus(id: string, status: string): void {
-  updateEnvStatusStmt.run(status, id);
+const updateVMStatusStmt = db.prepare("UPDATE vms SET status = ? WHERE id = ?");
+export function updateVMStatus(id: string, status: string): void {
+  updateVMStatusStmt.run(status, id);
 }
 
-const updateEnvStatusDetailStmt = db.prepare("UPDATE envs SET status_detail = ? WHERE id = ?");
-export function updateEnvStatusDetail(id: string, detail: string | null): void {
-  updateEnvStatusDetailStmt.run(detail, id);
+const updateVMStatusDetailStmt = db.prepare("UPDATE vms SET status_detail = ? WHERE id = ?");
+export function updateVMStatusDetail(id: string, detail: string | null): void {
+  updateVMStatusDetailStmt.run(detail, id);
 }
 
-const updateEnvContainerIdStmt = db.prepare("UPDATE envs SET container_id = ? WHERE id = ?");
-export function updateEnvContainerId(id: string, containerId: string): void {
-  updateEnvContainerIdStmt.run(containerId, id);
+const updateVMContainerIdStmt = db.prepare("UPDATE vms SET container_id = ? WHERE id = ?");
+export function updateVMContainerId(id: string, containerId: string): void {
+  updateVMContainerIdStmt.run(containerId, id);
 }
 
-const updateEnvVmInfoStmt = db.prepare(
-  "UPDATE envs SET container_id = ?, vm_ip = ?, vsock_cid = ?, vm_pid = ? WHERE id = ?"
+const updateVMInfoStmt = db.prepare(
+  "UPDATE vms SET container_id = ?, vm_ip = ?, vsock_cid = ?, vm_pid = ? WHERE id = ?"
 );
-export function updateEnvVmInfo(id: string, vmId: string, vmIp: string, vsockCid: number, vmPid: number | null): void {
-  updateEnvVmInfoStmt.run(vmId, vmIp, vsockCid, vmPid, id);
+export function updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: number, vmPid: number | null): void {
+  updateVMInfoStmt.run(vmId, vmIp, vsockCid, vmPid, id);
 }
 
-const updateEnvSnapshotPathStmt = db.prepare("UPDATE envs SET snapshot_path = ? WHERE id = ?");
-export function updateEnvSnapshotPath(id: string, snapshotPath: string | null): void {
-  updateEnvSnapshotPathStmt.run(snapshotPath, id);
+const updateVMSnapshotPathStmt = db.prepare("UPDATE vms SET snapshot_path = ? WHERE id = ?");
+export function updateVMSnapshotPath(id: string, snapshotPath: string | null): void {
+  updateVMSnapshotPathStmt.run(snapshotPath, id);
 }
 
 // --- RAM quota ---
 
 const getUserProvisionedRamStmt = db.prepare(`
-  SELECT COALESCE(SUM(e.mem_size_mib), 0) as total_ram
-  FROM envs e
-  INNER JOIN env_access ea ON ea.env_id = e.id
-  WHERE ea.user_id = ? AND ea.role = 'owner'
-  AND e.status IN ('running', 'creating')
+  SELECT COALESCE(SUM(v.mem_size_mib), 0) as total_ram
+  FROM vms v
+  INNER JOIN vm_access va ON va.vm_id = v.id
+  WHERE va.user_id = ? AND va.role = 'owner'
+  AND v.status IN ('running', 'creating')
 `);
 export function getUserProvisionedRam(userId: string): number {
   const row = getUserProvisionedRamStmt.get(userId) as { total_ram: number };
@@ -303,7 +320,7 @@ export function getUserPlan(userId: string): UserPlan {
 // --- Vsock CID allocation ---
 
 const getUsedCidsStmt = db.prepare(
-  "SELECT vsock_cid FROM envs WHERE vsock_cid IS NOT NULL AND status != 'error'"
+  "SELECT vsock_cid FROM vms WHERE vsock_cid IS NOT NULL AND status != 'error'"
 );
 export function getUsedCids(): number[] {
   return (getUsedCidsStmt.all() as { vsock_cid: number }[]).map((r) => r.vsock_cid);
@@ -311,37 +328,37 @@ export function getUsedCids(): number[] {
 
 // --- SSH proxy lookups ---
 
-const findEnvBySshPortStmt = db.prepare("SELECT * FROM envs WHERE ssh_port = ?");
-export function findEnvBySshPort(port: number): Env | undefined {
-  return findEnvBySshPortStmt.get(port) as Env | undefined;
+const findVMBySshPortStmt = db.prepare("SELECT * FROM vms WHERE ssh_port = ?");
+export function findVMBySshPort(port: number): VM | undefined {
+  return findVMBySshPortStmt.get(port) as VM | undefined;
 }
 
-const getAuthorizedUsersForEnvStmt = db.prepare(`
+const getAuthorizedUsersForVMStmt = db.prepare(`
   SELECT u.id, u.ssh_public_keys, u.github_username
-  FROM env_access ea
-  JOIN users u ON u.id = ea.user_id
-  WHERE ea.env_id = ?
+  FROM vm_access va
+  JOIN users u ON u.id = va.user_id
+  WHERE va.vm_id = ?
 `);
-export function getAuthorizedUsersForEnv(envId: string): { id: string; ssh_public_keys: string | null; github_username: string | null }[] {
-  return getAuthorizedUsersForEnvStmt.all(envId) as { id: string; ssh_public_keys: string | null; github_username: string | null }[];
+export function getAuthorizedUsersForVM(vmId: string): { id: string; ssh_public_keys: string | null; github_username: string | null }[] {
+  return getAuthorizedUsersForVMStmt.all(vmId) as { id: string; ssh_public_keys: string | null; github_username: string | null }[];
 }
 
-// --- All envs (for SSH proxy startup) ---
+// --- All VMs (for SSH proxy startup) ---
 
-const findAllEnvsStmt = db.prepare("SELECT * FROM envs WHERE status != 'error'");
-export function findAllEnvs(): Env[] {
-  return findAllEnvsStmt.all() as Env[];
+const findAllVMsStmt = db.prepare("SELECT * FROM vms WHERE status != 'error'");
+export function findAllVMs(): VM[] {
+  return findAllVMsStmt.all() as VM[];
 }
 
-const deleteEnvStmt = db.prepare("DELETE FROM envs WHERE id = ?");
-export function deleteEnv(id: string): void {
-  deleteEnvStmt.run(id);
+const deleteVMStmt = db.prepare("DELETE FROM vms WHERE id = ?");
+export function deleteVM(id: string): void {
+  deleteVMStmt.run(id);
 }
 
 // --- Port allocation ---
 
 const getUsedPortsStmt = db.prepare(
-  "SELECT app_port, ssh_port, opencode_port FROM envs WHERE status != 'error'"
+  "SELECT app_port, ssh_port, opencode_port FROM vms WHERE status != 'error'"
 );
 export function getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[] {
   return getUsedPortsStmt.all() as { app_port: number; ssh_port: number; opencode_port: number }[];
@@ -350,39 +367,39 @@ export function getUsedPorts(): { app_port: number; ssh_port: number; opencode_p
 // --- Access control ---
 
 const grantAccessStmt = db.prepare(`
-  INSERT OR REPLACE INTO env_access (env_id, user_id, role) VALUES (?, ?, ?)
+  INSERT OR REPLACE INTO vm_access (vm_id, user_id, role) VALUES (?, ?, ?)
 `);
-export function grantAccess(envId: string, userId: string, role: string): void {
-  grantAccessStmt.run(envId, userId, role);
+export function grantAccess(vmId: string, userId: string, role: string): void {
+  grantAccessStmt.run(vmId, userId, role);
 }
 
 const revokeAccessStmt = db.prepare(
-  "DELETE FROM env_access WHERE env_id = ? AND user_id = ?"
+  "DELETE FROM vm_access WHERE vm_id = ? AND user_id = ?"
 );
-export function revokeAccess(envId: string, userId: string): void {
-  revokeAccessStmt.run(envId, userId);
+export function revokeAccess(vmId: string, userId: string): void {
+  revokeAccessStmt.run(vmId, userId);
 }
 
-const revokeAllAccessStmt = db.prepare("DELETE FROM env_access WHERE env_id = ?");
-export function revokeAllAccess(envId: string): void {
-  revokeAllAccessStmt.run(envId);
+const revokeAllAccessStmt = db.prepare("DELETE FROM vm_access WHERE vm_id = ?");
+export function revokeAllAccess(vmId: string): void {
+  revokeAllAccessStmt.run(vmId);
 }
 
-const getEnvAccessStmt = db.prepare(`
-  SELECT ea.user_id, ea.role, u.email, u.name
-  FROM env_access ea
-  LEFT JOIN users u ON u.id = ea.user_id
-  WHERE ea.env_id = ?
+const getVMAccessStmt = db.prepare(`
+  SELECT va.user_id, va.role, u.email, u.name
+  FROM vm_access va
+  LEFT JOIN users u ON u.id = va.user_id
+  WHERE va.vm_id = ?
 `);
-export function getEnvAccess(envId: string): { user_id: string; role: string; email: string; name: string | null }[] {
-  return getEnvAccessStmt.all(envId) as { user_id: string; role: string; email: string; name: string | null }[];
+export function getVMAccess(vmId: string): { user_id: string; role: string; email: string; name: string | null }[] {
+  return getVMAccessStmt.all(vmId) as { user_id: string; role: string; email: string; name: string | null }[];
 }
 
 const checkAccessStmt = db.prepare(
-  "SELECT role FROM env_access WHERE env_id = ? AND user_id = ?"
+  "SELECT role FROM vm_access WHERE vm_id = ? AND user_id = ?"
 );
-export function checkAccess(envId: string, userId: string): string | undefined {
-  const row = checkAccessStmt.get(envId, userId) as { role: string } | undefined;
+export function checkAccess(vmId: string, userId: string): string | undefined {
+  const row = checkAccessStmt.get(vmId, userId) as { role: string } | undefined;
   return row?.role;
 }
 
@@ -415,22 +432,22 @@ export function appendUserSshKey(userId: string, key: string): void {
 // --- VM Traffic ---
 
 const insertTrafficStmt = db.prepare(
-  "INSERT INTO vm_traffic (env_id, rx_bytes, tx_bytes) VALUES (?, ?, ?)"
+  "INSERT INTO vm_traffic (vm_id, rx_bytes, tx_bytes) VALUES (?, ?, ?)"
 );
-export function insertTrafficRecord(envId: string, rxBytes: number, txBytes: number): void {
-  insertTrafficStmt.run(envId, rxBytes, txBytes);
+export function insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number): void {
+  insertTrafficStmt.run(vmId, rxBytes, txBytes);
 }
 
-export function getTrafficHistory(envId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[] {
+export function getTrafficHistory(vmId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[] {
   return db.prepare(
-    "SELECT rx_bytes, tx_bytes, recorded_at FROM vm_traffic WHERE env_id = ? AND recorded_at > datetime('now', '-' || ? || ' hours') ORDER BY recorded_at ASC"
-  ).all(envId, hours) as { rx_bytes: number; tx_bytes: number; recorded_at: string }[];
+    "SELECT rx_bytes, tx_bytes, recorded_at FROM vm_traffic WHERE vm_id = ? AND recorded_at > datetime('now', '-' || ? || ' hours') ORDER BY recorded_at ASC"
+  ).all(vmId, hours) as { rx_bytes: number; tx_bytes: number; recorded_at: string }[];
 }
 
-export function getTrafficSummary(hours: number): { env_id: string; total_rx: number; total_tx: number; samples: number }[] {
+export function getTrafficSummary(hours: number): { vm_id: string; total_rx: number; total_tx: number; samples: number }[] {
   return db.prepare(
-    "SELECT env_id, SUM(rx_bytes) as total_rx, SUM(tx_bytes) as total_tx, COUNT(*) as samples FROM vm_traffic WHERE recorded_at > datetime('now', '-' || ? || ' hours') GROUP BY env_id ORDER BY total_rx + total_tx DESC"
-  ).all(hours) as { env_id: string; total_rx: number; total_tx: number; samples: number }[];
+    "SELECT vm_id, SUM(rx_bytes) as total_rx, SUM(tx_bytes) as total_tx, COUNT(*) as samples FROM vm_traffic WHERE recorded_at > datetime('now', '-' || ? || ' hours') GROUP BY vm_id ORDER BY total_rx + total_tx DESC"
+  ).all(hours) as { vm_id: string; total_rx: number; total_tx: number; samples: number }[];
 }
 
 export function pruneOldTraffic(days: number = 7): number {
@@ -443,17 +460,17 @@ export function pruneOldTraffic(days: number = 7): number {
 // --- Admin Events ---
 
 const insertAdminEventStmt = db.prepare(
-  "INSERT INTO admin_events (type, env_id, user_id, metadata) VALUES (?, ?, ?, ?)"
+  "INSERT INTO admin_events (type, vm_id, user_id, metadata) VALUES (?, ?, ?, ?)"
 );
-export function emitAdminEvent(type: string, envId?: string | null, userId?: string | null, metadata?: Record<string, unknown>): void {
-  insertAdminEventStmt.run(type, envId || null, userId || null, metadata ? JSON.stringify(metadata) : null);
+export function emitAdminEvent(type: string, vmId?: string | null, userId?: string | null, metadata?: Record<string, unknown>): void {
+  insertAdminEventStmt.run(type, vmId || null, userId || null, metadata ? JSON.stringify(metadata) : null);
 }
 
 // --- Agent Sessions ---
 
 export interface AgentSession {
   id: string;
-  env_id: string;
+  vm_id: string;
   agent_type: "codex" | "opencode";
   thread_id: string | null;
   title: string | null;
@@ -473,11 +490,11 @@ export interface AgentMessage {
 }
 
 const insertAgentSessionStmt = db.prepare(`
-  INSERT INTO agent_sessions (id, env_id, agent_type, thread_id, title, cwd, status)
+  INSERT INTO agent_sessions (id, vm_id, agent_type, thread_id, title, cwd, status)
   VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
-export function insertAgentSession(s: Pick<AgentSession, "id" | "env_id" | "agent_type" | "thread_id" | "title" | "cwd" | "status">): void {
-  insertAgentSessionStmt.run(s.id, s.env_id, s.agent_type, s.thread_id, s.title, s.cwd, s.status);
+export function insertAgentSession(s: Pick<AgentSession, "id" | "vm_id" | "agent_type" | "thread_id" | "title" | "cwd" | "status">): void {
+  insertAgentSessionStmt.run(s.id, s.vm_id, s.agent_type, s.thread_id, s.title, s.cwd, s.status);
 }
 
 const findAgentSessionStmt = db.prepare("SELECT * FROM agent_sessions WHERE id = ?");
@@ -485,11 +502,11 @@ export function findAgentSession(id: string): AgentSession | undefined {
   return findAgentSessionStmt.get(id) as AgentSession | undefined;
 }
 
-const findAgentSessionsByEnvStmt = db.prepare(
-  "SELECT * FROM agent_sessions WHERE env_id = ? AND agent_type = ? AND status != 'archived' ORDER BY updated_at DESC"
+const findAgentSessionsByVMStmt = db.prepare(
+  "SELECT * FROM agent_sessions WHERE vm_id = ? AND agent_type = ? AND status != 'archived' ORDER BY updated_at DESC"
 );
-export function findAgentSessionsByEnv(envId: string, agentType: string): AgentSession[] {
-  return findAgentSessionsByEnvStmt.all(envId, agentType) as AgentSession[];
+export function findAgentSessionsByVM(vmId: string, agentType: string): AgentSession[] {
+  return findAgentSessionsByVMStmt.all(vmId, agentType) as AgentSession[];
 }
 
 const updateAgentSessionStatusStmt = db.prepare(

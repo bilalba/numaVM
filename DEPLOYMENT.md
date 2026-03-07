@@ -168,7 +168,7 @@ Alpine edge's Node.js 24 package is built against a newer OpenSSL that provides 
 The init script used `set -e` and `ip link set eth0 up` without error handling, causing a kernel panic if eth0 doesn't exist yet. **Fix**: Added `2>/dev/null || true`.
 
 ### CORS for non-localhost
-The control plane only allowed CORS from `localhost:4002` or `app.${BASE_DOMAIN}`. When accessing via IP or hostname on port 4002 (without Caddy), CORS was blocked. **Fix**: CORS now uses dynamic origin validation — accepts any origin containing the `BASE_DOMAIN` or any origin on port 4002 (to support IP-based access like `http://34.224.40.136:4002`).
+The control plane only allowed CORS from `localhost:4002` or `app.${BASE_DOMAIN}`. When accessing via IP or hostname on port 4002 (without Caddy), CORS was blocked. **Fix**: CORS now uses dynamic origin validation — accepts any origin containing the `BASE_DOMAIN` or any origin on port 4002 (to support IP-based access like `http://<server-ip>:4002`).
 
 ### Control plane needs root
 Creating TAP devices, iptables rules, and spawning Firecracker all require root. Running as regular user causes `EACCES` and `TUNSETIFF: Operation not permitted` errors.

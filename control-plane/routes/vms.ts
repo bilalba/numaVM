@@ -1,17 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { customAlphabet } from "nanoid";
 import {
-  insertEnv,
-  findEnvById,
-  findEnvsByUser,
-  updateEnvStatus,
-  updateEnvStatusDetail,
-  updateEnvVmInfo,
-  updateEnvSnapshotPath,
-  deleteEnv,
+  insertVM,
+  findVMById,
+  findVMsByUser,
+  updateVMStatus,
+  updateVMStatusDetail,
+  updateVMInfo,
+  updateVMSnapshotPath,
+  deleteVM,
   grantAccess,
   revokeAllAccess,
   checkAccess,
@@ -41,9 +41,9 @@ const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
 
 const DEFAULT_MEM_SIZE = 512;
 
-export function registerEnvRoutes(app: FastifyInstance) {
-  // Create environment
-  app.post("/envs", async (request, reply) => {
+export function registerVMRoutes(app: FastifyInstance) {
+  // Create VM
+  app.post("/vms", async (request, reply) => {
     const body = request.body as { name?: string; gh_repo?: string; private?: boolean; mem_size_mib?: number };
 
     if (!body.name || typeof body.name !== "string" || body.name.length < 1 || body.name.length > 64) {
@@ -68,7 +68,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
       });
     }
 
-    const slug = `env-${generateSlug()}`;
+    const slug = `vm-${generateSlug()}`;
     const { appPort, sshPort, opencodePort } = allocatePorts();
     const vsockCid = allocateCid();
     const vmIp = cidToVmIp(vsockCid);
@@ -88,7 +88,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
     }
     const sshKeys = keyParts.join("\n");
 
-    // Generate per-env OpenCode password
+    // Generate per-VM OpenCode password
     const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
 
     // Always pass user's GitHub token to VM (for git push), fall back to platform GH_PAT
@@ -96,8 +96,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
     // Token-less is OK — VM will attempt a public clone via plain HTTPS.
     // git push won't work without a token, but the repo will still be cloned.
 
-    // Insert env record early (reserves ports + CID)
-    insertEnv({
+    // Insert VM record early (reserves ports + CID)
+    insertVM({
       id: slug,
       name: body.name,
       owner_id: request.userId,
@@ -120,7 +120,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
     grantAccess(slug, request.userId, "owner");
 
     // Return immediately — VM creation happens in the background.
-    // Dashboard polls GET /envs/:id for status + status_detail.
+    // Dashboard polls GET /vms/:id for status + status_detail.
     reply.status(201).send({
       id: slug,
       name: body.name,
@@ -152,10 +152,10 @@ export function registerEnvRoutes(app: FastifyInstance) {
           vmIp,
           memSizeMib: memSizeMib,
           onProgress: (detail: string) => {
-            updateEnvStatusDetail(slug, detail);
+            updateVMStatusDetail(slug, detail);
           },
         });
-        updateEnvVmInfo(slug, vmId, vmIp, vsockCid, null);
+        updateVMInfo(slug, vmId, vmIp, vsockCid, null);
 
         // Poll VM init progress (cloning → installing → building → starting → ready)
         const progressLabels: Record<string, string> = {
@@ -176,11 +176,11 @@ export function registerEnvRoutes(app: FastifyInstance) {
             if (progress && progress !== lastProgress) {
               lastProgress = progress;
               if (progress.startsWith("error:")) {
-                updateEnvStatusDetail(slug, `Error: ${progress.slice(6)}`);
-                // Don't fail the whole env — it's still SSH-accessible
+                updateVMStatusDetail(slug, `Error: ${progress.slice(6)}`);
+                // Don't fail the whole VM — it's still SSH-accessible
                 break;
               }
-              updateEnvStatusDetail(slug, progressLabels[progress] || progress);
+              updateVMStatusDetail(slug, progressLabels[progress] || progress);
               if (progress === "ready") break;
             }
           } catch {
@@ -189,36 +189,38 @@ export function registerEnvRoutes(app: FastifyInstance) {
           await new Promise((r) => setTimeout(r, 2000));
         }
 
-        updateEnvStatus(slug, "running");
+        updateVMStatus(slug, "running");
         // Keep status_detail so the dashboard can show what happened
         if (lastProgress === "ready") {
-          updateEnvStatusDetail(slug, null);
+          updateVMStatusDetail(slug, null);
         }
 
         // Register Caddy route AFTER status is "running" so it gets the proxy route
         try {
           await addRoute(slug, appPort);
         } catch (err) {
-          console.error(`[env] Failed to register Caddy route for ${slug}:`, err);
+          console.error(`[vm] Failed to register Caddy route for ${slug}:`, err);
         }
 
         emitAdminEvent("vm.created", slug, userId, { name: body.name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}) });
       } catch (err: any) {
-        console.error(`[env] Background VM creation failed for ${slug}:`, err);
-        updateEnvStatusDetail(slug, `Error: ${err.message}`);
-        updateEnvStatus(slug, "error");
+        console.error(`[vm] Background VM creation failed for ${slug}:`, err);
+        updateVMStatusDetail(slug, `Error: ${err.message}`);
+        updateVMStatus(slug, "error");
         // Roll back DB records so ports/CIDs are freed for retry
         revokeAllAccess(slug);
-        deleteEnv(slug);
+        deleteVM(slug);
+        const dataDir = process.env.DATA_DIR || "/data/envs";
+        try { rmSync(join(dataDir, slug), { recursive: true, force: true }); } catch { /* ok */ }
       }
     })();
   });
 
-  // List environments for authenticated user
-  app.get("/envs", async (request) => {
-    const envs = findEnvsByUser(request.userId);
+  // List VMs for authenticated user
+  app.get("/vms", async (request) => {
+    const vms = findVMsByUser(request.userId);
     return {
-      envs: envs.map((e) => ({
+      vms: vms.map((e) => ({
         id: e.id,
         name: e.name,
         status: e.status,
@@ -232,7 +234,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
   });
 
   // Get user's RAM quota usage
-  app.get("/envs/quota", async (request) => {
+  app.get("/vms/quota", async (request) => {
     const userPlan = getUserPlan(request.userId);
     const currentRam = getUserProvisionedRam(request.userId);
     return {
@@ -247,30 +249,30 @@ export function registerEnvRoutes(app: FastifyInstance) {
     };
   });
 
-  // Get environment details
-  app.get("/envs/:id", async (request, reply) => {
+  // Get VM details
+  app.get("/vms/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const env = findEnvById(id);
-    if (!env) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     // Auto-wake snapshotted VMs when detail page is loaded
-    let quotaError: { message: string; current_ram_mib: number; env_ram_mib: number; max_ram_mib: number; plan: string } | undefined;
-    if (env.status === "snapshotted" || env.status === "paused") {
+    let quotaError: { message: string; current_ram_mib: number; vm_ram_mib: number; max_ram_mib: number; plan: string } | undefined;
+    if (vm.status === "snapshotted" || vm.status === "paused") {
       try {
-        await ensureVMRunning(env.id);
+        await ensureVMRunning(vm.id);
       } catch (err: any) {
         if (err instanceof QuotaExceededError) {
-          quotaError = { message: err.message, current_ram_mib: err.current_ram_mib, env_ram_mib: err.env_ram_mib, max_ram_mib: err.max_ram_mib, plan: err.plan };
+          quotaError = { message: err.message, current_ram_mib: err.current_ram_mib, vm_ram_mib: err.vm_ram_mib, max_ram_mib: err.max_ram_mib, plan: err.plan };
         } else {
           console.error(`[wake] Background wake failed for ${id}:`, err);
-          request.log.error({ err, envId: id }, "Background wake failed");
+          request.log.error({ err, vmId: id }, "Background wake failed");
         }
       }
     }
@@ -278,51 +280,51 @@ export function registerEnvRoutes(app: FastifyInstance) {
     // Live VM status
     let vmStatus: { running: boolean; status: string; startedAt: string | null; vsockCid: number } | null = null;
     try {
-      vmStatus = await inspectVM(env.id);
+      vmStatus = await inspectVM(vm.id);
     } catch {
       // VM may have been removed externally
     }
 
     return {
-      id: env.id,
-      name: env.name,
-      status: env.status,
-      status_detail: env.status_detail,
-      url: `http://${env.id}.${getBaseDomain()}`,
-      ...(env.gh_repo ? { repo_url: `https://github.com/${env.gh_repo}` } : {}),
-      ssh_command: `ssh ${env.id}@ssh.${getBaseDomain()}`,
-      ssh_port: env.ssh_port,
-      app_port: env.app_port,
-      opencode_port: env.opencode_port,
+      id: vm.id,
+      name: vm.name,
+      status: vm.status,
+      status_detail: vm.status_detail,
+      url: `http://${vm.id}.${getBaseDomain()}`,
+      ...(vm.gh_repo ? { repo_url: `https://github.com/${vm.gh_repo}` } : {}),
+      ssh_command: `ssh ${vm.id}@ssh.${getBaseDomain()}`,
+      ssh_port: vm.ssh_port,
+      app_port: vm.app_port,
+      opencode_port: vm.opencode_port,
       vm_status: vmStatus,
       role,
-      created_at: env.created_at,
-      mem_size_mib: env.mem_size_mib,
+      created_at: vm.created_at,
+      mem_size_mib: vm.mem_size_mib,
       ...(quotaError ? { quota_error: quotaError } : {}),
     };
   });
 
-  // Destroy environment (owner only)
-  app.delete("/envs/:id", async (request, reply) => {
+  // Destroy VM (owner only)
+  app.delete("/vms/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const env = findEnvById(id);
-    if (!env) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const role = checkAccess(id, request.userId);
     if (role !== "owner") {
-      return reply.status(403).send({ error: "Only the owner can delete an environment" });
+      return reply.status(403).send({ error: "Only the owner can delete a VM" });
     }
 
     // Cleanup VM (best-effort) — includes TAP, iptables DNAT
     try {
       await removeVMFull(
         id,
-        env.vm_ip || cidToVmIp(env.vsock_cid || 3),
-        env.app_port,
-        env.ssh_port,
-        env.opencode_port,
+        vm.vm_ip || cidToVmIp(vm.vsock_cid || 3),
+        vm.app_port,
+        vm.ssh_port,
+        vm.opencode_port,
       );
     } catch { /* may already be stopped/removed */ }
 
@@ -331,75 +333,80 @@ export function registerEnvRoutes(app: FastifyInstance) {
 
     // Cleanup DB
     revokeAllAccess(id);
-    deleteEnv(id);
+    deleteVM(id);
+
+    // Cleanup data directory (rootfs, snapshots, overlay, etc.)
+    const dataDir = process.env.DATA_DIR || "/data/envs";
+    const vmDataPath = join(dataDir, id);
+    try { rmSync(vmDataPath, { recursive: true, force: true }); } catch { /* best-effort */ }
 
     emitAdminEvent("vm.deleted", id, request.userId);
 
-    return { ok: true, message: `Environment ${id} destroyed` };
+    return { ok: true, message: `VM ${id} destroyed` };
   });
 
-  // Pause (snapshot) environment
-  app.post("/envs/:id/pause", async (request, reply) => {
+  // Pause (snapshot) VM
+  app.post("/vms/:id/pause", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const env = findEnvById(id);
-    if (!env) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const role = checkAccess(id, request.userId);
     if (role !== "owner") {
-      return reply.status(403).send({ error: "Only the owner can pause an environment" });
+      return reply.status(403).send({ error: "Only the owner can pause a VM" });
     }
 
-    if (env.status !== "running") {
-      return reply.status(400).send({ error: `Cannot pause environment in '${env.status}' state` });
+    if (vm.status !== "running") {
+      return reply.status(400).send({ error: `Cannot pause VM in '${vm.status}' state` });
     }
 
     try {
       await snapshotVM(id);
-      const snapshotPath = `${process.env.DATA_DIR || "/data/envs"}/${id}/snapshot`;
-      updateEnvSnapshotPath(id, snapshotPath);
-      updateEnvStatus(id, "snapshotted");
+      const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${id}/snapshot`;
+      updateVMSnapshotPath(id, snapshotPath);
+      updateVMStatus(id, "snapshotted");
 
       try { await removeRoute(id); } catch { /* ok */ }
 
       emitAdminEvent("vm.paused", id, request.userId);
 
-      return { ok: true, message: `Environment ${id} paused (snapshotted)` };
+      return { ok: true, message: `VM ${id} paused (snapshotted)` };
     } catch (err: any) {
       request.log.error({ err, id }, "Failed to pause VM");
       return reply.status(500).send({ error: "Failed to pause VM", details: err.message });
     }
   });
 
-  // Clone environment (copy disk state from source)
-  app.post("/envs/:id/clone", async (request, reply) => {
+  // Clone VM (copy disk state from source)
+  app.post("/vms/:id/clone", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { name?: string } || {};
-    const sourceEnv = findEnvById(id);
-    if (!sourceEnv) {
-      return reply.status(404).send({ error: "Source environment not found" });
+    const sourceVM = findVMById(id);
+    if (!sourceVM) {
+      return reply.status(404).send({ error: "Source VM not found" });
     }
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    if (sourceEnv.status !== "running" && sourceEnv.status !== "snapshotted" && sourceEnv.status !== "paused") {
-      return reply.status(400).send({ error: `Cannot clone environment in '${sourceEnv.status}' state` });
+    if (sourceVM.status !== "running" && sourceVM.status !== "snapshotted" && sourceVM.status !== "paused") {
+      return reply.status(400).send({ error: `Cannot clone VM in '${sourceVM.status}' state` });
     }
 
-    const dataDir = process.env.DATA_DIR || "/data/envs";
+    const dataDir = process.env.DATA_DIR || "/data/vms";
     const sourceDir = join(dataDir, id);
     const sourceRootfs = join(sourceDir, "rootfs.ext4");
     const sourceData = join(sourceDir, "data.ext4");
 
     if (!existsSync(sourceRootfs)) {
-      return reply.status(400).send({ error: "Source environment has no rootfs to clone" });
+      return reply.status(400).send({ error: "Source VM has no rootfs to clone" });
     }
 
-    const cloneMemSize = sourceEnv.mem_size_mib;
+    const cloneMemSize = sourceVM.mem_size_mib;
     const userPlan = getUserPlan(request.userId);
     const currentRam = getUserProvisionedRam(request.userId);
     if (currentRam + cloneMemSize > userPlan.max_ram_mib) {
@@ -412,8 +419,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
       });
     }
 
-    const cloneName = body.name || `${sourceEnv.name} (copy)`;
-    const slug = `env-${generateSlug()}`;
+    const cloneName = body.name || `${sourceVM.name} (copy)`;
+    const slug = `vm-${generateSlug()}`;
     const { appPort, sshPort, opencodePort } = allocatePorts();
     const vsockCid = allocateCid();
     const vmIp = cidToVmIp(vsockCid);
@@ -439,7 +446,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
 
     // Copy disk files: pause source if running, copy, resume
     try {
-      const isRunning = sourceEnv.status === "running";
+      const isRunning = sourceVM.status === "running";
       if (isRunning) {
         await pauseVM(id);
       }
@@ -473,12 +480,12 @@ export function registerEnvRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to copy disk files", details: err.message });
     }
 
-    // Insert env record (reserves ports/CID)
-    insertEnv({
+    // Insert VM record (reserves ports/CID)
+    insertVM({
       id: slug,
       name: cloneName,
       owner_id: request.userId,
-      gh_repo: sourceEnv.gh_repo || null,
+      gh_repo: sourceVM.gh_repo || null,
       gh_token: ghToken,
       container_id: null,
       vm_ip: vmIp,
@@ -502,7 +509,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
         appPort,
         sshPort,
         opencodePort,
-        ghRepo: sourceEnv.gh_repo || undefined,
+        ghRepo: sourceVM.gh_repo || undefined,
         ghToken: ghToken || undefined,
         githubUsername: user?.github_username || undefined,
         sshKeys,
@@ -513,16 +520,16 @@ export function registerEnvRoutes(app: FastifyInstance) {
         vmIp,
         memSizeMib: cloneMemSize,
       });
-      updateEnvVmInfo(slug, vmId, vmIp, vsockCid, null);
+      updateVMInfo(slug, vmId, vmIp, vsockCid, null);
     } catch (err: any) {
       revokeAllAccess(slug);
-      deleteEnv(slug);
+      deleteVM(slug);
       try { execSync(`rm -rf "${targetDir}"`, { stdio: "pipe" }); } catch { /* ok */ }
       request.log.error({ err, slug }, "Failed to create cloned VM");
       return reply.status(500).send({ error: "Failed to create cloned VM", details: err.message });
     }
 
-    updateEnvStatus(slug, "running");
+    updateVMStatus(slug, "running");
 
     try {
       await addRoute(slug, appPort);
@@ -536,7 +543,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
       id: slug,
       name: cloneName,
       url: `http://${slug}.${getBaseDomain()}`,
-      ...(sourceEnv.gh_repo ? { repo_url: `https://github.com/${sourceEnv.gh_repo}` } : {}),
+      ...(sourceVM.gh_repo ? { repo_url: `https://github.com/${sourceVM.gh_repo}` } : {}),
       ssh_command: `ssh ${slug}@ssh.${getBaseDomain()}`,
       ssh_port: sshPort,
       status: "running",
@@ -544,12 +551,12 @@ export function registerEnvRoutes(app: FastifyInstance) {
   });
 
   // Status page (Caddy fallback for 502/503)
-  app.get("/envs/:id/status-page", async (request, reply) => {
+  app.get("/vms/:id/status-page", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const env = findEnvById(id);
+    const vm = findVMById(id);
 
-    const status = env?.status || "unknown";
-    const name = env?.name || id;
+    const status = vm?.status || "unknown";
+    const name = vm?.name || id;
 
     const pageStyle = `
     body { font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Courier New', monospace; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #faf7f2; color: #171717; }
@@ -598,7 +605,7 @@ export function registerEnvRoutes(app: FastifyInstance) {
 
     // If snapshotted, trigger a wake (check quota first)
     let isQuotaError = false;
-    if (env && (status === "snapshotted" || status === "paused")) {
+    if (vm && (status === "snapshotted" || status === "paused")) {
       try {
         await ensureVMRunning(id);
       } catch (err: any) {
@@ -626,8 +633,8 @@ export function registerEnvRoutes(app: FastifyInstance) {
   <div class="card">
     ${isQuotaError ? '' : '<div class="spinner"></div>'}
     <h2>${name}</h2>
-    <p>Environment is ${statusMessage}${isQuotaError ? '' : '...'}</p>
-    ${isQuotaError ? '<p style="margin-top: 1rem; font-size: 0.625rem; color: #737373;">Stop another environment or <a href="/plan" style="color: #171717; text-decoration: underline;">upgrade your plan</a> to wake this one.</p>' : ''}
+    <p>VM is ${statusMessage}${isQuotaError ? '' : '...'}</p>
+    ${isQuotaError ? '<p style="margin-top: 1rem; font-size: 0.625rem; color: #737373;">Stop another VM or <a href="/plan" style="color: #171717; text-decoration: underline;">upgrade your plan</a> to wake this one.</p>' : ''}
   </div>
 </body>
 </html>`;
@@ -673,25 +680,25 @@ export function registerEnvRoutes(app: FastifyInstance) {
   }
 
   // Check if SSH keys are already synced to the VM
-  app.get("/envs/:id/ssh-keys-status", async (request, reply) => {
+  app.get("/vms/:id/ssh-keys-status", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const env = findEnvById(id);
-    if (!env) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    if (env.status !== "running" || !env.vm_ip) {
+    if (vm.status !== "running" || !vm.vm_ip) {
       return { synced: false, reason: "not_running" };
     }
 
     try {
       const desiredKeys = await gatherUserKeys(request.userId);
-      const currentRaw = await execInVM(env.vm_ip, [
+      const currentRaw = await execInVM(vm.vm_ip, [
         "cat", "/home/dev/.ssh/authorized_keys",
       ]);
       const currentKeys = dedupeKeys(currentRaw);
@@ -702,31 +709,31 @@ export function registerEnvRoutes(app: FastifyInstance) {
   });
 
   // Sync SSH keys to a running VM
-  app.post("/envs/:id/sync-ssh-keys", async (request, reply) => {
+  app.post("/vms/:id/sync-ssh-keys", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const env = findEnvById(id);
-    if (!env) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    if (env.status !== "running" || !env.vm_ip) {
-      return reply.status(400).send({ error: "Environment is not running" });
+    if (vm.status !== "running" || !vm.vm_ip) {
+      return reply.status(400).send({ error: "VM is not running" });
     }
 
     const allKeys = await gatherUserKeys(request.userId);
     const keysB64 = Buffer.from(allKeys).toString("base64");
 
     try {
-      await execInVM(env.vm_ip, [
+      await execInVM(vm.vm_ip, [
         "sh", "-c",
         `echo '${keysB64}' | base64 -d > /home/dev/.ssh/authorized_keys && chmod 600 /home/dev/.ssh/authorized_keys`,
       ]);
-      return { ok: true, message: "SSH keys synced to environment" };
+      return { ok: true, message: "SSH keys synced to VM" };
     } catch (err: any) {
       request.log.error({ err, id }, "Failed to sync SSH keys");
       return reply.status(500).send({ error: "Failed to sync SSH keys", details: err.message });

@@ -21,10 +21,10 @@ const columns: Column<AdminSession>[] = [
     ),
   },
   {
-    key: "env_name",
-    label: "Environment",
+    key: "vm_name",
+    label: "VM",
     render: (row) => (
-      <span className="text-neutral-500">{row.env_name || row.env_id}</span>
+      <span className="text-neutral-500">{row.vm_name || row.vm_id}</span>
     ),
   },
   {

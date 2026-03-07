@@ -4,7 +4,7 @@ import { api, type TerminalSession } from "../lib/api";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalTabProps {
-  envId: string;
+  vmId: string;
 }
 
 interface Tab {
@@ -12,18 +12,18 @@ interface Tab {
 }
 
 function TerminalPane({
-  envId,
+  vmId,
   session,
   active,
 }: {
-  envId: string;
+  vmId: string;
   session: string;
   active: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useTerminal({
-    envId,
+    vmId,
     containerRef,
     enabled: active,
     session,
@@ -38,7 +38,7 @@ function TerminalPane({
   );
 }
 
-export function TerminalTab({ envId }: TerminalTabProps) {
+export function TerminalTab({ vmId }: TerminalTabProps) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string>("main");
   const [loading, setLoading] = useState(true);
@@ -50,7 +50,7 @@ export function TerminalTab({ envId }: TerminalTabProps) {
 
     async function fetchSessions() {
       try {
-        const { sessions } = await api.listTerminalSessions(envId);
+        const { sessions } = await api.listTerminalSessions(vmId);
         if (cancelled) return;
 
         if (sessions.length > 0) {
@@ -84,7 +84,7 @@ export function TerminalTab({ envId }: TerminalTabProps) {
     return () => {
       cancelled = true;
     };
-  }, [envId]);
+  }, [vmId]);
 
   const addTab = useCallback(() => {
     const name = `term-${nextCounter.current++}`;
@@ -98,7 +98,7 @@ export function TerminalTab({ envId }: TerminalTabProps) {
 
       // Kill the tmux session in the container
       try {
-        await api.deleteTerminalSession(envId, name);
+        await api.deleteTerminalSession(vmId, name);
       } catch {
         // Best-effort — session may already be gone
       }
@@ -123,7 +123,7 @@ export function TerminalTab({ envId }: TerminalTabProps) {
         return next;
       });
     },
-    [envId]
+    [vmId]
   );
 
   if (loading) {
@@ -174,7 +174,7 @@ export function TerminalTab({ envId }: TerminalTabProps) {
         {tabs.map((tab) => (
           <TerminalPane
             key={tab.name}
-            envId={envId}
+            vmId={vmId}
             session={tab.name}
             active={activeTab === tab.name}
           />

@@ -23,7 +23,7 @@ export interface AgentEvent {
   provider?: string;
 }
 
-export function useAgentSocket(envId: string) {
+export function useAgentSocket(vmId: string) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [connected, setConnected] = useState(false);
@@ -33,9 +33,9 @@ export function useAgentSocket(envId: string) {
   const retryDelayRef = useRef(1000);
 
   const connect = useCallback(() => {
-    if (!envId) return;
+    if (!vmId) return;
 
-    const url = agentWsUrl(envId);
+    const url = agentWsUrl(vmId);
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
@@ -66,7 +66,7 @@ export function useAgentSocket(envId: string) {
     ws.onerror = () => {
       ws.close();
     };
-  }, [envId]);
+  }, [vmId]);
 
   useEffect(() => {
     connect();

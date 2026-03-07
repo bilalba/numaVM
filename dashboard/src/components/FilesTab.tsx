@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { api, type FileEntry, type FileContent, type GitCommit } from "../lib/api";
 
 interface FilesTabProps {
-  envId: string;
+  vmId: string;
 }
 
 interface DirState {
@@ -14,7 +14,7 @@ interface DirState {
 
 const ROOT = "/home/dev";
 
-export function FilesTab({ envId }: FilesTabProps) {
+export function FilesTab({ vmId }: FilesTabProps) {
   const [dirs, setDirs] = useState<Map<string, DirState>>(new Map());
   const [selectedFile, setSelectedFile] = useState<FileContent | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
@@ -33,7 +33,7 @@ export function FilesTab({ envId }: FilesTabProps) {
       });
 
       try {
-        const data = await api.listFiles(envId, path);
+        const data = await api.listFiles(vmId, path);
         setDirs((prev) => {
           const next = new Map(prev);
           next.set(path, { entries: data.entries, loading: false, expanded: true });
@@ -47,7 +47,7 @@ export function FilesTab({ envId }: FilesTabProps) {
         });
       }
     },
-    [envId]
+    [vmId]
   );
 
   const toggleDir = useCallback(
@@ -69,15 +69,15 @@ export function FilesTab({ envId }: FilesTabProps) {
   // Load root + git log on mount
   useEffect(() => {
     loadDir(ROOT);
-    api.getGitLog(envId, 20).then((data) => setCommits(data.commits)).catch(() => {});
-  }, [envId, loadDir]);
+    api.getGitLog(vmId, 20).then((data) => setCommits(data.commits)).catch(() => {});
+  }, [vmId, loadDir]);
 
   const handleFileClick = async (path: string) => {
     setFileLoading(true);
     setFileError(null);
     setMobileShowFile(true);
     try {
-      const data = await api.readFile(envId, path);
+      const data = await api.readFile(vmId, path);
       setSelectedFile(data);
     } catch (err: any) {
       setFileError(err.message);
@@ -89,7 +89,7 @@ export function FilesTab({ envId }: FilesTabProps) {
 
   const handleDownload = () => {
     if (!selectedFile) return;
-    const url = api.getFileDownloadUrl(envId, selectedFile.path);
+    const url = api.getFileDownloadUrl(vmId, selectedFile.path);
     window.open(url, "_blank");
   };
 

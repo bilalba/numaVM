@@ -3,22 +3,22 @@ import { api, type ClaudeSession } from "../lib/api";
 import { relativeTime } from "../lib/time";
 
 interface ClaudeCodeTabProps {
-  envId: string;
+  vmId: string;
   sshCommand: string;
 }
 
-export function ClaudeCodeTab({ envId, sshCommand }: ClaudeCodeTabProps) {
+export function ClaudeCodeTab({ vmId, sshCommand }: ClaudeCodeTabProps) {
   const [sessions, setSessions] = useState<ClaudeSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     api
-      .getClaudeSessions(envId)
+      .getClaudeSessions(vmId)
       .then((data) => setSessions(data.sessions))
       .catch(() => setSessions([]))
       .finally(() => setLoading(false));
-  }, [envId]);
+  }, [vmId]);
 
   const copyToClipboard = async () => {
     await navigator.clipboard.writeText(sshCommand);

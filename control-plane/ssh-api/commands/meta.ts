@@ -33,23 +33,23 @@ export async function handleMetaCommand(command: string, ctx: CommandContext): P
     case "help":
       writeJson(ctx.channel, {
         commands: {
-          "new --name <name>": "Create a new environment (shorthand)",
-          envs: "List your environments",
-          "envs create --name <name>": "Create a new environment",
-          "envs <id>": "Show environment details",
-          "envs <id> delete": "Delete an environment",
-          "envs <id> start": "Start/wake an environment",
-          "envs <id> stop": "Stop/snapshot an environment",
+          "new --name <name>": "Create a new VM (shorthand)",
+          vms: "List your VMs",
+          "vms create --name <name>": "Create a new VM",
+          "vms <id>": "Show VM details",
+          "vms <id> delete": "Delete a VM",
+          "vms <id> start": "Start/wake a VM",
+          "vms <id> stop": "Stop/snapshot a VM",
           whoami: "Show your account info",
           version: "Show platform version",
           help: "Show this help message",
         },
         examples: [
           "ssh ssh.numavm.com new --name my-app",
-          "ssh ssh.numavm.com envs",
-          "ssh ssh.numavm.com envs create --name my-app --repo user/repo --mem 512",
-          "ssh ssh.numavm.com envs env-abc123",
-          "ssh env-abc123@ssh.numavm.com   # shell into env",
+          "ssh ssh.numavm.com vms",
+          "ssh ssh.numavm.com vms create --name my-app --repo user/repo --mem 512",
+          "ssh ssh.numavm.com vms vm-abc123",
+          "ssh vm-abc123@ssh.numavm.com   # shell into VM",
         ],
       });
       break;

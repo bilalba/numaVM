@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setApiUrlOverride } from "./config.js";
 import { registerAuthCommands } from "./commands/auth.js";
-import { registerEnvsCommands } from "./commands/envs.js";
+import { registerVMsCommands } from "./commands/vms.js";
 import { registerSshCommand } from "./commands/ssh.js";
 import { registerStatusCommand } from "./commands/status.js";
 
@@ -34,7 +34,7 @@ program
   });
 
 registerAuthCommands(program);
-registerEnvsCommands(program);
+registerVMsCommands(program);
 registerSshCommand(program);
 registerStatusCommand(program);
 

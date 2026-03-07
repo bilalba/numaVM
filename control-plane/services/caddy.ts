@@ -18,19 +18,19 @@ function getAdminPort(): string {
   return process.env.ADMIN_PORT || "4003";
 }
 
-interface EnvRoute {
+interface VMRoute {
   id: string;
   app_port: number;
   status: string;
 }
 
-function getAllEnvs(): EnvRoute[] {
+function getAllVMs(): VMRoute[] {
   return db
-    .prepare("SELECT id, app_port, status FROM envs WHERE status NOT IN ('error')")
-    .all() as EnvRoute[];
+    .prepare("SELECT id, app_port, status FROM vms WHERE status NOT IN ('error')")
+    .all() as VMRoute[];
 }
 
-function generateCaddyfile(envs: EnvRoute[]): string {
+function generateCaddyfile(vms: VMRoute[]): string {
   const domain = getBaseDomain();
   const authPort = getAuthPort();
   const cpPort = getControlPlanePort();
@@ -98,36 +98,36 @@ ${scheme}admin.${domain} {${tlsDirective}
 }
 `;
 
-  // Dynamic env routes — ALL envs get routes (not just running) so auth + status page work
-  for (const env of envs) {
+  // Dynamic VM routes — ALL VMs get routes (not just running) so auth + status page work
+  for (const vm of vms) {
     const forwardAuth = `
     forward_auth localhost:${authPort} {
         uri /verify
         copy_headers X-User-Id X-User-Email
         @unauthorized status 401 403
         handle_response @unauthorized {
-            redir ${authLoginUrl}?redirect=${scheme}${env.id}.${domain}{http.request.uri}
+            redir ${authLoginUrl}?redirect=${scheme}${vm.id}.${domain}{http.request.uri}
         }
     }`;
 
-    if (env.status === "running") {
+    if (vm.status === "running") {
       // Running: proxy to VM with error fallback to status page
       config += `
-# Environment: ${env.id}
-${scheme}${env.id}.${domain} {${tlsDirective}${forwardAuth}
+# VM: ${vm.id}
+${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
     handle_errors {
-        rewrite * /envs/${env.id}/status-page
+        rewrite * /vms/${vm.id}/status-page
         reverse_proxy localhost:${cpPort}
     }
-    reverse_proxy localhost:${env.app_port}
+    reverse_proxy localhost:${vm.app_port}
 }
 `;
     } else {
       // Not running: auth-gate then always show status page (triggers wake)
       config += `
-# Environment: ${env.id} (${env.status})
-${scheme}${env.id}.${domain} {${tlsDirective}${forwardAuth}
-    rewrite * /envs/${env.id}/status-page
+# VM: ${vm.id} (${vm.status})
+${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
+    rewrite * /vms/${vm.id}/status-page
     reverse_proxy localhost:${cpPort}
 }
 `;
@@ -142,8 +142,8 @@ ${scheme}${env.id}.${domain} {${tlsDirective}${forwardAuth}
  * This replaces Caddy's entire config, ensuring all routes have forward_auth.
  */
 export async function reloadCaddyConfig(): Promise<void> {
-  const envs = getAllEnvs();
-  const caddyfile = generateCaddyfile(envs);
+  const vms = getAllVMs();
+  const caddyfile = generateCaddyfile(vms);
 
   const res = await fetch(`${caddyAdmin}/load`, {
     method: "POST",
@@ -159,12 +159,12 @@ export async function reloadCaddyConfig(): Promise<void> {
     throw new Error(`Caddy config reload failed (${res.status}): ${body}`);
   }
 
-  const running = envs.filter(e => e.status === "running").length;
-  console.log(`[caddy] Config reloaded with ${envs.length} env route(s) (${running} running)`);
+  const running = vms.filter(e => e.status === "running").length;
+  console.log(`[caddy] Config reloaded with ${vms.length} VM route(s) (${running} running)`);
 }
 
 /**
- * Add a route for an env. Triggers a full Caddy config reload.
+ * Add a route for a VM. Triggers a full Caddy config reload.
  * Kept for backward compatibility with existing callers.
  */
 export async function addRoute(_slug: string, _appPort: number): Promise<void> {
@@ -172,7 +172,7 @@ export async function addRoute(_slug: string, _appPort: number): Promise<void> {
 }
 
 /**
- * Remove a route for an env. Triggers a full Caddy config reload.
+ * Remove a route for a VM. Triggers a full Caddy config reload.
  * Kept for backward compatibility with existing callers.
  */
 export async function removeRoute(_slug: string): Promise<void> {

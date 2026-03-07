@@ -80,7 +80,7 @@ export class OpenCodeBridge implements AgentBridge {
         if (!which.trim()) throw new Error("not found");
       } catch {
         throw new Error(
-          "OpenCode is not installed in this VM. Rebuild the rootfs or create a new environment.",
+          "OpenCode is not installed in this VM. Rebuild the rootfs or create a new VM.",
         );
       }
 
@@ -161,7 +161,7 @@ export class OpenCodeBridge implements AgentBridge {
     return this.httpRequest("GET", "/provider");
   }
 
-  async start(envSlug: string, options?: { model?: string; cwd?: string; providerID?: string; modelID?: string }): Promise<string> {
+  async start(vmSlug: string, options?: { model?: string; cwd?: string; providerID?: string; modelID?: string }): Promise<string> {
     this.cwd = options?.cwd;
 
     // Ensure server is running before creating a session

@@ -2,14 +2,14 @@ import type { ServerChannel } from "ssh2";
 import type { SshUser } from "../services/ssh-key-lookup.js";
 import { customAlphabet, nanoid } from "nanoid";
 import {
-  findEnvsByUser,
+  findVMsByUser,
   findUserById,
-  insertEnv,
-  updateEnvStatus,
-  updateEnvVmInfo,
+  insertVM,
+  updateVMStatus,
+  updateVMInfo,
   grantAccess,
   revokeAllAccess,
-  deleteEnv,
+  deleteVM,
   emitAdminEvent,
   getUserPlan,
   getUserProvisionedRam,
@@ -76,8 +76,8 @@ export async function showAuthenticatedTui(channel: ServerChannel, user: SshUser
   const name = user.name || user.email;
 
   const mainMenu: MenuItem[] = [
-    { label: "New Environment", description: "Create a new environment", action: () => showCreateEnv(channel, user) },
-    { label: "My Environments", description: "List and connect to your environments", action: () => showEnvList(channel, user) },
+    { label: "New VM", description: "Create a new VM", action: () => showCreateVM(channel, user) },
+    { label: "My VMs", description: "List and connect to your VMs", action: () => showVMList(channel, user) },
     { label: "Account Info", description: "View your account details", action: () => showAccountInfo(channel, user) },
     { label: "Help", description: "Show available SSH commands", action: async () => { await showHelp(channel); return showAuthenticatedTui(channel, user, false); } },
     { label: "Quit", description: "Disconnect", action: () => exitTui(channel) },
@@ -165,7 +165,7 @@ export async function showUnauthenticatedTui(
       `  ${GREEN}✓ Email verified successfully!${RESET}`,
       "",
       `  Your SSH key has been linked to your account.`,
-      `  Reconnect to access your environments.`,
+      `  Reconnect to access your VMs.`,
       "",
       `  ${DIM}Disconnecting...${RESET}`,
       "",
@@ -354,28 +354,28 @@ async function showMenu(
   });
 }
 
-async function showEnvList(channel: ServerChannel, user: SshUser): Promise<void> {
-  const envs = findEnvsByUser(user.userId);
+async function showVMList(channel: ServerChannel, user: SshUser): Promise<void> {
+  const vms = findVMsByUser(user.userId);
 
   const items: MenuItem[] = [
-    { label: "+ New Environment", description: "Create a new environment", action: () => showCreateEnv(channel, user) },
+    { label: "+ New VM", description: "Create a new VM", action: () => showCreateVM(channel, user) },
   ];
 
-  if (envs.length === 0) {
+  if (vms.length === 0) {
     items.push({
       label: "← Back",
       description: "Return to main menu",
       action: () => showAuthenticatedTui(channel, user, false),
     });
-    await showMenu(channel, "My Environments\n  No environments yet", items, () => showAuthenticatedTui(channel, user, false));
+    await showMenu(channel, "My VMs\n  No VMs yet", items, () => showAuthenticatedTui(channel, user, false));
     return;
   }
 
-  for (const env of envs) {
+  for (const vm of vms) {
     items.push({
-      label: `${env.name} ${DIM}(${env.id})${RESET}`,
-      description: statusBadge(env.status),
-      action: () => showEnvDetail(channel, user, env.id),
+      label: `${vm.name} ${DIM}(${vm.id})${RESET}`,
+      description: statusBadge(vm.status),
+      action: () => showVMDetail(channel, user, vm.id),
     });
   }
 
@@ -385,10 +385,10 @@ async function showEnvList(channel: ServerChannel, user: SshUser): Promise<void>
     action: () => showAuthenticatedTui(channel, user, false),
   });
 
-  await showMenu(channel, "My Environments", items, () => showAuthenticatedTui(channel, user, false));
+  await showMenu(channel, "My VMs", items, () => showAuthenticatedTui(channel, user, false));
 }
 
-async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<void> {
+async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void> {
   const baseDomain = getBaseDomain();
   const userPlan = getUserPlan(user.userId);
 
@@ -398,10 +398,10 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
   if (currentRam + minMem > userPlan.max_ram_mib) {
     const lines = [
       "",
-      `  ${BOLD}New Environment${RESET}`,
+      `  ${BOLD}New VM${RESET}`,
       "",
       `  ${YELLOW}RAM quota exceeded (${currentRam}/${userPlan.max_ram_mib} MiB used).${RESET}`,
-      `  Stop an environment or upgrade your plan.`,
+      `  Stop a VM or upgrade your plan.`,
       "",
       `  ${DIM}Press any key to go back...${RESET}`,
     ];
@@ -412,7 +412,7 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
 
   // Step 1: Name
   channel.write(HOME + clearBelow());
-  channel.write(`\r\n  ${BOLD}${CYAN}New Environment${RESET}\r\n\r\n`);
+  channel.write(`\r\n  ${BOLD}${CYAN}New VM${RESET}\r\n\r\n`);
   channel.write(`  Name: `);
   channel.write(SHOW_CURSOR);
   const name = await readLine(channel);
@@ -438,7 +438,7 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
       description: m === 512 ? "default" : "",
       action: () => { memSizeMib = m; },
     }));
-    await showMenu(channel, `New Environment: ${name}\n  Select memory size`, memItems, () => { memSizeMib = 0; });
+    await showMenu(channel, `New VM: ${name}\n  Select memory size`, memItems, () => { memSizeMib = 0; });
     if (memSizeMib === 0) {
       return showAuthenticatedTui(channel, user, false);
     }
@@ -446,7 +446,7 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
 
   // Step 3: GitHub repo (optional)
   channel.write(HOME + clearBelow());
-  channel.write(`\r\n  ${BOLD}${CYAN}New Environment: ${name}${RESET}\r\n`);
+  channel.write(`\r\n  ${BOLD}${CYAN}New VM: ${name}${RESET}\r\n`);
   channel.write(`  ${DIM}Memory: ${memSizeMib} MiB${RESET}\r\n\r\n`);
   channel.write(`  GitHub repo ${DIM}(owner/repo, Enter to skip)${RESET}: `);
   channel.write(SHOW_CURSOR);
@@ -472,7 +472,7 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
   // Step 4: Create
   const creatingLines = [
     "",
-    `  ${BOLD}${CYAN}Creating environment...${RESET}`,
+    `  ${BOLD}${CYAN}Creating VM...${RESET}`,
     "",
     `  Name:    ${name}`,
     `  Memory:  ${memSizeMib} MiB`,
@@ -483,7 +483,7 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
   ];
   writeFrame(channel, creatingLines);
 
-  const slug = `env-${generateSlug()}`;
+  const slug = `vm-${generateSlug()}`;
   const { appPort, sshPort, opencodePort } = allocatePorts();
   const vsockCid = allocateCid();
   const vmIp = cidToVmIp(vsockCid);
@@ -501,7 +501,7 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
 
   const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
 
-  insertEnv({
+  insertVM({
     id: slug,
     name,
     owner_id: user.userId,
@@ -539,13 +539,13 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
       vmIp,
       memSizeMib,
     });
-    updateEnvVmInfo(slug, vmId, vmIp, vsockCid, null);
+    updateVMInfo(slug, vmId, vmIp, vsockCid, null);
   } catch (err: any) {
     revokeAllAccess(slug);
-    deleteEnv(slug);
+    deleteVM(slug);
     const errLines = [
       "",
-      `  ${BOLD}New Environment${RESET}`,
+      `  ${BOLD}New VM${RESET}`,
       "",
       `  ${YELLOW}Failed to create VM: ${err.message}${RESET}`,
       "",
@@ -556,7 +556,7 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
     return showAuthenticatedTui(channel, user, false);
   }
 
-  updateEnvStatus(slug, "running");
+  updateVMStatus(slug, "running");
 
   try { await addRoute(slug, appPort); } catch { /* non-fatal */ }
   emitAdminEvent("vm.created", slug, user.userId, { name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}), source: "ssh-tui" });
@@ -582,7 +582,7 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
   ];
 
   const title = [
-    `Environment Created`,
+    `VM Created`,
     ``,
     `  ${GREEN}✓${RESET} ${BOLD}${name}${RESET} ${DIM}(${slug})${RESET}`,
     `  URL:  ${CYAN}https://${slug}.${baseDomain}${RESET}`,
@@ -592,28 +592,28 @@ async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<voi
   await showMenu(channel, title, successItems, () => showAuthenticatedTui(channel, user, false));
 }
 
-async function showEnvDetail(channel: ServerChannel, user: SshUser, envId: string): Promise<void> {
-  const env = findEnvsByUser(user.userId).find((e) => e.id === envId);
-  if (!env) {
-    return showEnvList(channel, user);
+async function showVMDetail(channel: ServerChannel, user: SshUser, vmId: string): Promise<void> {
+  const vm = findVMsByUser(user.userId).find((e) => e.id === vmId);
+  if (!vm) {
+    return showVMList(channel, user);
   }
 
   const lines = [
     "",
-    `  ${BOLD}${env.name}${RESET} ${DIM}${env.id}${RESET}`,
+    `  ${BOLD}${vm.name}${RESET} ${DIM}${vm.id}${RESET}`,
     "",
-    `  Status:  ${statusBadge(env.status)}`,
-    `  Role:    ${env.role}`,
-    `  RAM:     ${env.mem_size_mib} MiB`,
-    `  URL:     ${CYAN}https://${env.id}.${getBaseDomain()}${RESET}`,
-    `  SSH:     ${CYAN}ssh ${env.id}@ssh.${getBaseDomain()}${RESET}`,
+    `  Status:  ${statusBadge(vm.status)}`,
+    `  Role:    ${vm.role}`,
+    `  RAM:     ${vm.mem_size_mib} MiB`,
+    `  URL:     ${CYAN}https://${vm.id}.${getBaseDomain()}${RESET}`,
+    `  SSH:     ${CYAN}ssh ${vm.id}@ssh.${getBaseDomain()}${RESET}`,
     "",
     `  ${DIM}Press any key to go back...${RESET}`,
   ];
   writeFrame(channel, lines);
 
   await waitForKey(channel);
-  return showEnvList(channel, user);
+  return showVMList(channel, user);
 }
 
 async function showAccountInfo(channel: ServerChannel, user: SshUser): Promise<void> {
@@ -640,19 +640,19 @@ async function showHelp(channel: ServerChannel): Promise<void> {
     "",
     `  ${BOLD}SSH API Commands${RESET}`,
     "",
-    `  ${CYAN}ssh ssh.numavm.com new --name <n>${RESET}           Create new environment`,
-    `  ${CYAN}ssh ssh.numavm.com envs${RESET}                     List environments`,
-    `  ${CYAN}ssh ssh.numavm.com envs create --name <n>${RESET}   Create new environment`,
-    `  ${CYAN}ssh ssh.numavm.com envs <id>${RESET}                Environment details`,
-    `  ${CYAN}ssh ssh.numavm.com envs <id> start${RESET}          Start/wake environment`,
-    `  ${CYAN}ssh ssh.numavm.com envs <id> stop${RESET}           Snapshot environment`,
-    `  ${CYAN}ssh ssh.numavm.com envs <id> delete${RESET}         Delete environment`,
+    `  ${CYAN}ssh ssh.numavm.com new --name <n>${RESET}           Create new VM`,
+    `  ${CYAN}ssh ssh.numavm.com vms${RESET}                     List VMs`,
+    `  ${CYAN}ssh ssh.numavm.com vms create --name <n>${RESET}   Create new VM`,
+    `  ${CYAN}ssh ssh.numavm.com vms <id>${RESET}                VM details`,
+    `  ${CYAN}ssh ssh.numavm.com vms <id> start${RESET}          Start/wake VM`,
+    `  ${CYAN}ssh ssh.numavm.com vms <id> stop${RESET}           Snapshot VM`,
+    `  ${CYAN}ssh ssh.numavm.com vms <id> delete${RESET}         Delete VM`,
     `  ${CYAN}ssh ssh.numavm.com whoami${RESET}                   Account info (JSON)`,
     `  ${CYAN}ssh ssh.numavm.com help${RESET}                     This help`,
     "",
-    `  ${BOLD}Environment shell access:${RESET}`,
-    `  ${CYAN}ssh <env-id>@ssh.numavm.com${RESET}                 Interactive shell`,
-    `  ${CYAN}ssh <env-id>@ssh.numavm.com <command>${RESET}       Run command in env`,
+    `  ${BOLD}VM shell access:${RESET}`,
+    `  ${CYAN}ssh <vm-id>@ssh.numavm.com${RESET}                 Interactive shell`,
+    `  ${CYAN}ssh <vm-id>@ssh.numavm.com <command>${RESET}       Run command in VM`,
     "",
     `  ${DIM}Press any key to go back...${RESET}`,
   ];

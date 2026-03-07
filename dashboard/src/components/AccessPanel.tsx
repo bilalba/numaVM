@@ -4,12 +4,12 @@ import { useToast } from "./Toast";
 import { SshKeysPanel } from "./SshKeysPanel";
 
 interface AccessPanelProps {
-  envId: string;
+  vmId: string;
   currentUserRole: string;
   sshCommand?: string;
 }
 
-export function AccessPanel({ envId, currentUserRole, sshCommand }: AccessPanelProps) {
+export function AccessPanel({ vmId, currentUserRole, sshCommand }: AccessPanelProps) {
   const [access, setAccess] = useState<AccessEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState("");
@@ -20,20 +20,20 @@ export function AccessPanel({ envId, currentUserRole, sshCommand }: AccessPanelP
 
   const loadAccess = () => {
     api
-      .listAccess(envId)
+      .listAccess(vmId)
       .then((data) => setAccess(data.access))
       .catch((err) => toast(`Failed to load access list: ${err.message}`, "error"))
       .finally(() => setLoading(false));
   };
 
-  useEffect(loadAccess, [envId]);
+  useEffect(loadAccess, [vmId]);
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim()) return;
     setSubmitting(true);
     try {
-      const res = await api.grantAccess(envId, email.trim(), role);
+      const res = await api.grantAccess(vmId, email.trim(), role);
       toast(res.message, "success");
       setEmail("");
       loadAccess();
@@ -46,7 +46,7 @@ export function AccessPanel({ envId, currentUserRole, sshCommand }: AccessPanelP
 
   const handleRevoke = async (entry: AccessEntry) => {
     try {
-      const res = await api.revokeAccess(envId, entry.email);
+      const res = await api.revokeAccess(vmId, entry.email);
       toast(res.message, "success");
       loadAccess();
     } catch (err: any) {
@@ -56,7 +56,7 @@ export function AccessPanel({ envId, currentUserRole, sshCommand }: AccessPanelP
 
   const handleRoleChange = async (entry: AccessEntry, newRole: string) => {
     try {
-      const res = await api.grantAccess(envId, entry.email, newRole);
+      const res = await api.grantAccess(vmId, entry.email, newRole);
       toast(res.message, "success");
       loadAccess();
     } catch (err: any) {
@@ -72,7 +72,7 @@ export function AccessPanel({ envId, currentUserRole, sshCommand }: AccessPanelP
     <div className="max-w-2xl">
       {/* SSH access */}
       <div className="mb-6">
-        <SshKeysPanel envId={envId} sshCommand={sshCommand} />
+        <SshKeysPanel vmId={vmId} sshCommand={sshCommand} />
       </div>
 
       {/* Invite form (owner only) */}

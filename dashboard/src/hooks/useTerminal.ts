@@ -5,7 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { terminalWsUrl } from "../lib/api";
 
 interface UseTerminalOptions {
-  envId: string;
+  vmId: string;
   containerRef: React.RefObject<HTMLDivElement | null>;
   enabled: boolean;
   session?: string;
@@ -20,7 +20,7 @@ function stripMouseEvents(data: string): string {
   return data.replace(MOUSE_SGR_RE, "").replace(MOUSE_X10_RE, "");
 }
 
-export function useTerminal({ envId, containerRef, enabled, session }: UseTerminalOptions) {
+export function useTerminal({ vmId, containerRef, enabled, session }: UseTerminalOptions) {
   const stateRef = useRef<{
     term: Terminal;
     fit: FitAddon;
@@ -68,7 +68,7 @@ export function useTerminal({ envId, containerRef, enabled, session }: UseTermin
     function connect() {
       if (disposed) return;
 
-      const url = terminalWsUrl(envId, term.cols, term.rows, session);
+      const url = terminalWsUrl(vmId, term.cols, term.rows, session);
       const ws = new WebSocket(url);
       state.ws = ws;
 
@@ -88,7 +88,7 @@ export function useTerminal({ envId, containerRef, enabled, session }: UseTermin
 
         if (event.code === 4005) {
           // VM is waking up — server will auto-restore from snapshot
-          term.write("\r\n\x1b[36mEnvironment is waking up...\x1b[0m\r\n");
+          term.write("\r\n\x1b[36mVM is waking up...\x1b[0m\r\n");
         } else {
           term.write("\r\n\x1b[33mConnection lost. Reconnecting...\x1b[0m\r\n");
         }
@@ -131,5 +131,5 @@ export function useTerminal({ envId, containerRef, enabled, session }: UseTermin
       term.dispose();
       stateRef.current = null;
     };
-  }, [envId, enabled, containerRef, session]);
+  }, [vmId, enabled, containerRef, session]);
 }

@@ -3,7 +3,7 @@ import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { Overview } from "./pages/Overview";
 import { Users } from "./pages/Users";
-import { Environments } from "./pages/Environments";
+import { VMs } from "./pages/VMs";
 import { Sessions } from "./pages/Sessions";
 import { Events } from "./pages/Events";
 import { Traffic } from "./pages/Traffic";
@@ -18,7 +18,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<Overview />} />
             <Route path="/users" element={<Users />} />
-            <Route path="/environments" element={<Environments />} />
+            <Route path="/vms" element={<VMs />} />
             <Route path="/sessions" element={<Sessions />} />
             <Route path="/events" element={<Events />} />
             <Route path="/traffic" element={<Traffic />} />

@@ -1,6 +1,6 @@
 # NumaVM
 
-Remote Agent Workbench — a platform where each environment is a Firecracker microVM with persistent storage, a GitHub-backed repo, a public subdomain (gated by OAuth), idle shutdown via snapshots, and the ability to drive Codex, Claude Code, and OpenCode from a web dashboard.
+Remote Agent Workbench — a platform where each VM is a Firecracker microVM with persistent storage, a GitHub-backed repo, a public subdomain (gated by OAuth), idle shutdown via snapshots, and the ability to drive Codex, Claude Code, and OpenCode from a web dashboard.
 
 ## Architecture
 
@@ -8,12 +8,13 @@ See `PLATFORM_PLAN.md` for the full architecture document.
 
 **Key components:**
 - **Auth Service** (`auth/`) — Port 4000. Fastify + GitHub/Google OAuth + email magic links + JWT sessions
-- **Control Plane** (`control-plane/`) — Port 4001. Env CRUD, Firecracker VM orchestration, Caddy route management, GitHub repo creation via Octokit
-- **Dashboard** (`dashboard/`) — Port 4002. React SPA with agent chat UI, terminal, auth dialogs
-- **Admin Dashboard** (`admin/`) — Port 4003. React SPA for platform observability (users, VMs, sessions, events). See `docs/admin-dashboard.md`
+- **Control Plane** (`control-plane/`) — Port 4001. VM CRUD, Firecracker orchestration, Caddy route management, Stripe billing, agent bridges
+- **Dashboard** (`dashboard/`) — Port 4002. React SPA with agent chat UI, terminal, file browser, settings
+- **Admin Dashboard** (`admin/`) — Port 4003. React SPA for platform observability (users, VMs, sessions, events, traffic). See `docs/admin-dashboard.md`
+- **CLI** (`cli/`) — Command-line tool for VM management and SSH access
 - **Caddy** — Reverse proxy with wildcard TLS, `forward_auth` to auth service
-- **Env VMs** (`vm/`) — Alpine Linux Firecracker microVMs with Node.js, SSH (TCP over bridge network), Codex, Claude Code, OpenCode
-- **Idle Shutdown** — VMs are snapshotted after 15min of no network activity, restored sub-second on next request
+- **VMs** (`vm/`) — Alpine Linux Firecracker microVMs with Node.js, SSH (TCP over bridge network), Codex, Claude Code, OpenCode
+- **Idle Shutdown** — VMs are snapshotted after 2min of no network activity (configurable), restored sub-second on next request
 
 ## Tech Stack
 
@@ -22,6 +23,7 @@ See `PLATFORM_PLAN.md` for the full architecture document.
 - **Auth**: `arctic` (OAuth), `jose` (JWT), `better-sqlite3`
 - **Isolation**: Firecracker microVMs with TCP SSH over bridge network for host↔guest exec
 - **GitHub**: `octokit` for repo creation and API access
+- **Billing**: Stripe Checkout + Customer Portal
 - **Dev**: `tsx` for TypeScript execution
 - **Database**: SQLite (`platform.db` at project root, shared between auth and control-plane)
 
@@ -39,58 +41,65 @@ numavm/
 ├── control-plane/       # Control plane API (port 4001)
 │   ├── server.ts        # Fastify entry, WebSocket, CORS, auth hooks
 │   ├── routes/
-│   │   ├── envs.ts      # Env CRUD + status page
-│   │   ├── access.ts    # Grant/revoke env access
+│   │   ├── vms.ts       # VM CRUD, pause, clone, status page
+│   │   ├── access.ts    # Grant/revoke VM access
 │   │   ├── terminal.ts  # WebSocket terminal route
 │   │   ├── claude.ts    # Claude Code session listing
 │   │   ├── agents.ts    # Agent session CRUD, messaging, WebSocket hub
-│   │   └── admin.ts     # Admin API routes (stats, users, envs, sessions, events)
+│   │   ├── files.ts     # File browser + git log
+│   │   ├── user.ts      # /me endpoints, SSH keys, GitHub repos
+│   │   ├── billing.ts   # Stripe checkout, portal, webhooks
+│   │   └── admin.ts     # Admin API routes
 │   ├── agents/
 │   │   ├── types.ts     # AgentEvent, AgentCommand, AgentBridge interface
 │   │   ├── codex-bridge.ts   # Codex JSON-RPC over stdio bridge
 │   │   ├── opencode-bridge.ts # OpenCode HTTP+SSE bridge
-│   │   ├── ws-hub.ts    # Per-env WebSocket broadcast hub
+│   │   ├── ws-hub.ts    # Per-VM WebSocket broadcast hub
 │   │   └── manager.ts   # Agent manager (coordinator)
 │   ├── terminal/
-│   │   └── pty-handler.ts  # node-pty lifecycle management
+│   │   └── pty-handler.ts  # node-pty lifecycle over SSH
 │   ├── services/
 │   │   ├── firecracker.ts  # Firecracker VM lifecycle (create, stop, snapshot, restore)
-│   │   ├── vsock-ssh.ts    # SSH exec layer — TCP SSH to VM bridge IP (replaces docker exec)
+│   │   ├── ssh-proxy.ts    # SSH proxy for CLI access
 │   │   ├── idle-monitor.ts # TAP traffic monitoring + auto-snapshot
-│   │   ├── wake.ts         # Restore snapshotted VMs on demand
+│   │   ├── wake.ts         # Restore snapshotted VMs on demand (quota-aware)
 │   │   ├── caddy.ts        # Caddy admin API route management
-│   │   ├── github.ts       # Octokit repo creation + SSH key fetch
 │   │   ├── health.ts       # Health check stats
-│   │   └── port-allocator.ts  # Port + vsock CID + VM IP allocation
-│   └── db/              # envs + agent_sessions + agent_messages + admin_events tables
+│   │   └── docker.ts       # Container utilities
+│   ├── ssh-api/         # SSH TUI interface
+│   │   ├── dispatcher.ts
+│   │   ├── tui.ts
+│   │   └── commands/
+│   │       ├── vms.ts   # VM management commands
+│   │       └── meta.ts  # help, version, etc.
+│   └── db/              # vms + agent_sessions + agent_messages + admin_events tables
 ├── dashboard/           # React SPA (port 4002)
 │   ├── src/
-│   │   ├── pages/       # EnvList, EnvDetail
-│   │   ├── components/  # TerminalTab, ClaudeCodeTab, AgentTab, ChatMessage, ApprovalCard
+│   │   ├── pages/       # VMList, VMDetail, Deploy, Plan, Settings, LinkSshKey
+│   │   ├── components/  # TerminalTab, ClaudeCodeTab, AgentTab, FilesTab, AccessPanel, SshKeysPanel
 │   │   ├── hooks/       # useTerminal, useAgentSocket
 │   │   └── lib/         # api client, time helpers
 │   ├── index.html
 │   └── vite.config.ts
 ├── admin/               # Admin dashboard SPA (port 4003)
 │   ├── src/
-│   │   ├── pages/       # Overview, Users, Environments, Sessions, Events
+│   │   ├── pages/       # Overview, Users, VMs, Sessions, Events, Traffic
 │   │   ├── components/  # Header, Sidebar, StatsCard, DataTable, Toast
 │   │   └── lib/         # admin api client, time helpers
 │   ├── index.html
 │   └── vite.config.ts
+├── cli/                 # CLI tool
+│   └── src/
+│       ├── index.ts     # Entry point
+│       └── commands/    # auth, vms, ssh, status
 ├── vm/                  # Firecracker VM rootfs + init
 │   ├── build-rootfs.sh  # Builds Alpine ext4 base image
 │   └── init.sh          # VM PID 1 init script
 ├── infra/               # Host setup + deploy infrastructure
-│   ├── setup-host.sh    # One-time host provisioning (Firecracker, kernel, bridge, NAT)
+│   ├── setup-host.sh    # One-time host provisioning
 │   ├── firecracker.conf # Path config for Firecracker binaries + kernel
 │   └── systemd/         # systemd unit files for production services
-│       ├── numavm-auth.service
-│       ├── numavm-control-plane.service
-│       ├── numavm-dashboard.service
-│       └── numavm-admin.service
-├── docker/              # [DEPRECATED] Docker-based env container (being removed)
-├── deploy.sh            # One-command deploy script (rsync + restart + smoke tests)
+├── deploy.sh            # One-command deploy script
 ├── .rsyncignore         # Rsync exclude list (protects SQLite WAL, .env, node_modules)
 ├── Caddyfile            # Reverse proxy config
 └── platform.db          # SQLite database (auto-created)
@@ -107,74 +116,51 @@ numavm/
 ./deploy.sh --admin-only       # Only restart admin dashboard
 ./deploy.sh --auth-only        # Only restart auth
 ./deploy.sh --cp-only          # Only restart control plane
-./deploy.sh --install-services # One-time: install systemd units, kill nohup processes
+./deploy.sh --install-services # One-time: install systemd units
 ```
 
 **Services** are managed via systemd: `numavm-auth`, `numavm-control-plane`, `numavm-dashboard`, `numavm-admin`. Unit files in `infra/systemd/`. All services auto-restart on failure (`RestartSec=5`). Logs via `journalctl -u numavm-auth` etc.
 
-**Version tracking**: Both auth and control plane read `version.json` at startup and include it in their `/health` endpoint responses. The file is generated by `deploy.sh` and excluded from git.
+**Version tracking**: Both auth and control plane read `version.json` at startup and include it in their `/health` endpoint responses.
 
-See `DEPLOYMENT.md` for the full deployment guide including initial host setup, known issues, and rootfs patching. See `INTERNAL.md` (gitignored) for operational runbook: SSH access, systemd commands, database access, troubleshooting.
+See `DEPLOYMENT.md` for the full deployment guide. See `INTERNAL.md` (gitignored) for operational runbook.
 
 **Quick reference**: The control plane must run as **root** (needs TAP/iptables). Set `DEV_MODE=true` in `.env` to bypass OAuth when running without Caddy.
 
 ## Development
 
 ```bash
-# Install dependencies (all workspaces)
 npm install
+npx node-gyp rebuild --directory=node_modules/node-pty  # Required for Node 24+
 
-# Rebuild node-pty native module (required for Node 24+)
-npx node-gyp rebuild --directory=node_modules/node-pty
-
-# Build the VM rootfs image (first time only, or after vm/ changes)
-# Requires: bare-metal Linux with /dev/kvm
-sudo ./infra/setup-host.sh          # one-time host setup
-sudo ./vm/build-rootfs.sh           # build Alpine rootfs
-
-# Start auth service (with hot reload)
+# Start services (each in its own terminal)
 cd auth && npm run dev
-
-# Start control plane (with hot reload)
 cd control-plane && npm run dev
-
-# Start dashboard (with hot reload)
 cd dashboard && npm run dev
-
-# Start admin dashboard (with hot reload)
 cd admin && npm run dev
-
-# Or start without hot reload
-cd auth && npm start
-cd control-plane && npm start
 ```
 
 **Environment variables**: Copy `.env.example` to `.env` and fill in values. Both services load the root `.env` via `dotenv`.
 
 ### Local dev setup (without Caddy)
 
-The dashboard, control plane, and auth service run on separate ports locally. No Caddy is needed for dev:
-
 - Dashboard: `http://localhost:4002` — set `VITE_API_URL=//localhost:4001` in `dashboard/.env`
-- Admin: `http://localhost:4003` — set `VITE_API_URL=//localhost:4001` in `admin/.env`. Requires `is_admin=1` on user (set dev-user as admin: `UPDATE users SET is_admin = 1 WHERE id = 'dev-user'`)
+- Admin: `http://localhost:4003` — set `VITE_API_URL=//localhost:4001` in `admin/.env`. Requires `is_admin=1` on user
 - Control plane: `http://localhost:4001` — auto-allows CORS from `localhost:4002` and `localhost:4003` when `BASE_DOMAIN=localhost`
 - Auth bypass: When `BASE_DOMAIN=localhost`, the control plane skips Caddy `forward_auth` and uses a fake `dev-user` identity
-- Firecracker: Requires bare-metal Linux with /dev/kvm. Set `DATA_DIR` in `.env` to a local path. Dev on macOS requires a Linux VM for Firecracker
-- GitHub: Set `GH_PAT` for auto-creating repos, or provide an existing `owner/repo` when creating envs. Without either, env creation will fail gracefully with a clear error message
+- Firecracker: Requires bare-metal Linux with /dev/kvm. Set `DATA_DIR` in `.env`. Dev on macOS requires a Linux VM
+- GitHub: Set `GH_PAT` for auto-creating repos, or provide an existing `owner/repo` when creating VMs
 
 ### Known dev issues
 
 - **node-pty prebuilds don't work with Node 24+**: Must rebuild from source via `npx node-gyp rebuild --directory=node_modules/node-pty`
-- **ESM import hoisting**: Module-level `process.env` reads happen before `dotenv` loads. Services that need env vars at import time use lazy reads (functions instead of `const`). See `control-plane/services/firecracker.ts` for the pattern.
-- **React StrictMode double-mount**: Terminal and WebSocket hooks must handle cleanup carefully to avoid duplicate connections. The `useTerminal` hook creates/destroys everything in a single effect to prevent this.
-- **Firecracker kernel v1.10 missing from S3**: The `setup-host.sh` primary kernel URL returns 404. It falls back to kernel 4.14 which is too old for Alpine 3.21. Must manually download kernel 6.1 from the v1.9 CI path (see `DEPLOYMENT.md`).
+- **ESM import hoisting**: Module-level `process.env` reads happen before `dotenv` loads. Use lazy reads (functions instead of `const`). See `control-plane/services/firecracker.ts` for the pattern.
+- **React StrictMode double-mount**: Terminal and WebSocket hooks must handle cleanup carefully. The `useTerminal` hook creates/destroys everything in a single effect.
 - **Control plane needs root on production**: TAP devices, iptables DNAT, and Firecracker process spawning all require root. Use `sudo -E` to preserve env vars.
-- **DEV_MODE=true for non-Caddy deployments**: When running without Caddy's `forward_auth`, set `DEV_MODE=true` in `.env` to use the dev-user auth bypass (works with any `BASE_DOMAIN`, not just `localhost`).
-- **OpenSSH 10+ rejects locked accounts**: Alpine's `adduser -D` creates accounts with `!` in `/etc/shadow` (locked). OpenSSH 10+ rejects pubkey auth for locked accounts even with `UsePAM no`. Fixed in `init.sh` and `build-rootfs.sh` by changing `!` to `*` in shadow.
-- **Firecracker vsock not usable via AF_VSOCK**: Firecracker exposes vsock through a UDS with a custom CONNECT handshake, not the kernel's `AF_VSOCK`. `socat VSOCK-CONNECT` doesn't work. SSH exec uses TCP over the bridge network instead (`vsock-ssh.ts` connects to `vm_ip` directly).
-- **Host needs `socat` installed**: Even though we no longer use vsock for SSH exec, socat is still used inside VMs for the vsock listener. Install on host too if you ever need it for debugging: `sudo apt install socat`.
-- **Host needs `vhost_vsock` kernel module**: Must be loaded for Firecracker vsock device support: `sudo modprobe vhost_vsock`. Persisted via `/etc/modules-load.d/vhost-vsock.conf`.
-- **Caddy admin API requires Origin header**: Node.js `fetch` doesn't send an `Origin` header. Caddy's admin API rejects requests without one. The `caddy.ts` service adds `Origin: ${caddyAdmin}` to all requests.
+- **DEV_MODE=true for non-Caddy deployments**: When running without Caddy's `forward_auth`, set `DEV_MODE=true` in `.env` to use the dev-user auth bypass.
+- **OpenSSH 10+ rejects locked accounts**: Alpine's `adduser -D` creates accounts with `!` in `/etc/shadow` (locked). Fixed in `init.sh` and `build-rootfs.sh` by changing `!` to `*`.
+- **Caddy admin API requires Origin header**: Node.js `fetch` doesn't send `Origin`. The `caddy.ts` service adds it to all requests.
+- **Host needs `vhost_vsock` kernel module**: `sudo modprobe vhost_vsock`. Persisted via `/etc/modules-load.d/vhost-vsock.conf`.
 
 ## Conventions
 
@@ -186,217 +172,178 @@ The dashboard, control plane, and auth service run on separate ports locally. No
 - Session JWT is stored in `__session` cookie scoped to the base domain
 - Control plane reads `X-User-Id` and `X-User-Email` headers injected by Caddy's `forward_auth`
 - Both services share `platform.db` (SQLite WAL mode supports concurrent access)
-- Each service owns its own tables (auth: `users`, `sessions`, `env_access`; control-plane: `envs`) but may read across
+- Each service owns its own tables (auth: `users`, `sessions`, `vm_access`; control-plane: `vms`, `agent_sessions`, `agent_messages`, `admin_events`, `vm_traffic`) but may read across
+- VM slug format: `vm-XXXXXX` (6 random alphanumeric chars)
+- `DATA_DIR` env var controls VM data storage (default: `/data/envs` on production)
 
 ## Control Plane API Endpoints
 
 ```
-GET    /health              Health check
-POST   /envs                Create environment (name required, optional gh_repo)
-GET    /envs                List user's environments
-GET    /envs/:id            Environment details + live VM status
-DELETE /envs/:id            Destroy environment (owner only)
-POST   /envs/:id/access     Grant/revoke access (owner only)
-GET    /envs/:id/access     List users with access
-GET    /envs/:id/status-page HTML fallback for Caddy 502/503
-GET    /envs/:id/terminal   WebSocket upgrade for xterm.js web terminal
-GET    /envs/:id/claude/sessions  List Claude Code sessions from VM
-POST   /envs/:id/agents/:type/sessions  Start new agent session (codex/opencode)
-GET    /envs/:id/agents/:type/sessions  List agent sessions
-GET    /envs/:id/sessions/:sid          Get session with message history
-POST   /envs/:id/sessions/:sid/message  Send message to agent
-POST   /envs/:id/sessions/:sid/stop     Interrupt agent
-POST   /envs/:id/sessions/:sid/approval Respond to approval request
-DELETE /envs/:id/sessions/:sid          Archive session
-GET    /envs/:id/ws                     WebSocket for streaming agent events
-GET    /envs/:id/codex/auth/status      Check Codex auth status (via app-server account/read)
-POST   /envs/:id/codex/auth/login       Start Codex login (ChatGPT device code or API key)
-POST   /envs/:id/codex/auth/logout      Logout from Codex
+GET    /health                           Health check + version
 
-# Admin routes (require is_admin — see docs/admin-dashboard.md)
-GET    /admin/stats              Overview numbers (env counts, users, sessions, messages)
-GET    /admin/users              All users with env count + provider
-GET    /admin/envs               All environments with owner
-GET    /admin/envs/:id           Detailed env (access list, sessions, VM status)
-GET    /admin/traffic            TAP RX/TX bytes for running VMs
-GET    /admin/sessions           All agent sessions with message count
-GET    /admin/events             Admin events (filterable by type)
-GET    /admin/health             Extended health + resource utilization
+# VM management
+POST   /vms                              Create VM (name, optional gh_repo, mem_size_mib)
+GET    /vms                              List user's VMs
+GET    /vms/quota                        RAM quota (used/max/plan/valid_mem_sizes)
+GET    /vms/:id                          VM details (auto-wakes snapshotted VMs)
+DELETE /vms/:id                          Destroy VM + cleanup data dir (owner only)
+POST   /vms/:id/pause                    Snapshot/pause VM
+POST   /vms/:id/clone                    Clone VM (copy disk, start new)
+GET    /vms/:id/status-page              Caddy fallback HTML (triggers wake)
+GET    /vms/:id/ssh-keys-status          Check if SSH keys synced to VM
+POST   /vms/:id/sync-ssh-keys            Sync SSH keys to running VM
+
+# Access control
+POST   /vms/:id/access                   Grant/revoke access (owner only)
+GET    /vms/:id/access                   List users with access
+
+# Terminal
+GET    /vms/:id/terminal                 WebSocket terminal (?session=<name>, ?cols=, ?rows=)
+GET    /vms/:id/terminal/sessions        List tmux sessions
+DELETE /vms/:id/terminal/sessions/:name  Kill tmux session
+
+# Claude Code
+GET    /vms/:id/claude/sessions          List Claude Code sessions from VM
+
+# Agent sessions (Codex + OpenCode)
+POST   /vms/:id/agents/:type/sessions    Start agent session
+GET    /vms/:id/agents/:type/sessions    List sessions by type
+GET    /vms/:id/sessions/:sid            Get session + message history
+POST   /vms/:id/sessions/:sid/message    Send message (with effort/approvalPolicy/sandboxPolicy)
+POST   /vms/:id/sessions/:sid/stop       Interrupt agent
+POST   /vms/:id/sessions/:sid/approval   Respond to approval
+POST   /vms/:id/sessions/:sid/revert     Revert file changes (OpenCode)
+POST   /vms/:id/sessions/:sid/unrevert   Restore reverted changes (OpenCode)
+DELETE /vms/:id/sessions/:sid            Archive session
+GET    /vms/:id/ws                       WebSocket for agent event streaming
+
+# Agent auth + config
+GET    /vms/:id/codex/auth/status        Check Codex auth (?refresh=true)
+POST   /vms/:id/codex/auth/login         Start Codex login (apikey or chatgpt device code)
+POST   /vms/:id/codex/auth/logout        Logout from Codex
+GET    /vms/:id/codex/models             List Codex models
+GET    /vms/:id/codex/threads            List Codex threads
+GET    /vms/:id/opencode/providers       List OpenCode providers + models
+
+# Files
+GET    /vms/:id/files                    List files (?path=)
+GET    /vms/:id/files/read               Read file content (?path=)
+GET    /vms/:id/files/download           Download file (?path=)
+GET    /vms/:id/git/log                  Git commit log (?limit=)
+
+# User
+GET    /me                               Current user info
+GET    /me/ssh-keys                      Get SSH keys (custom + GitHub)
+PUT    /me/ssh-keys                      Save custom SSH public keys
+GET    /me/github                        GitHub connection status
+DELETE /me/github                        Disconnect GitHub
+GET    /me/repos                         List GitHub repos (?q=, ?page=)
+POST   /me/repos                         Create GitHub repo
+
+# SSH key linking (from SSH TUI)
+GET    /link-ssh/:token                  Get pending SSH key info
+GET    /link-ssh/:token/status           Poll confirmation status
+POST   /link-ssh/:token                  Confirm SSH key linking
+
+# Billing (Stripe)
+POST   /billing/checkout                 Create Stripe Checkout session
+POST   /billing/portal                   Create Stripe Customer Portal session
+GET    /billing/subscription             Get subscription status + plan
+POST   /billing/webhook                  Stripe webhook handler
+
+# Admin (require is_admin)
+GET    /admin/stats                      Overview numbers
+GET    /admin/users                      All users with vm_count + provider
+GET    /admin/vms                        All VMs with owner info
+GET    /admin/vms/:id                    Detailed VM info
+GET    /admin/traffic                    Live TAP RX/TX for running VMs
+GET    /admin/traffic/summary            Traffic totals per VM (?hours=)
+GET    /admin/traffic/:id/history        Time-series traffic for VM (?hours=)
+GET    /admin/sessions                   All agent sessions (?limit=)
+GET    /admin/events                     Admin events (?limit=, ?type=)
+GET    /admin/health                     Extended health + resources
 ```
 
 ## Database Tables
 
 | Table | Owned By | Purpose |
 |-------|----------|---------|
-| `users` | auth | User accounts (GitHub, Google, email). Includes `github_username` for SSH key lookup, `is_admin` for admin access |
+| `users` | auth | User accounts. Columns added at runtime: `is_admin`, `plan`, `ssh_public_keys`, `github_token`, `stripe_customer_id`, `trial_started_at` |
 | `sessions` | auth | JWT session records (defined but not actively used — JWT is cookie-based) |
-| `env_access` | auth (schema), control-plane (writes) | Role-based access: owner/editor/viewer per env per user |
-| `envs` | control-plane | Environment records: slug, ports, VM ID, vsock CID, VM IP, snapshot path, GitHub repo, status |
-| `agent_sessions` | control-plane | Agent session records: env, type (codex/opencode), thread ID, status |
+| `vm_access` | auth (schema), control-plane (writes) | Role-based access: owner/editor/viewer per VM per user |
+| `vms` | control-plane | VM records: id, name, owner_id, ports, vm_ip, vsock_cid, snapshot_path, gh_repo, status, mem_size_mib |
+| `agent_sessions` | control-plane | Agent session records: vm_id, agent_type (codex/opencode), thread_id, title, cwd, status |
 | `agent_messages` | control-plane | Conversation history: role, content, metadata per session |
-| `admin_events` | control-plane | Audit log: VM lifecycle events, agent events, user activity (see `docs/admin-dashboard.md`) |
-| `vm_traffic` | control-plane | Per-VM network traffic deltas recorded every 5min, auto-pruned after 7 days (see `docs/vm-traffic-monitor.md`) |
+| `admin_events` | control-plane | Audit log: VM lifecycle events, agent events, user activity |
+| `vm_traffic` | control-plane | Per-VM network traffic deltas recorded every poll cycle, auto-pruned after 7 days |
 
-## Implementation Progress
+## Plans + Quotas
 
-See `PLATFORM_PLAN.md` §Implementation Plan for the full 5-week roadmap.
+- **free**: max 512 MiB total RAM, valid VM sizes: 256, 512 MiB
+- **base**: max 1536 MiB total RAM, valid VM sizes: 256, 512, 768, 1024, 1280, 1536 MiB
+- New users get a 3-day **base trial** (`trial_started_at`). After expiry, lazy-downgraded to free.
+- Only `running` and `creating` VMs count against RAM quota. Snapshotted VMs are free.
+- `QuotaExceededError` thrown by `wake.ts` when restoring would exceed quota. Handled gracefully in all auto-wake routes.
+- Stripe integration: `/billing/checkout` → `/billing/portal` → webhook updates `plan` in DB.
 
-### Phase 1: Infrastructure + Auth — COMPLETE
-- VPS provisioning, Docker, Caddy, Node 22, SQLite setup
-- Auth service: GitHub OAuth, Google OAuth (PKCE), email magic links
-- JWT session cookies scoped to `.BASE_DOMAIN`
-- Caddy `forward_auth` wired to `/verify` endpoint
-- Login page with dark theme (Tailwind)
+## Agent Integration
 
-### Phase 2: Control Plane + Containers → Firecracker VMs — COMPLETE
-- Control plane API on port 4001 with all env CRUD endpoints
-- Firecracker VM lifecycle via REST API (create, start, stop, snapshot, restore)
-- Port allocation: app (10001+), SSH (20001+), OpenCode (30001+), vsock CID (3+)
-- Dynamic Caddy route registration/removal via admin API
-- GitHub repo creation via Octokit + SSH key fetching from `github.com/{username}.keys`
-- Status page HTML fallback for Caddy 502/503 (also triggers wake for snapshotted VMs)
-- Access management (grant/revoke roles)
-- `github_username` column added to users table for SSH key lookup
-- VM rootfs: Alpine Linux ext4 image (`vm/build-rootfs.sh`)
-- VM init: PID 1 script with network config, SSH (TCP), account unlock, git clone, OpenCode server (`vm/init.sh`)
-- Host setup: Firecracker binary, kernel, bridge interface, NAT, TAP helpers (`infra/setup-host.sh`)
+### Codex Bridge (`control-plane/agents/codex-bridge.ts`)
+- JSON-RPC 2.0 over stdio via SSH to `codex app-server` in VM
+- Protocol docs: https://developers.openai.com/codex/app-server/
+- Lifecycle: `initialize` → `thread/start` → `turn/start` → streaming events → `turn/interrupt`
+- Approval handling: server-initiated JSON-RPC requests forwarded to dashboard, user responds, bridge sends response back
+- Auth bridge: persistent app-server per VM for `account/read`, `account/login/start`, `account/logout`
+- ChatGPT OAuth uses `codex login --device-auth` (app-server OAuth redirect to localhost doesn't work in VMs)
 
-### Phase 3: Web Terminal + Claude Code — COMPLETE
-- Web terminal: `node-pty` + `@fastify/websocket` in control-plane, xterm.js client in dashboard
-- `control-plane/terminal/pty-handler.ts`: PTY lifecycle over SSH (create, resize, cleanup, graceful shutdown)
-- `control-plane/routes/terminal.ts`: WebSocket route `GET /envs/:id/terminal` with auth + access check
-- `control-plane/routes/claude.ts`: `GET /envs/:id/claude/sessions` reads session metadata via SSH exec
-- `@fastify/cors` added for cross-origin dashboard API calls
-- Dashboard (`dashboard/`): React 19 + Vite + Tailwind CSS 4 SPA on port 4002
-  - Env list page with create form, env detail page with Terminal and Claude Code tabs
-  - xterm.js terminal with WebSocket, auto-reconnect, resize support
-  - Claude Code tab: SSH command + copy, auth instructions, recent sessions list
-- Cookie domain fix: `__session` cookie now sets `domain: "localhost"` in dev for cross-subdomain access
-- MOTD added to container entrypoint with quick-start instructions
-- `ANTHROPIC_API_KEY` persisted in container's `~/.env`
+### OpenCode Bridge (`control-plane/agents/opencode-bridge.ts`)
+- HTTP REST + SSE to VM's OpenCode server (port 5000, via iptables DNAT)
+- Auth: HTTP basic auth (`opencode` / per-VM `OPENCODE_SERVER_PASSWORD`)
+- SSE format: data-only (no `event:` lines), event type in `data.type`, payload in `data.properties`
+- Message format: `{ parts: [{ type: "text", text }] }`
 
-### Phase 4: Agent Bridge — Codex + OpenCode — COMPLETE
-- **Codex bridge** (`control-plane/agents/codex-bridge.ts`): JSON-RPC 2.0 over stdio via SSH
-  - Protocol reference: https://developers.openai.com/codex/app-server/
-  - Full lifecycle: `initialize` + `initialized` handshake → `thread/start` → `turn/start` (with `input` array) → streaming events → `turn/interrupt`
-  - Event mapping: `item/agentMessage/delta` → message.delta, `item/started`/`item/completed` for tool calls + file changes
-  - Approval handling: Server sends JSON-RPC requests (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`), bridge forwards to dashboard, user responds, bridge sends JSON-RPC response back
-  - Auth: `account/read` checks status, `account/login/start { type: "apikey" }` for API key login. ChatGPT login uses `codex login --device-auth` CLI over SSH (app-server OAuth needs localhost redirect which doesn't work in VMs)
-  - Auth bridge: `AgentManager.getCodexAuthBridge()` maintains a persistent app-server process per env for auth operations, separate from session bridges
-- **OpenCode bridge** (`control-plane/agents/opencode-bridge.ts`): HTTP REST + SSE to VM's OpenCode server (via iptables DNAT port forwarding)
-  - Session CRUD via HTTP, SSE event stream for real-time updates
-  - Auth via HTTP basic auth with username `opencode` and per-env `OPENCODE_SERVER_PASSWORD`
-  - SSE format: data-only (no `event:` lines), event type is `data.type`, payload is in `data.properties`
-  - Message format: `{ parts: [{ type: "text", text }] }` (not `{ content }`)
-  - Event mapping: `message.part.delta` → message.delta (streaming), `message.part.updated` (type=text) → message.completed, `session.status` (status.type) → turn lifecycle
-  - Model info: Emits `session.info` events with `modelID` and `providerID` from `message.updated` events
-- **Shared types** (`control-plane/agents/types.ts`): AgentEvent (includes `session.info` for model display), AgentCommand, AgentBridge interface
-- **WebSocket hub** (`control-plane/agents/ws-hub.ts`): Per-env broadcast of normalized agent events
-- **Agent manager** (`control-plane/agents/manager.ts`): Coordinates bridges, DB persistence, WebSocket hub
-  - Session lifecycle: create → send messages → interrupt → archive/delete
-  - Dual-write: persists messages in `agent_messages` + broadcasts via WebSocket
-  - Auto-titles sessions from first assistant response
-  - Auth bridge management: persistent Codex app-server per env for auth operations
-- **DB tables**: `agent_sessions` (id, env_id, agent_type, thread_id, title, status) + `agent_messages` (id, session_id, role, content, metadata)
-- **API routes** (`control-plane/routes/agents.ts`): Full CRUD + WebSocket + Codex auth endpoints
-- **Dashboard**: Codex + OpenCode tabs with chat UI, session sidebar, streaming messages, tool call cards, approval prompts
-  - `useAgentSocket` hook for WebSocket connection + event handling
-  - `AgentTab` component (shared for both agent types) with model info display in header
-  - `ChatMessage` + `StreamingMessage` + `ApprovalCard` components
-  - Codex auth dialog: "Sign in with ChatGPT" (device code flow) or "Use API Key" options
+### Shared Infrastructure
+- **WebSocket hub** (`ws-hub.ts`): Per-VM broadcast of normalized agent events to dashboard
+- **Agent manager** (`manager.ts`): Coordinates bridges, DB persistence, session lifecycle, auto-titles sessions
+- Bridges are in-memory — control plane restart loses active sessions
 
-### Phase 5: Dashboard + Polish — IN PROGRESS
-- [x] Graceful env creation without `GH_PAT` (clear error message, optional `gh_repo` field)
-- [x] Container failure rollback (cleans up DB records so ports are freed for retry)
-- [x] Dev mode auth bypass for local development
-- [x] SSH exec switched from vsock to TCP over bridge network (Firecracker vsock UDS incompatible with `AF_VSOCK`)
-- [x] OpenSSH 10+ locked account fix (`dev:!:` → `dev:*:` in shadow)
-- [x] CORS dynamic origin validation (accepts IP-based and hostname-based dashboard access on port 4002)
-- [x] Caddy admin API Origin header fix (Node.js `fetch` doesn't send `Origin`)
-- [x] Host `vhost_vsock` kernel module persistence (`/etc/modules-load.d/vhost-vsock.conf`)
-- [x] Host `socat` package installed
-- [x] Deploy script (`deploy.sh`) — single-command deploys with rsync, systemd restart, health checks, smoke tests
-- [x] `.rsyncignore` — prevents SQLite WAL corruption during rsync
-- [x] systemd service units — auto-restart, journalctl logging, proper dependency ordering
-- [x] Version tracking — `version.json` written at deploy time, exposed in `/health` endpoints
-- [x] Admin dashboard (`admin/`) — platform observability at `admin.numavm.com` with users, envs, sessions, events pages + recharts. See `docs/admin-dashboard.md`
-- [x] Admin auth gating — `is_admin` column on users + `X-User-Admin` header in forward_auth + admin preHandler in control plane
-- [x] Event logging — `admin_events` table tracks VM lifecycle (created/deleted/paused/idle_snapshotted/woke) and agent session creation
-- [x] VM traffic monitoring — per-VM RX/TX deltas recorded every 5min, 7-day retention, time-series charts in admin. See `docs/vm-traffic-monitor.md`
-- [ ] Access control UI (share by email)
-- [ ] Error handling improvements (agent session errors surface to UI)
-- [ ] Onboarding flow
-- [ ] File browser tab
+## VM Creation Flow (POST /vms)
 
-## Agent Integration Details
-
-### Codex App-Server Protocol
-- Docs: https://developers.openai.com/codex/app-server/
-- Auth docs: https://developers.openai.com/codex/auth/
-- The app-server JSON-RPC provides `account/read`, `account/login/start`, `account/logout` for auth
-- `account/login/start { type: "chatgpt" }` returns an OAuth redirect URL to `localhost:1455/auth/callback` — this doesn't work in containers, so ChatGPT login falls back to CLI `codex login --device-auth`
-- `account/login/start { type: "apikey", apiKey: "sk-..." }` works through the app-server
-- Server-initiated requests (approvals) have both `id` and `method` — must respond with a JSON-RPC response using the same `id`
-- Notifications have `method` but no `id`
-
-### OpenCode HTTP API
-- OpenCode runs as `opencode serve --port 5000 --hostname 0.0.0.0` inside VMs
-- Auth: HTTP basic auth with username `opencode` and password from `OPENCODE_SERVER_PASSWORD` env var
-- `POST /session` — create session
-- `POST /session/{id}/message` — send message with `{ parts: [{ type: "text", text }] }`
-- `GET /session/{id}` — get session details
-- `GET /session` — list sessions
-- `GET /event` — SSE stream (data-only format, type in JSON payload)
-- OpenCode installs to `/root/.opencode/bin/opencode` — symlinked to `/usr/local/bin/opencode` in the rootfs build
-
-## Future Work / Known Issues
-
-- **Codex app-server OAuth**: The app-server's ChatGPT OAuth flow uses a localhost redirect (`localhost:1455/auth/callback`) that doesn't work inside VMs. Investigate if the redirect URI can be configured, or if a proxy approach could make it work natively instead of falling back to CLI device auth.
-- **OpenCode config**: OpenCode's model/provider configuration inside VMs needs investigation. Currently uses whatever default model OpenCode selects. Users may want to configure this.
-- **Agent bridge resilience**: Bridges are in-memory — control plane restart loses all active sessions. Consider reconnecting to existing app-server/OpenCode processes on restart.
-- **VM rootfs size**: Current Alpine rootfs is ~1GB. Could be optimized further by removing unused packages.
-- **Jailer integration**: Run Firecracker processes in chroot/cgroup jail for security hardening.
-- **Snapshot compression**: VM memory snapshots are ~512MB each (= mem_size_mib). Consider compression or deduplication.
-- **Host crash recovery**: In-memory VM state is lost on control plane restart. On startup, should scan for running Firecracker processes and reconcile with DB.
-- **Port allocation**: Currently uses simple incrementing ports from DB. Could run out or conflict if envs are rapidly created/destroyed.
-- **OpenCode install method**: The `curl | bash` install is fragile. Pin a specific version and install to a known path.
-- **Vsock SSH (future optimization)**: Currently using TCP SSH over bridge network. Could switch to proper vsock by writing a ProxyCommand that connects to Firecracker's UDS socket and performs the `CONNECT <port>\n` / `OK <cid>\n` handshake. Would eliminate TCP/IP overhead. See Firecracker vsock docs for the UDS protocol.
-- **Caddy not fully configured**: Caddy is installed but still has the default Caddyfile. The admin API route registration works but Caddy isn't serving env subdomains yet. Need a proper Caddyfile with wildcard domains + forward_auth.
-- **Firecracker API dead after snapshot restore** (FIXED): Was caused by FC v1.10.1 — upgraded to v1.14.2 which fixes the issue. Also added `-m 30` curl timeout to `fcApi` and per-env concurrency guard to idle monitor as defensive measures. See `docs/firecracker-api-dead-after-restore.md` for details.
-## Env Creation Flow (POST /envs)
-
-For reference, the full orchestration in `control-plane/routes/envs.ts`:
-1. Validate body (`name` required, optional `gh_repo`)
-2. Generate slug: `env-` + 6 random alphanumeric chars
-3. Allocate ports + vsock CID + VM IP from DB
-4. Create GitHub repo via Octokit (or use provided `gh_repo`). If no `GH_PAT` and no `gh_repo`, returns 400 with clear error.
-5. Fetch user's GitHub SSH keys from `github.com/{username}.keys`
-6. Insert env record (status: `creating`) + grant owner access
-7. Create + start Firecracker VM (rootfs, TAP, vsock device, iptables DNAT, kernel cmdline)
-   - Waits for SSH readiness via TCP to VM bridge IP (up to 30s timeout)
-   - On failure: rolls back DB records (deletes env + access) so ports/CIDs are freed for retry
-8. Register Caddy route via admin API (non-fatal)
-9. Update status to `running`
-10. Return `{ id, url, repo_url, ssh_command, ssh_port, status }`
+1. Validate body (`name` required, optional `gh_repo`, `mem_size_mib`)
+2. Check RAM quota (only running/creating VMs count)
+3. Generate slug: `vm-` + 6 random alphanumeric chars
+4. Allocate ports + vsock CID + VM IP from DB
+5. Create GitHub repo via Octokit (or use provided `gh_repo`). Without `GH_PAT` or `gh_repo`, returns 400.
+6. Fetch user's SSH keys (GitHub + custom)
+7. Insert VM record (status: `creating`) + grant owner access
+8. Background: create + start Firecracker VM (rootfs, TAP, vsock, iptables DNAT)
+   - Waits for SSH readiness via TCP to VM bridge IP (up to 30s)
+   - On failure: rolls back DB records + deletes data directory
+9. Register Caddy route (non-fatal)
+10. Update status to `running`
 
 ## VM Init Behavior
 
-The init script (`vm/init.sh`, executed as PID 1 via `/sbin/numavm-init`) is fault-tolerant:
-- Parses `dm.*` kernel cmdline params for env config (IP, SSH keys, repo, API keys)
+The init script (`vm/init.sh`, PID 1 via `/sbin/numavm-init`) is fault-tolerant:
+- Parses `dm.*` kernel cmdline params for VM config
 - Configures networking (eth0 with static IP from kernel cmdline)
-- Unlocks `dev` user account (`sed -i 's/^dev:!:/dev:*:/' /etc/shadow`) — required because OpenSSH 10+ rejects pubkey auth for locked accounts
-- SSH: TCP sshd on port 22 + vsock SSH listener via socat (vsock listener kept for future use)
-- Control plane connects to VMs via TCP SSH over the bridge network (172.16.0.x), not vsock
-- If `GH_REPO`/`GH_TOKEN` are empty or git clone fails, creates an empty local git repo instead of crashing
-- OpenCode server starts via `nohup` in background
-- App startup (`npm start` / `python3 app.py`) is best-effort with `|| true`
-- SSH keys injected from base64-encoded kernel cmdline param
-- Internal SSH key (for control plane SSH exec) injected alongside user keys
-- Graceful shutdown on SIGTERM (stops PM2, kills background processes)
+- Unlocks `dev` user account (`dev:!:` → `dev:*:` in shadow) for OpenSSH 10+
+- TCP sshd on port 22, vsock listener via socat (kept for future use)
+- Git clone is best-effort (falls back to empty local repo)
+- OpenCode server starts in background
+- SSH keys injected from base64-encoded kernel cmdline param (user + internal)
+- Graceful shutdown on SIGTERM
 
 ## Idle Shutdown + Wake-on-Request
 
-- **Idle Monitor** (`control-plane/services/idle-monitor.ts`): Polls TAP device traffic counters every 30s. If no network activity for 15min (configurable), snapshots the VM and frees resources.
-- **Wake Service** (`control-plane/services/wake.ts`): `ensureVMRunning(envId)` restores from snapshot if needed. Called by terminal, agent, and file routes. Coalesces concurrent wake requests.
-- **Status Page**: When a request hits a snapshotted env via Caddy, the status page triggers a wake in the background and auto-refreshes every 3s.
-- **Dashboard**: Shows "snapshotted" / "paused" badges on env cards, and a "waking up" banner when connecting to a sleeping env.
+- **Idle Monitor** (`idle-monitor.ts`): Polls TAP traffic every 30s. If < 20KB transferred in 2min (configurable via `IDLE_TIMEOUT_MS`, `IDLE_THRESHOLD_BYTES`), snapshots the VM.
+- **Wake Service** (`wake.ts`): `ensureVMRunning(vmId)` restores from snapshot. Called by terminal, agent, file, and VM detail routes. Coalesces concurrent requests. Checks RAM quota before restoring.
+- **Status Page**: When a request hits a snapshotted VM via Caddy, triggers wake and auto-refreshes. Shows quota error if applicable.
+- **Dashboard**: Shows status badges on VM cards. Pause navigates to list immediately (fire-and-forget API call) to prevent WebSocket/terminal connections from re-waking the VM.
+
+## Future Work / Known Issues
+
+- **Agent bridge resilience**: In-memory bridges lost on restart. Consider reconnecting to existing processes.
+- **Snapshot compression**: Memory snapshots are ~`mem_size_mib` each. Consider compression.
+- **Jailer integration**: Run Firecracker in chroot/cgroup jail for security hardening.
+- **Codex app-server OAuth**: localhost redirect doesn't work in VMs, falls back to CLI device auth.

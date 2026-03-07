@@ -33,7 +33,7 @@ export function Overview() {
   if (error) return <div className="text-xs text-red-500">{error}</div>;
   if (!stats) return <div className="text-xs text-neutral-400">Loading...</div>;
 
-  const chartData = Object.entries(stats.envsByStatus).map(([status, count]) => ({
+  const chartData = Object.entries(stats.vmsByStatus).map(([status, count]) => ({
     status,
     count,
     fill: STATUS_COLORS[status] || "#a3a3a3",
@@ -47,10 +47,10 @@ export function Overview() {
 
       <div className="grid grid-cols-4 gap-4">
         <StatsCard label="Total Users" value={stats.userCount} />
-        <StatsCard label="Total Environments" value={stats.totalEnvs} />
+        <StatsCard label="Total VMs" value={stats.totalVMs} />
         <StatsCard
           label="Running VMs"
-          value={stats.envsByStatus["running"] || 0}
+          value={stats.vmsByStatus["running"] || 0}
           dot="bg-green-500"
         />
         <StatsCard
@@ -80,7 +80,7 @@ export function Overview() {
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <div className="text-xs text-neutral-400 py-8 text-center">No environments</div>
+            <div className="text-xs text-neutral-400 py-8 text-center">No VMs</div>
           )}
         </div>
 
@@ -98,8 +98,8 @@ export function Overview() {
                   >
                     {event.type}
                   </span>
-                  {event.env_id && (
-                    <span className="text-neutral-500">{event.env_id}</span>
+                  {event.vm_id && (
+                    <span className="text-neutral-500">{event.vm_id}</span>
                   )}
                   <span className="text-neutral-400 ml-auto">
                     {relativeTime(event.created_at)}

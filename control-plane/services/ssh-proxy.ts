@@ -12,14 +12,14 @@ const { Server, Client, utils } = ssh2;
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
-import { findEnvById, getAuthorizedUsersForEnv } from "../db/client.js";
+import { findVMById, getAuthorizedUsersForVM } from "../db/client.js";
 import { ensureVMRunning, QuotaExceededError } from "./wake.js";
 import { getInternalSshKeyPath, isVmRunning } from "./firecracker.js";
 import { findUserByPublicKey, computeKeyFingerprint, type SshUser } from "./ssh-key-lookup.js";
 import { dispatchSshCommand } from "../ssh-api/dispatcher.js";
 import { showAuthenticatedTui, showUnauthenticatedTui } from "../ssh-api/tui.js";
 
-function getDataDir() { return process.env.DATA_DIR || "/data/envs"; }
+function getDataDir() { return process.env.DATA_DIR || "/data/vms"; }
 
 // --- Host key management ---
 
@@ -51,11 +51,11 @@ let sshServer: InstanceType<typeof Server> | null = null;
 // --- Key matching ---
 
 /**
- * Collect all authorized public keys for an env.
+ * Collect all authorized public keys for a VM.
  * Returns parsed ssh2 keys ready for comparison.
  */
-function getAuthorizedKeys(envId: string): ParsedKey[] {
-  const users = getAuthorizedUsersForEnv(envId);
+function getAuthorizedKeys(vmId: string): ParsedKey[] {
+  const users = getAuthorizedUsersForVM(vmId);
   const keys: ParsedKey[] = [];
 
   for (const user of users) {
@@ -97,7 +97,7 @@ function isKeyAuthorized(clientKey: { algo: string; data: Buffer }, authorizedKe
 // --- Connection handler ---
 
 function handleConnection(client: Connection, _info: ClientInfo) {
-  let env: ReturnType<typeof findEnvById> = undefined;
+  let vm: ReturnType<typeof findVMById> = undefined;
   let authenticatedUser: string | null = null;
   let apiMode = false;
   let apiUser: SshUser | null = null;
@@ -117,16 +117,16 @@ function handleConnection(client: Connection, _info: ClientInfo) {
     const username = ctx.username;
     const pkCtx = ctx as PublicKeyAuthContext;
 
-    // Determine mode: env slug (starts with "env-") → env proxy, anything else → API mode
-    if (username.startsWith("env-")) {
-      // --- Env proxy mode (existing behavior) ---
-      env = findEnvById(username);
-      if (!env) {
-        console.warn(`[ssh-proxy] No env found for slug "${username}"`);
+    // Determine mode: VM slug (starts with "vm-") → VM proxy, anything else → API mode
+    if (username.startsWith("vm-")) {
+      // --- VM proxy mode ---
+      vm = findVMById(username);
+      if (!vm) {
+        console.warn(`[ssh-proxy] No VM found for slug "${username}"`);
         return ctx.reject(["publickey"]);
       }
 
-      const authorizedKeys = getAuthorizedKeys(env.id);
+      const authorizedKeys = getAuthorizedKeys(vm.id);
       if (!isKeyAuthorized(pkCtx.key, authorizedKeys)) {
         return ctx.reject(["publickey"]);
       }
@@ -224,9 +224,9 @@ function handleConnection(client: Connection, _info: ClientInfo) {
       return;
     }
 
-    // --- Env proxy mode (existing behavior) ---
-    if (!env) { client.end(); return; }
-    console.log(`[ssh-proxy] Client authenticated for ${env.id} (user: ${authenticatedUser})`);
+    // --- VM proxy mode ---
+    if (!vm) { client.end(); return; }
+    console.log(`[ssh-proxy] Client authenticated for ${vm.id} (user: ${authenticatedUser})`);
 
     client.on("session", (accept, reject) => {
       const session = accept();
@@ -267,12 +267,12 @@ function handleConnection(client: Connection, _info: ClientInfo) {
 
       session.on("shell", (accept, reject) => {
         clientChannel = accept();
-        connectUpstream(env, clientChannel, { ptyInfo, envVars, shell: true });
+        connectUpstream(vm, clientChannel, { ptyInfo, envVars, shell: true });
       });
 
       session.on("exec", (accept, reject, info) => {
         clientChannel = accept();
-        connectUpstream(env, clientChannel, { ptyInfo, envVars, exec: info.command });
+        connectUpstream(vm, clientChannel, { ptyInfo, envVars, exec: info.command });
       });
 
       // Don't listen for "sftp" event — it returns an SFTPWrapper (not pipeable).
@@ -280,14 +280,14 @@ function handleConnection(client: Connection, _info: ClientInfo) {
       session.on("subsystem", (accept, reject, info) => {
         subsystemName = info.name;
         clientChannel = accept();
-        connectUpstream(env, clientChannel, { ptyInfo, envVars, subsystem: subsystemName });
+        connectUpstream(vm, clientChannel, { ptyInfo, envVars, subsystem: subsystemName });
       });
 
       /**
        * Connect to the upstream VM and bridge channels.
        */
       function connectUpstream(
-        env: { id: string; vm_ip: string | null },
+        vm: { id: string; vm_ip: string | null },
         clientChan: ServerChannel,
         opts: {
           ptyInfo?: any;
@@ -297,7 +297,7 @@ function handleConnection(client: Connection, _info: ClientInfo) {
           subsystem?: string;
         },
       ) {
-        const vmIp = env.vm_ip;
+        const vmIp = vm.vm_ip;
         if (!vmIp) {
           clientChan.stderr.write("Error: VM has no IP address\r\n");
           clientChan.close();
@@ -307,11 +307,11 @@ function handleConnection(client: Connection, _info: ClientInfo) {
         let retriedAfterSnapshot = false;
 
         // Wake VM if needed — write status to stderr so it doesn't interfere with pipes/scp
-        const needsWake = !isVmRunning(env.id);
+        const needsWake = !isVmRunning(vm.id);
         const wakePromise = needsWake
           ? (() => {
-              clientChan.stderr.write("Waking environment... ");
-              return ensureVMRunning(env.id).then(() => {
+              clientChan.stderr.write("Waking VM... ");
+              return ensureVMRunning(vm.id).then(() => {
                 clientChan.stderr.write("ready.\r\n");
               });
             })()
@@ -398,19 +398,19 @@ function handleConnection(client: Connection, _info: ClientInfo) {
             });
 
             upstream.on("error", (err) => {
-              console.error(`[ssh-proxy] Upstream error for ${env.id}: ${err.message}`);
+              console.error(`[ssh-proxy] Upstream error for ${vm.id}: ${err.message}`);
               // VM may have been snapshotted mid-connection — try waking once
               if (!needsWake && !retriedAfterSnapshot) {
                 retriedAfterSnapshot = true;
-                clientChan.stderr.write("Environment went to sleep, waking... ");
-                ensureVMRunning(env.id)
+                clientChan.stderr.write("VM went to sleep, waking... ");
+                ensureVMRunning(vm.id)
                   .then(() => {
                     clientChan.stderr.write("ready.\r\n");
-                    connectUpstream(env, clientChan, opts);
+                    connectUpstream(vm, clientChan, opts);
                   })
                   .catch((wakeErr) => {
                     if (wakeErr instanceof QuotaExceededError) {
-                      clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another environment or upgrade your plan.\r\n`);
+                      clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another VM or upgrade your plan.\r\n`);
                     } else {
                       clientChan.stderr.write(`failed: ${wakeErr.message}\r\n`);
                     }
@@ -433,7 +433,7 @@ function handleConnection(client: Connection, _info: ClientInfo) {
           })
           .catch((err) => {
             if (err instanceof QuotaExceededError) {
-              clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another environment or upgrade your plan.\r\n`);
+              clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another VM or upgrade your plan.\r\n`);
             } else {
               clientChan.stderr.write(`Wake failed: ${err.message}\r\n`);
             }
@@ -511,7 +511,7 @@ function handleConnection(client: Connection, _info: ClientInfo) {
 
 /**
  * Start the single SSH proxy listener.
- * Routes connections by username (env slug).
+ * Routes connections by username (VM slug).
  */
 export async function startSshProxy(): Promise<void> {
   const hostKey = getHostKey();
@@ -530,7 +530,7 @@ export async function startSshProxy(): Promise<void> {
   });
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(`[ssh-proxy] Listening on port ${port} (username = env slug)`);
+    console.log(`[ssh-proxy] Listening on port ${port} (username = VM slug)`);
   });
 
   sshServer = server;

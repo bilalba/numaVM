@@ -7,7 +7,7 @@ import { join } from "node:path";
 function getFcBin() { return process.env.FC_BIN || "/opt/firecracker/bin/firecracker"; }
 function getKernelPath() { return process.env.FC_KERNEL || "/opt/firecracker/kernel/vmlinux"; }
 function getRootfsPath() { return process.env.FC_ROOTFS || "/opt/firecracker/rootfs/base.ext4"; }
-function getDataDir() { return process.env.DATA_DIR || "/data/envs"; }
+function getDataDir() { return process.env.DATA_DIR || "/data/vms"; }
 function getSocketDir() { return process.env.FC_SOCKET_DIR || "/tmp"; }
 function getVmGateway() { return process.env.VM_GATEWAY || "172.16.0.1"; }
 function getDefaultVcpu() { return parseInt(process.env.VM_VCPU_COUNT || "2", 10); }
@@ -647,48 +647,48 @@ function isProcessAlive(pid: number): boolean {
 export async function reconcileRunningVMs(): Promise<void> {
   const { db } = await import("../db/client.js");
 
-  const runningEnvs = db.prepare(
-    "SELECT id, vm_ip, vsock_cid, app_port, ssh_port, opencode_port FROM envs WHERE status = 'running'"
+  const runningVMsList = db.prepare(
+    "SELECT id, vm_ip, vsock_cid, app_port, ssh_port, opencode_port FROM vms WHERE status = 'running'"
   ).all() as { id: string; vm_ip: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number }[];
 
-  if (runningEnvs.length === 0) return;
+  if (runningVMsList.length === 0) return;
 
-  console.log(`[reconcile] Found ${runningEnvs.length} env(s) with status 'running', checking for live processes...`);
+  console.log(`[reconcile] Found ${runningVMsList.length} VM(s) with status 'running', checking for live processes...`);
 
-  for (const env of runningEnvs) {
-    const socketPath = join(getSocketDir(), `fc-${env.id}.sock`);
-    const tapDev = `tap-${env.id}`;
+  for (const vm of runningVMsList) {
+    const socketPath = join(getSocketDir(), `fc-${vm.id}.sock`);
+    const tapDev = `tap-${vm.id}`;
 
-    // Find the Firecracker PID for this env
+    // Find the Firecracker PID for this VM
     let pid: number | null = null;
     try {
-      const out = execSync(`pgrep -f "firecracker.*fc-${env.id}\\.sock"`, { stdio: "pipe" }).toString().trim();
+      const out = execSync(`pgrep -f "firecracker.*fc-${vm.id}\\.sock"`, { stdio: "pipe" }).toString().trim();
       const pids = out.split("\n").map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
       if (pids.length > 0) pid = pids[0];
     } catch { /* no matching process */ }
 
     if (pid && isProcessAlive(pid)) {
       // Re-adopt this VM
-      runningVMs.set(env.id, {
+      runningVMs.set(vm.id, {
         process: null,
         pid,
         socketPath,
-        vsockCid: env.vsock_cid,
-        vmIp: env.vm_ip,
+        vsockCid: vm.vsock_cid,
+        vmIp: vm.vm_ip,
         tapDev,
         startedAt: new Date().toISOString(), // approximate
       });
 
       // Re-establish iptables DNAT rules (SSH handled by ssh-proxy, no DNAT needed)
-      addDnat(env.app_port, env.vm_ip, 3000);
-      addDnat(env.opencode_port, env.vm_ip, 5000);
+      addDnat(vm.app_port, vm.vm_ip, 3000);
+      addDnat(vm.opencode_port, vm.vm_ip, 5000);
 
-      console.log(`[reconcile] Re-adopted VM ${env.id} (PID ${pid}), DNAT rules restored`);
+      console.log(`[reconcile] Re-adopted VM ${vm.id} (PID ${pid}), DNAT rules restored`);
     } else {
       // Process is dead — mark as stopped
-      const { updateEnvStatus } = await import("../db/client.js");
-      updateEnvStatus(env.id, "stopped");
-      console.log(`[reconcile] VM ${env.id} process not found, marked as stopped`);
+      const { updateVMStatus } = await import("../db/client.js");
+      updateVMStatus(vm.id, "stopped");
+      console.log(`[reconcile] VM ${vm.id} process not found, marked as stopped`);
     }
   }
 }

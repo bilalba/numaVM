@@ -49,7 +49,7 @@ export type AgentCommand =
 
 export interface AgentBridge {
   readonly agentType: AgentType;
-  start(envSlugOrCid: string | number, options?: { model?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<string>;
+  start(vmSlugOrCid: string | number, options?: { model?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<string>;
   sendMessage(text: string, options?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<void>;
   interrupt(): Promise<void>;
   destroy(): Promise<void>;

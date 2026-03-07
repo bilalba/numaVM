@@ -11,7 +11,7 @@ interface HealthStats {
     database: SubsystemStatus;
   };
   stats: {
-    environments: Record<string, number>;
+    vms: Record<string, number>;
     runningVMs: number;
     activeAgentSessions: number;
   };
@@ -19,18 +19,18 @@ interface HealthStats {
 
 export async function getHealthStats(): Promise<HealthStats> {
   let dbStatus: SubsystemStatus = { status: "ok" };
-  let envsByStatus: Record<string, number> = {};
+  let vmsByStatus: Record<string, number> = {};
   let runningVMs = 0;
   let activeAgentSessions = 0;
 
   // Check database
   try {
     db.prepare("SELECT 1").get();
-    const rows = db.prepare("SELECT status, COUNT(*) as count FROM envs GROUP BY status").all() as { status: string; count: number }[];
+    const rows = db.prepare("SELECT status, COUNT(*) as count FROM vms GROUP BY status").all() as { status: string; count: number }[];
     for (const row of rows) {
-      envsByStatus[row.status] = row.count;
+      vmsByStatus[row.status] = row.count;
     }
-    runningVMs = envsByStatus["running"] || 0;
+    runningVMs = vmsByStatus["running"] || 0;
     const sessionRow = db.prepare("SELECT COUNT(*) as count FROM agent_sessions WHERE status NOT IN ('archived')").get() as { count: number };
     activeAgentSessions = sessionRow.count;
   } catch (err: any) {
@@ -43,7 +43,7 @@ export async function getHealthStats(): Promise<HealthStats> {
       database: dbStatus,
     },
     stats: {
-      environments: envsByStatus,
+      vms: vmsByStatus,
       runningVMs,
       activeAgentSessions,
     },

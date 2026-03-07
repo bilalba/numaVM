@@ -4,25 +4,25 @@ import type { AgentEvent } from "./types.js";
 class WsHub {
   private connections = new Map<string, Set<WebSocket>>();
 
-  addConnection(envId: string, ws: WebSocket): void {
-    let set = this.connections.get(envId);
+  addConnection(vmId: string, ws: WebSocket): void {
+    let set = this.connections.get(vmId);
     if (!set) {
       set = new Set();
-      this.connections.set(envId, set);
+      this.connections.set(vmId, set);
     }
     set.add(ws);
   }
 
-  removeConnection(envId: string, ws: WebSocket): void {
-    const set = this.connections.get(envId);
+  removeConnection(vmId: string, ws: WebSocket): void {
+    const set = this.connections.get(vmId);
     if (set) {
       set.delete(ws);
-      if (set.size === 0) this.connections.delete(envId);
+      if (set.size === 0) this.connections.delete(vmId);
     }
   }
 
-  broadcast(envId: string, sessionId: string, event: AgentEvent): void {
-    const set = this.connections.get(envId);
+  broadcast(vmId: string, sessionId: string, event: AgentEvent): void {
+    const set = this.connections.get(vmId);
     if (!set) return;
     const payload = JSON.stringify({ sessionId, ...event });
     for (const ws of set) {
@@ -32,8 +32,8 @@ class WsHub {
     }
   }
 
-  getConnectionCount(envId: string): number {
-    return this.connections.get(envId)?.size ?? 0;
+  getConnectionCount(vmId: string): number {
+    return this.connections.get(vmId)?.size ?? 0;
   }
 }
 

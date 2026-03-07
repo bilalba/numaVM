@@ -3,7 +3,7 @@ import { api } from "../client.js";
 import { table } from "../util/table.js";
 import { spin } from "../util/spinner.js";
 
-interface Env {
+interface VM {
   id: string;
   slug: string;
   name: string;
@@ -16,20 +16,20 @@ interface Env {
   created_at?: string;
 }
 
-export function registerEnvsCommands(program: Command) {
-  const envs = program
-    .command("envs")
-    .description("Manage environments");
+export function registerVMsCommands(program: Command) {
+  const vms = program
+    .command("vms")
+    .description("Manage VMs");
 
-  envs
+  vms
     .command("list")
-    .description("List all environments")
+    .description("List all VMs")
     .action(async () => {
       const isJson = program.opts().json;
-      const spinner = spin("Fetching environments...");
+      const spinner = spin("Fetching VMs...");
 
       try {
-        const list = await api<Env[]>("/envs");
+        const list = await api<VM[]>("/vms");
         spinner.stop();
 
         if (isJson) {
@@ -38,7 +38,7 @@ export function registerEnvsCommands(program: Command) {
         }
 
         if (list.length === 0) {
-          console.log("No environments found. Create one with `numavm envs create <name>`.");
+          console.log("No VMs found. Create one with `numavm vms create <name>`.");
           return;
         }
 
@@ -55,33 +55,33 @@ export function registerEnvsCommands(program: Command) {
       }
     });
 
-  envs
+  vms
     .command("create <name>")
-    .description("Create a new environment")
+    .description("Create a new VM")
     .option("--repo <owner/repo>", "Use existing GitHub repo")
     .action(async (name: string, opts: { repo?: string }) => {
       const isJson = program.opts().json;
-      const spinner = spin(`Creating environment "${name}"...`);
+      const spinner = spin(`Creating VM "${name}"...`);
 
       try {
         const body: Record<string, string> = { name };
         if (opts.repo) body.gh_repo = opts.repo;
 
-        const env = await api<Env>("/envs", {
+        const vm = await api<VM>("/vms", {
           method: "POST",
           body: JSON.stringify(body),
         });
         spinner.stop();
 
         if (isJson) {
-          console.log(JSON.stringify(env, null, 2));
+          console.log(JSON.stringify(vm, null, 2));
           return;
         }
 
-        console.log(`Environment "${name}" created!`);
-        if (env.url) console.log(`  URL:  ${env.url}`);
-        if (env.repo_url) console.log(`  Repo: ${env.repo_url}`);
-        if (env.ssh_port) console.log(`  SSH:  ssh dev@${new URL(env.url || "").hostname} -p ${env.ssh_port}`);
+        console.log(`VM "${name}" created!`);
+        if (vm.url) console.log(`  URL:  ${vm.url}`);
+        if (vm.repo_url) console.log(`  Repo: ${vm.repo_url}`);
+        if (vm.ssh_port) console.log(`  SSH:  ssh dev@${new URL(vm.url || "").hostname} -p ${vm.ssh_port}`);
       } catch (err: any) {
         spinner.stop();
         console.error(`Error: ${err.message}`);
@@ -89,28 +89,28 @@ export function registerEnvsCommands(program: Command) {
       }
     });
 
-  envs
+  vms
     .command("info <name>")
-    .description("Show environment details")
+    .description("Show VM details")
     .action(async (name: string) => {
       const isJson = program.opts().json;
-      const spinner = spin("Fetching environment...");
+      const spinner = spin("Fetching VM...");
 
       try {
-        const env = await resolveEnv(name);
+        const vm = await resolveVM(name);
         spinner.stop();
 
         if (isJson) {
-          console.log(JSON.stringify(env, null, 2));
+          console.log(JSON.stringify(vm, null, 2));
           return;
         }
 
-        console.log(`Name:    ${env.name || env.slug}`);
-        console.log(`Status:  ${env.status}`);
-        if (env.url) console.log(`URL:     ${env.url}`);
-        if (env.repo_url) console.log(`Repo:    ${env.repo_url}`);
-        if (env.ssh_port) console.log(`SSH:     port ${env.ssh_port}`);
-        if (env.vm_ip) console.log(`VM IP:   ${env.vm_ip}`);
+        console.log(`Name:    ${vm.name || vm.slug}`);
+        console.log(`Status:  ${vm.status}`);
+        if (vm.url) console.log(`URL:     ${vm.url}`);
+        if (vm.repo_url) console.log(`Repo:    ${vm.repo_url}`);
+        if (vm.ssh_port) console.log(`SSH:     port ${vm.ssh_port}`);
+        if (vm.vm_ip) console.log(`VM IP:   ${vm.vm_ip}`);
       } catch (err: any) {
         spinner.stop();
         console.error(`Error: ${err.message}`);
@@ -118,18 +118,18 @@ export function registerEnvsCommands(program: Command) {
       }
     });
 
-  envs
+  vms
     .command("destroy <name>")
-    .description("Destroy an environment")
+    .description("Destroy a VM")
     .option("--yes", "Skip confirmation")
     .action(async (name: string, opts: { yes?: boolean }) => {
-      const env = await resolveEnv(name);
+      const vm = await resolveVM(name);
 
       if (!opts.yes) {
         const readline = await import("node:readline");
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
         const answer = await new Promise<string>((resolve) => {
-          rl.question(`Destroy environment "${env.name || env.slug}"? This cannot be undone. [y/N] `, resolve);
+          rl.question(`Destroy VM "${vm.name || vm.slug}"? This cannot be undone. [y/N] `, resolve);
         });
         rl.close();
         if (answer.toLowerCase() !== "y") {
@@ -138,11 +138,11 @@ export function registerEnvsCommands(program: Command) {
         }
       }
 
-      const spinner = spin("Destroying environment...");
+      const spinner = spin("Destroying VM...");
       try {
-        await api(`/envs/${env.id}`, { method: "DELETE" });
+        await api(`/vms/${vm.id}`, { method: "DELETE" });
         spinner.stop();
-        console.log(`Environment "${env.name || env.slug}" destroyed.`);
+        console.log(`VM "${vm.name || vm.slug}" destroyed.`);
       } catch (err: any) {
         spinner.stop();
         console.error(`Error: ${err.message}`);
@@ -150,17 +150,17 @@ export function registerEnvsCommands(program: Command) {
       }
     });
 
-  envs
+  vms
     .command("pause <name>")
-    .description("Snapshot and pause an environment")
+    .description("Snapshot and pause a VM")
     .action(async (name: string) => {
-      const env = await resolveEnv(name);
-      const spinner = spin("Pausing environment...");
+      const vm = await resolveVM(name);
+      const spinner = spin("Pausing VM...");
 
       try {
-        await api(`/envs/${env.id}/pause`, { method: "POST" });
+        await api(`/vms/${vm.id}/pause`, { method: "POST" });
         spinner.stop();
-        console.log(`Environment "${env.name || env.slug}" paused.`);
+        console.log(`VM "${vm.name || vm.slug}" paused.`);
       } catch (err: any) {
         spinner.stop();
         console.error(`Error: ${err.message}`);
@@ -169,21 +169,21 @@ export function registerEnvsCommands(program: Command) {
     });
 }
 
-async function resolveEnv(nameOrId: string): Promise<Env> {
+async function resolveVM(nameOrId: string): Promise<VM> {
   // Try direct ID lookup first
   try {
-    return await api<Env>(`/envs/${nameOrId}`);
+    return await api<VM>(`/vms/${nameOrId}`);
   } catch {
     // Fall through to list-based lookup
   }
 
   // Search by name/slug in the list
-  const envs = await api<Env[]>("/envs");
-  const match = envs.find(
+  const vms = await api<VM[]>("/vms");
+  const match = vms.find(
     (e) => e.name === nameOrId || e.slug === nameOrId || e.id === nameOrId,
   );
   if (!match) {
-    throw new Error(`Environment "${nameOrId}" not found`);
+    throw new Error(`VM "${nameOrId}" not found`);
   }
-  return api<Env>(`/envs/${match.id}`);
+  return api<VM>(`/vms/${match.id}`);
 }

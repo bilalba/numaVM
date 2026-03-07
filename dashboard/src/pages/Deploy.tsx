@@ -43,9 +43,9 @@ export function Deploy() {
   const [deploying, setDeploying] = useState(false);
   const [deployLogs, setDeployLogs] = useState<string[]>([]);
   const [deployError, setDeployError] = useState<string | null>(null);
-  const [envName, setEnvName] = useState("");
-  const [envId, setEnvId] = useState<string | null>(null);
-  const [envReady, setEnvReady] = useState(false);
+  const [vmName, setVMName] = useState("");
+  const [vmId, setVMId] = useState<string | null>(null);
+  const [vmReady, setVMReady] = useState(false);
   const [appUrl, setAppUrl] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -80,7 +80,7 @@ export function Deploy() {
           return;
         }
         setRepoInfo(data);
-        setEnvName(data.name);
+        setVMName(data.name);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -98,59 +98,59 @@ export function Deploy() {
 
   async function handleDeploy() {
     const parsed = parseRepo(repoInput);
-    if (!parsed || !envName.trim()) return;
+    if (!parsed || !vmName.trim()) return;
     setDeploying(true);
     setDeployLogs([]);
     setDeployError(null);
-    setEnvId(null);
-    setEnvReady(false);
+    setVMId(null);
+    setVMReady(false);
     setAppUrl(null);
 
     try {
-      const result = await api.createEnv({ name: envName.trim(), gh_repo: parsed });
-      setEnvId(result.id);
+      const result = await api.createVM({ name: vmName.trim(), gh_repo: parsed });
+      setVMId(result.id);
       if (result.url) setAppUrl(result.url);
 
       // Poll for real status updates
       let lastDetail = "";
       pollRef.current = setInterval(async () => {
         try {
-          const env = await api.getEnv(result.id);
+          const vm = await api.getVM(result.id);
           // Append new status_detail lines
-          if (env.status_detail && env.status_detail !== lastDetail) {
-            lastDetail = env.status_detail;
-            if (env.status_detail.startsWith("Error:")) {
-              setDeployError(env.status_detail);
-              // Don't stop deploying — env is still usable via SSH
+          if (vm.status_detail && vm.status_detail !== lastDetail) {
+            lastDetail = vm.status_detail;
+            if (vm.status_detail.startsWith("Error:")) {
+              setDeployError(vm.status_detail);
+              // Don't stop deploying — VM is still usable via SSH
               if (pollRef.current) clearInterval(pollRef.current);
               setDeploying(false);
-              setEnvReady(true); // still show the link
+              setVMReady(true); // still show the link
               return;
             }
-            setDeployLogs((prev) => [...prev, env.status_detail!]);
+            setDeployLogs((prev) => [...prev, vm.status_detail!]);
           }
-          // Done — env is running
-          if (env.status === "running") {
+          // Done — VM is running
+          if (vm.status === "running") {
             if (pollRef.current) clearInterval(pollRef.current);
             setDeployLogs((prev) => [...prev, "Ready"]);
             setDeploying(false);
-            setEnvReady(true);
+            setVMReady(true);
           }
           // Failed
-          if (env.status === "error") {
+          if (vm.status === "error") {
             if (pollRef.current) clearInterval(pollRef.current);
-            setDeployError(env.status_detail || "VM creation failed");
+            setDeployError(vm.status_detail || "VM creation failed");
             setDeploying(false);
           }
         } catch {
-          // env may have been deleted on error rollback
+          // VM may have been deleted on error rollback
           if (pollRef.current) clearInterval(pollRef.current);
-          setDeployError("Environment creation failed");
+          setDeployError("VM creation failed");
           setDeploying(false);
         }
       }, 1000);
     } catch (err: any) {
-      setDeployError(err.message || "Failed to create environment");
+      setDeployError(err.message || "Failed to create VM");
       setDeploying(false);
     }
   }
@@ -224,24 +224,24 @@ export function Deploy() {
           </div>
 
           <div className="mb-6">
-            <label className="text-neutral-600 mb-1 block">Environment name</label>
+            <label className="text-neutral-600 mb-1 block">VM name</label>
             <input
               type="text"
-              value={envName}
-              onChange={(e) => setEnvName(e.target.value)}
+              value={vmName}
+              onChange={(e) => setVMName(e.target.value)}
               maxLength={64}
               disabled={deploying}
               className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none disabled:opacity-50"
             />
           </div>
 
-          {!envId && (
+          {!vmId && (
             <button
               onClick={handleDeploy}
-              disabled={deploying || !envName.trim()}
+              disabled={deploying || !vmName.trim()}
               className="w-full py-2 bg-neutral-900 text-white rounded hover:bg-neutral-800 disabled:opacity-50 cursor-pointer text-xs"
             >
-              {deploying ? "Launching..." : "Launch Environment"}
+              {deploying ? "Launching..." : "Launch VM"}
             </button>
           )}
 
@@ -270,17 +270,17 @@ export function Deploy() {
             </div>
           )}
 
-          {/* Links section — visible once we have an env ID */}
-          {envId && (
+          {/* Links section — visible once we have a VM ID */}
+          {vmId && (
             <div className="mt-5 border-t border-neutral-200 pt-4 space-y-2">
               <Link
-                to={`/env/${envId}`}
+                to={`/vm/${vmId}`}
                 className="flex items-center justify-between w-full text-xs py-2 px-3 rounded bg-neutral-100 hover:bg-neutral-200 transition-colors text-neutral-900"
               >
-                <span>Open environment</span>
+                <span>Open VM</span>
                 <span className="text-neutral-400">&rarr;</span>
               </Link>
-              {appUrl && envReady && (
+              {appUrl && vmReady && (
                 <a
                   href={appUrl}
                   target="_blank"
@@ -294,7 +294,7 @@ export function Deploy() {
             </div>
           )}
 
-          {!deploying && !deployError && deployLogs.length === 0 && !envId && (
+          {!deploying && !deployError && deployLogs.length === 0 && !vmId && (
             <p className="text-neutral-400 mt-3 text-center">
               Creates a VM and clones this repository.
             </p>

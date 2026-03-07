@@ -57,7 +57,7 @@ async function sendMagicLinkEmail(
       Authorization: `Bearer ${RESEND_API_KEY}`,
     },
     body: JSON.stringify({
-      from: "NumaVM <noreply@auth.autodevice.io>",
+      from: process.env.EMAIL_FROM || "NumaVM <noreply@localhost>",
       to: [email],
       subject: "Sign in to NumaVM",
       html: `

@@ -5,7 +5,7 @@ import type { IPty } from "node-pty";
 interface TerminalSession {
   pty: IPty;
   ws: WebSocket;
-  envId: string;
+  vmId: string;
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -14,14 +14,14 @@ let sessionCounter = 0;
 export interface CreateTerminalParams {
   vmIp: string;
   ws: WebSocket;
-  envId: string;
+  vmId: string;
   cols?: number;
   rows?: number;
   sessionName?: string;
 }
 
 export function createTerminal(params: CreateTerminalParams): string {
-  const { vmIp, ws, envId, cols = 80, rows = 24, sessionName = "main" } = params;
+  const { vmIp, ws, vmId, cols = 80, rows = 24, sessionName = "main" } = params;
   const sessionId = `term-${++sessionCounter}`;
 
   const remoteCmd = `tmux new-session -A -s ${sessionName} -x ${cols} -y ${rows}`;
@@ -70,7 +70,7 @@ export function createTerminal(params: CreateTerminalParams): string {
     }
   });
 
-  sessions.set(sessionId, { pty: shell, ws, envId });
+  sessions.set(sessionId, { pty: shell, ws, vmId });
   return sessionId;
 }
 

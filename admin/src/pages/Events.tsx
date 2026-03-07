@@ -80,8 +80,8 @@ export function Events() {
                   {event.type}
                 </span>
                 <div className="flex-1 min-w-0">
-                  {event.env_id && (
-                    <span className="text-neutral-600 font-medium">{event.env_id}</span>
+                  {event.vm_id && (
+                    <span className="text-neutral-600 font-medium">{event.vm_id}</span>
                   )}
                   {event.user_id && (
                     <span className="text-neutral-400 ml-2">by {event.user_id}</span>

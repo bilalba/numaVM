@@ -10,18 +10,18 @@ function formatTime(dateStr: string): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function TrafficChart({ envId, hours }: { envId: string; hours: number }) {
+function TrafficChart({ vmId, hours }: { vmId: string; hours: number }) {
   const [data, setData] = useState<TrafficPoint[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
     adminApi
-      .getTrafficHistory(envId, hours)
+      .getTrafficHistory(vmId, hours)
       .then((res) => setData(res.history))
       .catch(() => setData([]))
       .finally(() => setLoading(false));
-  }, [envId, hours]);
+  }, [vmId, hours]);
 
   if (loading) return <div className="text-xs text-neutral-400 py-4">Loading...</div>;
   if (data.length === 0) return <div className="text-xs text-neutral-400 py-4">No traffic data</div>;
@@ -99,12 +99,12 @@ export function Traffic() {
       ) : (
         <div className="space-y-3">
           {summary.map((s) => (
-            <div key={s.env_id} className="border border-neutral-200 bg-panel-chat">
+            <div key={s.vm_id} className="border border-neutral-200 bg-panel-chat">
               <button
-                onClick={() => setExpanded(expanded === s.env_id ? null : s.env_id)}
+                onClick={() => setExpanded(expanded === s.vm_id ? null : s.vm_id)}
                 className="w-full flex items-center justify-between px-4 py-3 text-xs cursor-pointer hover:bg-neutral-50 transition-colors"
               >
-                <span className="font-medium">{s.env_id}</span>
+                <span className="font-medium">{s.vm_id}</span>
                 <div className="flex items-center gap-4">
                   <span className="text-neutral-500">
                     <span className="text-blue-500">RX</span> {formatBytes(s.total_rx)}
@@ -115,12 +115,12 @@ export function Traffic() {
                   <span className="text-neutral-400">
                     {formatBytes(s.total_rx + s.total_tx)} total
                   </span>
-                  <span className="text-neutral-300">{expanded === s.env_id ? "\u25B2" : "\u25BC"}</span>
+                  <span className="text-neutral-300">{expanded === s.vm_id ? "\u25B2" : "\u25BC"}</span>
                 </div>
               </button>
-              {expanded === s.env_id && (
+              {expanded === s.vm_id && (
                 <div className="px-4 pb-4 border-t border-neutral-100">
-                  <TrafficChart envId={s.env_id} hours={hours} />
+                  <TrafficChart vmId={s.vm_id} hours={hours} />
                 </div>
               )}
             </div>

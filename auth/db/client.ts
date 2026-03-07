@@ -26,8 +26,11 @@ try { db.exec("ALTER TABLE users ADD COLUMN trial_started_at DATETIME"); } catch
 // Backfill: set trial_started_at for existing base users who don't have it
 db.exec("UPDATE users SET trial_started_at = created_at WHERE trial_started_at IS NULL AND plan = 'base' AND id != 'dev-user'");
 
-// Seed admin user
-db.prepare("UPDATE users SET is_admin = 1 WHERE email = ?").run("bilalbakhtahmad@gmail.com");
+// Seed admin user from env var
+const adminEmail = process.env.ADMIN_EMAIL;
+if (adminEmail) {
+  db.prepare("UPDATE users SET is_admin = 1 WHERE email = ?").run(adminEmail);
+}
 
 export { db };
 
@@ -145,14 +148,25 @@ export function upsertUserFromEmail(params: {
   return findUserById(params.id)!;
 }
 
-const checkEnvAccessStmt = db.prepare(
-  "SELECT role FROM env_access WHERE env_id = ? AND user_id = ?"
+// --- Migration: rename env_access → vm_access ---
+const authTables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(t => t.name);
+if (authTables.includes("env_access") && !authTables.includes("vm_access")) {
+  db.pragma("foreign_keys = OFF");
+  db.exec(`
+    ALTER TABLE env_access RENAME TO vm_access;
+    ALTER TABLE vm_access RENAME COLUMN env_id TO vm_id;
+  `);
+  db.pragma("foreign_keys = ON");
+}
+
+const checkVMAccessStmt = db.prepare(
+  "SELECT role FROM vm_access WHERE vm_id = ? AND user_id = ?"
 );
-export function checkEnvAccess(
-  envId: string,
+export function checkVMAccess(
+  vmId: string,
   userId: string
 ): string | undefined {
-  const row = checkEnvAccessStmt.get(envId, userId) as
+  const row = checkVMAccessStmt.get(vmId, userId) as
     | { role: string }
     | undefined;
   return row?.role;

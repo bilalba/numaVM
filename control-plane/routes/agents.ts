@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { checkAccess, findAgentSession, findEnvById, emitAdminEvent } from "../db/client.js";
+import { checkAccess, findAgentSession, findVMById, emitAdminEvent } from "../db/client.js";
 import { agentManager } from "../agents/manager.js";
 import { wsHub } from "../agents/ws-hub.js";
 import type { AgentCommand, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort } from "../agents/types.js";
@@ -10,8 +10,8 @@ import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 const VALID_AGENT_TYPES = new Set(["codex", "opencode"]);
 
 export function registerAgentRoutes(app: FastifyInstance) {
-  // POST /envs/:id/agents/:type/sessions — Start new agent session
-  app.post("/envs/:id/agents/:type/sessions", async (request, reply) => {
+  // POST /vms/:id/agents/:type/sessions — Start new agent session
+  app.post("/vms/:id/agents/:type/sessions", async (request, reply) => {
     const { id, type } = request.params as { id: string; type: string };
 
     if (!VALID_AGENT_TYPES.has(type)) {
@@ -28,10 +28,10 @@ export function registerAgentRoutes(app: FastifyInstance) {
       await ensureVMRunning(id);
     } catch (err: any) {
       if (err instanceof QuotaExceededError) {
-        return reply.status(403).send({ error: "RAM quota exceeded. Stop another environment or upgrade your plan.", quota_error: true });
+        return reply.status(403).send({ error: "RAM quota exceeded. Stop another VM or upgrade your plan.", quota_error: true });
       }
-      request.log.error({ err, envId: id }, "Failed to wake VM for agent session");
-      return reply.status(503).send({ error: "Environment is not available. Please try again." });
+      request.log.error({ err, vmId: id }, "Failed to wake VM for agent session");
+      return reply.status(503).send({ error: "VM is not available. Please try again." });
     }
 
     const body = request.body as { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy } | undefined;
@@ -48,13 +48,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
       emitAdminEvent("agent.session_created", id, request.userId, { agentType: type, sessionId: session.id });
       return reply.status(201).send(session);
     } catch (err: any) {
-      request.log.error({ err, envId: id, agentType: type }, "Failed to create agent session");
+      request.log.error({ err, vmId: id, agentType: type }, "Failed to create agent session");
       return reply.status(500).send({ error: err.message });
     }
   });
 
-  // GET /envs/:id/agents/:type/sessions — List sessions for agent type
-  app.get("/envs/:id/agents/:type/sessions", async (request, reply) => {
+  // GET /vms/:id/agents/:type/sessions — List sessions for agent type
+  app.get("/vms/:id/agents/:type/sessions", async (request, reply) => {
     const { id, type } = request.params as { id: string; type: string };
 
     if (!VALID_AGENT_TYPES.has(type)) {
@@ -63,20 +63,20 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     const sessions = agentManager.listSessions(id, type as AgentType);
     return { sessions };
   });
 
-  // GET /envs/:id/sessions/:sid — Get session with message history
-  app.get("/envs/:id/sessions/:sid", async (request, reply) => {
+  // GET /vms/:id/sessions/:sid — Get session with message history
+  app.get("/vms/:id/sessions/:sid", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     const result = agentManager.getSessionWithHistory(sid);
@@ -84,15 +84,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Session not found" });
     }
 
-    if (result.session.env_id !== id) {
-      return reply.status(403).send({ error: "Session does not belong to this environment" });
+    if (result.session.vm_id !== id) {
+      return reply.status(403).send({ error: "Session does not belong to this VM" });
     }
 
     return result;
   });
 
-  // POST /envs/:id/sessions/:sid/message — Send message to agent
-  app.post("/envs/:id/sessions/:sid/message", async (request, reply) => {
+  // POST /vms/:id/sessions/:sid/message — Send message to agent
+  app.post("/vms/:id/sessions/:sid/message", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
     const body = request.body as { text?: string; agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy };
 
@@ -107,7 +107,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     const session = findAgentSession(sid);
-    if (!session || session.env_id !== id) {
+    if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
 
@@ -116,10 +116,10 @@ export function registerAgentRoutes(app: FastifyInstance) {
       await ensureVMRunning(id);
     } catch (err: any) {
       if (err instanceof QuotaExceededError) {
-        return reply.status(403).send({ error: "RAM quota exceeded. Stop another environment or upgrade your plan.", quota_error: true });
+        return reply.status(403).send({ error: "RAM quota exceeded. Stop another VM or upgrade your plan.", quota_error: true });
       }
-      request.log.error({ err, envId: id }, "Failed to wake VM for agent message");
-      return reply.status(503).send({ error: "Environment is not available. Please try again." });
+      request.log.error({ err, vmId: id }, "Failed to wake VM for agent message");
+      return reply.status(503).send({ error: "VM is not available. Please try again." });
     }
 
     try {
@@ -136,8 +136,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
   });
 
-  // POST /envs/:id/sessions/:sid/stop — Interrupt agent
-  app.post("/envs/:id/sessions/:sid/stop", async (request, reply) => {
+  // POST /vms/:id/sessions/:sid/stop — Interrupt agent
+  app.post("/vms/:id/sessions/:sid/stop", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
 
     const role = checkAccess(id, request.userId);
@@ -146,7 +146,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     const session = findAgentSession(sid);
-    if (!session || session.env_id !== id) {
+    if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
 
@@ -158,8 +158,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
   });
 
-  // DELETE /envs/:id/sessions/:sid — Archive/delete session
-  app.delete("/envs/:id/sessions/:sid", async (request, reply) => {
+  // DELETE /vms/:id/sessions/:sid — Archive/delete session
+  app.delete("/vms/:id/sessions/:sid", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
 
     const role = checkAccess(id, request.userId);
@@ -168,7 +168,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     const session = findAgentSession(sid);
-    if (!session || session.env_id !== id) {
+    if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
 
@@ -176,8 +176,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
     return { ok: true, message: "Session archived" };
   });
 
-  // POST /envs/:id/sessions/:sid/approval — Respond to approval request
-  app.post("/envs/:id/sessions/:sid/approval", async (request, reply) => {
+  // POST /vms/:id/sessions/:sid/approval — Respond to approval request
+  app.post("/vms/:id/sessions/:sid/approval", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
     const body = request.body as { approvalId?: string; decision?: string };
 
@@ -199,8 +199,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
   });
 
-  // POST /envs/:id/sessions/:sid/revert — Revert file changes from a message (OpenCode only)
-  app.post("/envs/:id/sessions/:sid/revert", async (request, reply) => {
+  // POST /vms/:id/sessions/:sid/revert — Revert file changes from a message (OpenCode only)
+  app.post("/vms/:id/sessions/:sid/revert", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
     const body = request.body as { messageId?: string } | undefined;
 
@@ -210,7 +210,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     const session = findAgentSession(sid);
-    if (!session || session.env_id !== id) {
+    if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
 
@@ -222,8 +222,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
   });
 
-  // POST /envs/:id/sessions/:sid/unrevert — Restore reverted changes (OpenCode only)
-  app.post("/envs/:id/sessions/:sid/unrevert", async (request, reply) => {
+  // POST /vms/:id/sessions/:sid/unrevert — Restore reverted changes (OpenCode only)
+  app.post("/vms/:id/sessions/:sid/unrevert", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
 
     const role = checkAccess(id, request.userId);
@@ -232,7 +232,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     const session = findAgentSession(sid);
-    if (!session || session.env_id !== id) {
+    if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
 
@@ -244,21 +244,21 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
   });
 
-  // GET /envs/:id/opencode/providers — List available providers/models from OpenCode
-  app.get("/envs/:id/opencode/providers", async (request, reply) => {
+  // GET /vms/:id/opencode/providers — List available providers/models from OpenCode
+  app.get("/vms/:id/opencode/providers", async (request, reply) => {
     const { id } = request.params as { id: string };
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const env = findEnvById(id);
-    if (!env) return reply.status(404).send({ error: "Environment not found" });
-    if (!env.vm_ip) return reply.status(503).send({ error: "VM not available" });
+    const vm = findVMById(id);
+    if (!vm) return reply.status(404).send({ error: "VM not found" });
+    if (!vm.vm_ip) return reply.status(503).send({ error: "VM not available" });
 
     try {
-      const bridge = new OpenCodeBridge(env.opencode_port, env.opencode_password || "", env.vm_ip);
+      const bridge = new OpenCodeBridge(vm.opencode_port, vm.opencode_password || "", vm.vm_ip);
       const raw = await bridge.listProviders();
       const connectedSet = new Set(raw.connected || []);
 
@@ -285,13 +285,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
       return { connected, popular, default: raw.default || {} };
     } catch (err: any) {
-      request.log.error({ err, envId: id }, "Failed to list OpenCode providers");
+      request.log.error({ err, vmId: id }, "Failed to list OpenCode providers");
       return reply.status(500).send({ error: err.message });
     }
   });
 
-  // GET /envs/:id/codex/models — List available Codex models via app-server
-  app.get("/envs/:id/codex/models", async (request, reply) => {
+  // GET /vms/:id/codex/models — List available Codex models via app-server
+  app.get("/vms/:id/codex/models", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { includeHidden?: string };
     const role = checkAccess(id, request.userId);
@@ -301,13 +301,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const models = await agentManager.listCodexModels(id, query.includeHidden === "true");
       return { models };
     } catch (err: any) {
-      request.log.error({ err, envId: id }, "Failed to list Codex models");
+      request.log.error({ err, vmId: id }, "Failed to list Codex models");
       return reply.status(500).send({ error: err.message });
     }
   });
 
-  // GET /envs/:id/codex/threads — List Codex threads via app-server
-  app.get("/envs/:id/codex/threads", async (request, reply) => {
+  // GET /vms/:id/codex/threads — List Codex threads via app-server
+  app.get("/vms/:id/codex/threads", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { cursor?: string; limit?: string };
     const role = checkAccess(id, request.userId);
@@ -318,14 +318,14 @@ export function registerAgentRoutes(app: FastifyInstance) {
       const result = await agentManager.listCodexThreads(id, { cursor: query.cursor, limit });
       return result;
     } catch (err: any) {
-      request.log.error({ err, envId: id }, "Failed to list Codex threads");
+      request.log.error({ err, vmId: id }, "Failed to list Codex threads");
       return reply.status(500).send({ error: err.message });
     }
   });
 
-  // GET /envs/:id/codex/auth/status — Check Codex auth via app-server
+  // GET /vms/:id/codex/auth/status — Check Codex auth via app-server
   // Pass ?refresh=true to destroy and recreate the bridge (use after login to pick up new creds)
-  app.get("/envs/:id/codex/auth/status", async (request, reply) => {
+  app.get("/vms/:id/codex/auth/status", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { refresh?: string };
     const role = checkAccess(id, request.userId);
@@ -345,13 +345,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
         account: result,
       };
     } catch (err: any) {
-      request.log.error({ err, envId: id }, "Failed to read Codex account");
+      request.log.error({ err, vmId: id }, "Failed to read Codex account");
       return { authenticated: false, error: err.message };
     }
   });
 
-  // POST /envs/:id/codex/auth/login — Start login
-  app.post("/envs/:id/codex/auth/login", async (request, reply) => {
+  // POST /vms/:id/codex/auth/login — Start login
+  app.post("/vms/:id/codex/auth/login", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { mode?: string; apiKey?: string };
     const role = checkAccess(id, request.userId);
@@ -366,11 +366,11 @@ export function registerAgentRoutes(app: FastifyInstance) {
       }
 
       // ChatGPT login via device code (CLI-based, since app-server OAuth needs localhost redirect)
-      const env = findEnvById(id);
-      if (!env?.vm_ip) return reply.status(500).send({ error: "VM not available" });
+      const vm = findVMById(id);
+      if (!vm?.vm_ip) return reply.status(500).send({ error: "VM not available" });
 
       return new Promise<void>((resolve) => {
-        const vsock = spawnProcessOverVsock(env.vm_ip!, "codex login --device-auth");
+        const vsock = spawnProcessOverVsock(vm.vm_ip!, "codex login --device-auth");
         const proc = vsock.process;
 
         let output = "";
@@ -409,13 +409,13 @@ export function registerAgentRoutes(app: FastifyInstance) {
         }, 15000);
       });
     } catch (err: any) {
-      request.log.error({ err, envId: id }, "Failed to start Codex login");
+      request.log.error({ err, vmId: id }, "Failed to start Codex login");
       return reply.status(500).send({ error: err.message });
     }
   });
 
-  // POST /envs/:id/codex/auth/logout — Logout via app-server
-  app.post("/envs/:id/codex/auth/logout", async (request, reply) => {
+  // POST /vms/:id/codex/auth/logout — Logout via app-server
+  app.post("/vms/:id/codex/auth/logout", async (request, reply) => {
     const { id } = request.params as { id: string };
     const role = checkAccess(id, request.userId);
     if (!role || role === "viewer") return reply.status(403).send({ error: "Editor or owner access required" });
@@ -429,16 +429,16 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
   });
 
-  // GET /envs/:id/ws — WebSocket for agent events
+  // GET /vms/:id/ws — WebSocket for agent events
   app.get(
-    "/envs/:id/ws",
+    "/vms/:id/ws",
     { websocket: true },
     async (socket, request) => {
       const { id } = request.params as { id: string };
 
       const role = checkAccess(id, request.userId);
       if (!role) {
-        socket.close(4003, "No access to this environment");
+        socket.close(4003, "No access to this VM");
         return;
       }
 
@@ -460,29 +460,21 @@ export function registerAgentRoutes(app: FastifyInstance) {
   );
 }
 
-async function handleCommand(envId: string, userId: string, cmd: AgentCommand): Promise<void> {
+async function handleCommand(vmId: string, userId: string, cmd: AgentCommand): Promise<void> {
   switch (cmd.type) {
     case "message.send": {
-      // Find the active session for this env — or require sessionId
-      // For WebSocket commands, we need a way to identify the session.
-      // The dashboard should send session.switch first, then message.send.
-      // For now, we'll need the dashboard to use REST for messages.
       break;
     }
     case "turn.interrupt": {
-      // Similar — need session context
       break;
     }
     case "approval.respond": {
-      // Need session context
       break;
     }
     case "session.create": {
-      // Could create via WS but REST is simpler
       break;
     }
     case "session.switch": {
-      // Client-side state management
       break;
     }
   }

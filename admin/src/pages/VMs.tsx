@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { adminApi, type AdminEnv } from "../lib/api";
+import { adminApi, type AdminVM } from "../lib/api";
 import { DataTable, type Column } from "../components/DataTable";
 import { relativeTime } from "../lib/time";
 
@@ -12,7 +12,7 @@ const STATUS_DOTS: Record<string, string> = {
   error: "bg-red-500",
 };
 
-const columns: Column<AdminEnv>[] = [
+const columns: Column<AdminVM>[] = [
   {
     key: "id",
     label: "Slug",
@@ -64,15 +64,15 @@ const columns: Column<AdminEnv>[] = [
   },
 ];
 
-export function Environments() {
-  const [envs, setEnvs] = useState<AdminEnv[]>([]);
+export function VMs() {
+  const [vms, setVMs] = useState<AdminVM[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
     adminApi
-      .getEnvs()
-      .then((res) => setEnvs(res.envs))
+      .getVMs()
+      .then((res) => setVMs(res.vms))
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
@@ -83,11 +83,11 @@ export function Environments() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-sm font-semibold">Environments</h1>
-        <span className="text-xs text-neutral-400">{envs.length} total</span>
+        <h1 className="text-sm font-semibold">VMs</h1>
+        <span className="text-xs text-neutral-400">{vms.length} total</span>
       </div>
       <div className="border border-neutral-200 bg-panel-chat">
-        <DataTable columns={columns} data={envs} emptyMessage="No environments" />
+        <DataTable columns={columns} data={vms} emptyMessage="No VMs" />
       </div>
     </div>
   );

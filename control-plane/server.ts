@@ -16,7 +16,7 @@ try {
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import cors from "@fastify/cors";
-import { registerEnvRoutes } from "./routes/envs.js";
+import { registerVMRoutes } from "./routes/vms.js";
 import { registerAccessRoutes } from "./routes/access.js";
 import { registerTerminalRoutes } from "./routes/terminal.js";
 import { registerClaudeRoutes } from "./routes/claude.js";
@@ -158,7 +158,7 @@ app.get("/me", async (request) => {
 });
 
 // Register route modules
-registerEnvRoutes(app);
+registerVMRoutes(app);
 registerAccessRoutes(app);
 registerTerminalRoutes(app);
 registerClaudeRoutes(app);
@@ -198,7 +198,7 @@ process.on("SIGTERM", shutdown);
 // Reconcile in-memory VM state with any surviving Firecracker processes
 await reconcileRunningVMs();
 
-// Start SSH proxy (auth + wake-on-connect for all envs)
+// Start SSH proxy (auth + wake-on-connect for all VMs)
 await startSshProxy();
 
 // Start idle monitor (only on non-localhost deployments)

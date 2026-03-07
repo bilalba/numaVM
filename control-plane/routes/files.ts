@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { findEnvById, checkAccess } from "../db/client.js";
+import { findVMById, checkAccess } from "../db/client.js";
 import { execInVM } from "../services/vsock-ssh.js";
 
 export interface FileEntry {
@@ -43,24 +43,24 @@ function parseLsLine(line: string): FileEntry | null {
 }
 
 export function registerFileRoutes(app: FastifyInstance) {
-  app.get("/envs/:id/files", async (request, reply) => {
+  app.get("/vms/:id/files", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const env = findEnvById(id);
-    if (!env || !env.vm_ip) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm || !vm.vm_ip) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const dirPath = sanitizePath(query.path || "/home/dev");
 
     try {
-      const output = await execInVM(env.vm_ip, [
+      const output = await execInVM(vm.vm_ip, [
         "ls", "-la", "--time-style=long-iso", dirPath,
       ]);
 
@@ -86,18 +86,18 @@ export function registerFileRoutes(app: FastifyInstance) {
   });
 
   // Read file content
-  app.get("/envs/:id/files/read", async (request, reply) => {
+  app.get("/vms/:id/files/read", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const env = findEnvById(id);
-    if (!env || !env.vm_ip) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm || !vm.vm_ip) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     if (!query.path) {
@@ -107,7 +107,7 @@ export function registerFileRoutes(app: FastifyInstance) {
     const filePath = sanitizePath(query.path);
 
     try {
-      const sizeOutput = await execInVM(env.vm_ip, [
+      const sizeOutput = await execInVM(vm.vm_ip, [
         "stat", "--format=%s", filePath,
       ]);
       const size = parseInt(sizeOutput.trim(), 10);
@@ -118,7 +118,7 @@ export function registerFileRoutes(app: FastifyInstance) {
         return reply.status(413).send({ error: "File too large (max 1MB)" });
       }
 
-      const mimeOutput = await execInVM(env.vm_ip, [
+      const mimeOutput = await execInVM(vm.vm_ip, [
         "file", "--brief", "--mime-type", filePath,
       ]);
       const mimeType = mimeOutput.trim();
@@ -128,7 +128,7 @@ export function registerFileRoutes(app: FastifyInstance) {
         return { path: filePath, binary: true, mimeType, size, content: null };
       }
 
-      const content = await execInVM(env.vm_ip, ["cat", filePath]);
+      const content = await execInVM(vm.vm_ip, ["cat", filePath]);
       return { path: filePath, binary: false, mimeType, size, content };
     } catch (err: any) {
       return reply.status(500).send({ error: `Failed to read file: ${err.message}` });
@@ -136,18 +136,18 @@ export function registerFileRoutes(app: FastifyInstance) {
   });
 
   // Download file (streams raw content with Content-Disposition)
-  app.get("/envs/:id/files/download", async (request, reply) => {
+  app.get("/vms/:id/files/download", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const env = findEnvById(id);
-    if (!env || !env.vm_ip) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm || !vm.vm_ip) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     if (!query.path) {
@@ -159,7 +159,7 @@ export function registerFileRoutes(app: FastifyInstance) {
 
     try {
       // Check file exists and get size
-      const sizeOutput = await execInVM(env.vm_ip, [
+      const sizeOutput = await execInVM(vm.vm_ip, [
         "stat", "--format=%s", filePath,
       ]);
       const size = parseInt(sizeOutput.trim(), 10);
@@ -171,13 +171,13 @@ export function registerFileRoutes(app: FastifyInstance) {
       }
 
       // Get mime type
-      const mimeOutput = await execInVM(env.vm_ip, [
+      const mimeOutput = await execInVM(vm.vm_ip, [
         "file", "--brief", "--mime-type", filePath,
       ]);
       const mimeType = mimeOutput.trim() || "application/octet-stream";
 
       // Read file content as base64 for binary-safe transfer
-      const b64 = await execInVM(env.vm_ip, ["base64", filePath]);
+      const b64 = await execInVM(vm.vm_ip, ["base64", filePath]);
       const content = Buffer.from(b64.trim(), "base64");
 
       return reply
@@ -191,24 +191,24 @@ export function registerFileRoutes(app: FastifyInstance) {
   });
 
   // Git log
-  app.get("/envs/:id/git/log", async (request, reply) => {
+  app.get("/vms/:id/git/log", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { limit?: string };
 
     const role = checkAccess(id, request.userId);
     if (!role) {
-      return reply.status(403).send({ error: "No access to this environment" });
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const env = findEnvById(id);
-    if (!env || !env.vm_ip) {
-      return reply.status(404).send({ error: "Environment not found" });
+    const vm = findVMById(id);
+    if (!vm || !vm.vm_ip) {
+      return reply.status(404).send({ error: "VM not found" });
     }
 
     const limit = Math.min(parseInt(query.limit || "20", 10) || 20, 100);
 
     try {
-      const output = await execInVM(env.vm_ip, [
+      const output = await execInVM(vm.vm_ip, [
         "git", "-C", "/home/dev/repo", "log",
         `--max-count=${limit}`,
         "--format=%H|||%an|||%ae|||%at|||%s",

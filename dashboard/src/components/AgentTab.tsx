@@ -9,7 +9,7 @@ import { useToast } from "./Toast";
 import { relativeTime } from "../lib/time";
 
 interface AgentTabProps {
-  envId: string;
+  vmId: string;
   agentType: "codex" | "opencode";
 }
 
@@ -20,7 +20,7 @@ interface PendingApproval {
   responded: boolean;
 }
 
-export function AgentTab({ envId, agentType }: AgentTabProps) {
+export function AgentTab({ vmId, agentType }: AgentTabProps) {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
@@ -62,7 +62,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const { toast } = useToast();
   const { isOpen: paletteOpen, open: openPalette, close: closePalette } = useCommandPalette();
 
-  const { connected, addListener } = useAgentSocket(envId);
+  const { connected, addListener } = useAgentSocket(vmId);
 
   // Check Codex auth status on mount
   useEffect(() => {
@@ -70,34 +70,34 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
       setCodexAuth({ checked: true, authenticated: true });
       return;
     }
-    api.getCodexAuthStatus(envId).then((data) => {
+    api.getCodexAuthStatus(vmId).then((data) => {
       setCodexAuth({ checked: true, authenticated: data.authenticated });
     }).catch(() => {
       setCodexAuth({ checked: true, authenticated: false });
     });
-  }, [envId, agentType]);
+  }, [vmId, agentType]);
 
   // Fetch Codex models when authenticated
   useEffect(() => {
     if (agentType !== "codex" || !codexAuth.authenticated) return;
-    api.getCodexModels(envId).then((data) => {
+    api.getCodexModels(vmId).then((data) => {
       setCodexModels(data.models || []);
     }).catch(() => {});
-  }, [envId, agentType, codexAuth.authenticated]);
+  }, [vmId, agentType, codexAuth.authenticated]);
 
   // Fetch OpenCode providers on mount
   useEffect(() => {
     if (agentType !== "opencode") return;
-    api.getOpenCodeProviders(envId).then((data) => {
+    api.getOpenCodeProviders(vmId).then((data) => {
       setOpenCodeProviders(data.connected || []);
       setOpenCodePopular(data.popular || []);
     }).catch(() => {});
-  }, [envId, agentType]);
+  }, [vmId, agentType]);
 
   // Load sessions on mount
   useEffect(() => {
     api
-      .listAgentSessions(envId, agentType)
+      .listAgentSessions(vmId, agentType)
       .then((data) => {
         setSessions(data.sessions);
         if (data.sessions.length > 0) {
@@ -105,7 +105,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
         }
       })
       .catch(() => {});
-  }, [envId, agentType]);
+  }, [vmId, agentType]);
 
   // Load messages when active session changes
   useEffect(() => {
@@ -115,7 +115,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     }
     setLoading(true);
     api
-      .getAgentSession(envId, activeSessionId)
+      .getAgentSession(vmId, activeSessionId)
       .then((data) => {
         setMessages(data.messages);
         setSessionStatus(data.session.status);
@@ -123,7 +123,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [envId, activeSessionId]);
+  }, [vmId, activeSessionId]);
 
   // Listen for WebSocket events
   useEffect(() => {
@@ -239,7 +239,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
         providerID = p;
         modelID = m.join(":");
       }
-      const session = await api.createAgentSession(envId, agentType, {
+      const session = await api.createAgentSession(vmId, agentType, {
         model: selectedModel || undefined,
         providerID,
         modelID,
@@ -285,7 +285,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
 
     try {
       const agentMode = agentType === "opencode" && selectedAgent ? selectedAgent : undefined;
-      await api.sendAgentMessage(envId, activeSessionId, text, {
+      await api.sendAgentMessage(vmId, activeSessionId, text, {
         agent: agentMode,
         effort: agentType === "codex" && selectedEffort ? selectedEffort : undefined,
         approvalPolicy: agentType === "codex" ? approvalPolicy : undefined,
@@ -301,7 +301,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const handleStop = async () => {
     if (!activeSessionId) return;
     try {
-      await api.stopAgent(envId, activeSessionId);
+      await api.stopAgent(vmId, activeSessionId);
       setSessionStatus("idle");
       setStreamingText("");
     } catch {}
@@ -311,21 +311,21 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     async (approvalId: string, decision: ApprovalDecision) => {
       if (!activeSessionId) return;
       try {
-        await api.respondToApproval(envId, activeSessionId, approvalId, decision);
+        await api.respondToApproval(vmId, activeSessionId, approvalId, decision);
         setApprovals((prev) =>
           prev.map((a) => (a.id === approvalId ? { ...a, responded: true } : a))
         );
       } catch {}
     },
-    [envId, activeSessionId]
+    [vmId, activeSessionId]
   );
 
   const handleUndo = async () => {
     if (!activeSessionId) return;
     try {
-      await api.revertMessage(envId, activeSessionId);
+      await api.revertMessage(vmId, activeSessionId);
       // Reload messages after revert
-      const data = await api.getAgentSession(envId, activeSessionId);
+      const data = await api.getAgentSession(vmId, activeSessionId);
       setMessages(data.messages);
       toast("Reverted last changes", "success");
     } catch (err: any) {
@@ -336,8 +336,8 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const handleRedo = async () => {
     if (!activeSessionId) return;
     try {
-      await api.unrevertSession(envId, activeSessionId);
-      const data = await api.getAgentSession(envId, activeSessionId);
+      await api.unrevertSession(vmId, activeSessionId);
+      const data = await api.getAgentSession(vmId, activeSessionId);
       setMessages(data.messages);
       toast("Restored reverted changes", "success");
     } catch (err: any) {
@@ -355,7 +355,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const handleChatGPTLogin = async () => {
     setCodexAuth((prev) => ({ ...prev, loggingIn: true }));
     try {
-      const result = await api.startCodexLogin(envId, "chatgpt");
+      const result = await api.startCodexLogin(vmId, "chatgpt");
       setCodexAuth((prev) => ({ ...prev, loginResult: result, loggingIn: false }));
     } catch (err: any) {
       toast(`Login failed: ${err.message}`, "error");
@@ -368,7 +368,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     if (!key) return;
     setCodexAuth((prev) => ({ ...prev, loggingIn: true }));
     try {
-      await api.startCodexLogin(envId, "apikey", key);
+      await api.startCodexLogin(vmId, "apikey", key);
       setCodexAuth({ checked: true, authenticated: true });
     } catch (err: any) {
       toast(`Login failed: ${err.message}`, "error");
@@ -380,7 +380,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     setCodexAuth((prev) => ({ ...prev, checkingAuth: true }));
     try {
       // refresh=true destroys the stale auth bridge so a fresh app-server picks up new creds
-      const data = await api.getCodexAuthStatus(envId, true);
+      const data = await api.getCodexAuthStatus(vmId, true);
       if (data.authenticated) {
         setCodexAuth({ checked: true, authenticated: true });
       } else {
@@ -393,7 +393,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
 
   const handleSignOut = async () => {
     try {
-      await api.logoutCodex(envId);
+      await api.logoutCodex(vmId);
       setCodexAuth({ checked: true, authenticated: false });
     } catch (err: any) {
       toast(`Sign out failed: ${err.message}`, "error");
@@ -403,7 +403,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const handleArchiveSession = async () => {
     if (!activeSessionId) return;
     try {
-      await api.deleteAgentSession(envId, activeSessionId);
+      await api.deleteAgentSession(vmId, activeSessionId);
       setSessions((prev) => prev.filter((s) => s.id !== activeSessionId));
       setActiveSessionId(sessions.length > 1 ? sessions.find((s) => s.id !== activeSessionId)?.id || null : null);
       setMessages([]);
@@ -417,7 +417,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
   const browseFolders = useCallback(async (path: string) => {
     setLoadingFolders(true);
     try {
-      const data = await api.listFiles(envId, path);
+      const data = await api.listFiles(vmId, path);
       setFolderPath(path);
       setFolderEntries(data.entries.filter((e) => e.type === "dir"));
     } catch {
@@ -425,7 +425,7 @@ export function AgentTab({ envId, agentType }: AgentTabProps) {
     } finally {
       setLoadingFolders(false);
     }
-  }, [envId, toast]);
+  }, [vmId, toast]);
 
   const openFolderPicker = useCallback(() => {
     setShowFolderPicker(true);

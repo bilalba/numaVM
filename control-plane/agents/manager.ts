@@ -4,10 +4,10 @@ import { CodexBridge } from "./codex-bridge.js";
 import { OpenCodeBridge } from "./opencode-bridge.js";
 import { wsHub } from "./ws-hub.js";
 import {
-  findEnvById,
+  findVMById,
   insertAgentSession,
   findAgentSession,
-  findAgentSessionsByEnv,
+  findAgentSessionsByVM,
   updateAgentSessionStatus,
   updateAgentSessionTitle,
   updateAgentSessionThreadId,
@@ -20,30 +20,30 @@ import {
 
 interface ActiveSession {
   bridge: AgentBridge;
-  envId: string;
+  vmId: string;
   pendingText: string; // accumulates message.delta text for the current assistant turn
 }
 
 class AgentManager {
   private activeSessions = new Map<string, ActiveSession>();
-  private authBridges = new Map<string, CodexBridge>(); // env slug -> codex bridge for auth
+  private authBridges = new Map<string, CodexBridge>(); // VM slug -> codex bridge for auth
 
   /** Get or create a Codex bridge for auth operations (separate from session bridges) */
-  async getCodexAuthBridge(envId: string): Promise<CodexBridge> {
-    const existing = this.authBridges.get(envId);
+  async getCodexAuthBridge(vmId: string): Promise<CodexBridge> {
+    const existing = this.authBridges.get(vmId);
     if (existing) return existing;
 
-    const env = findEnvById(envId);
-    if (!env) throw new Error("Environment not found");
-    if (!env.vm_ip) throw new Error("Environment has no VM IP");
+    const vm = findVMById(vmId);
+    if (!vm) throw new Error("VM not found");
+    if (!vm.vm_ip) throw new Error("VM has no IP address");
 
     const bridge = new CodexBridge();
-    this.authBridges.set(envId, bridge);
+    this.authBridges.set(vmId, bridge);
 
     try {
-      await bridge.start(env.vm_ip);
+      await bridge.start(vm.vm_ip);
     } catch (err: any) {
-      this.authBridges.delete(envId);
+      this.authBridges.delete(vmId);
       throw new Error(`Failed to start Codex auth bridge: ${err.message}`);
     }
 
@@ -51,29 +51,29 @@ class AgentManager {
   }
 
   /** Clean up auth bridge when no longer needed */
-  async destroyAuthBridge(envId: string): Promise<void> {
-    const bridge = this.authBridges.get(envId);
+  async destroyAuthBridge(vmId: string): Promise<void> {
+    const bridge = this.authBridges.get(vmId);
     if (bridge) {
       await bridge.destroy();
-      this.authBridges.delete(envId);
+      this.authBridges.delete(vmId);
     }
   }
 
-  async listCodexModels(envId: string, includeHidden = false): Promise<CodexModel[]> {
-    const bridge = await this.getCodexAuthBridge(envId);
+  async listCodexModels(vmId: string, includeHidden = false): Promise<CodexModel[]> {
+    const bridge = await this.getCodexAuthBridge(vmId);
     return bridge.listModels(includeHidden);
   }
 
-  async listCodexThreads(envId: string, options?: { cursor?: string; limit?: number }): Promise<{ threads: CodexThread[]; nextCursor?: string }> {
-    const bridge = await this.getCodexAuthBridge(envId);
+  async listCodexThreads(vmId: string, options?: { cursor?: string; limit?: number }): Promise<{ threads: CodexThread[]; nextCursor?: string }> {
+    const bridge = await this.getCodexAuthBridge(vmId);
     return bridge.listThreads(options);
   }
 
-  async createSession(envId: string, agentType: AgentType, options?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<AgentSession> {
-    const env = findEnvById(envId);
-    if (!env) throw new Error("Environment not found");
-    if (env.status !== "running") throw new Error("Environment is not running");
-    if (!env.vm_ip) throw new Error("Environment has no VM IP");
+  async createSession(vmId: string, agentType: AgentType, options?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<AgentSession> {
+    const vm = findVMById(vmId);
+    if (!vm) throw new Error("VM not found");
+    if (vm.status !== "running") throw new Error("VM is not running");
+    if (!vm.vm_ip) throw new Error("VM has no IP address");
 
     const sessionId = nanoid();
 
@@ -82,13 +82,13 @@ class AgentManager {
     if (agentType === "codex") {
       bridge = new CodexBridge();
     } else {
-      bridge = new OpenCodeBridge(env.opencode_port, env.opencode_password || "", env.vm_ip!);
+      bridge = new OpenCodeBridge(vm.opencode_port, vm.opencode_password || "", vm.vm_ip!);
     }
 
     // Insert DB record early
     insertAgentSession({
       id: sessionId,
-      env_id: envId,
+      vm_id: vmId,
       agent_type: agentType,
       thread_id: null,
       title: null,
@@ -97,7 +97,7 @@ class AgentManager {
     });
 
     // Wire up events
-    const active: ActiveSession = { bridge, envId, pendingText: "" };
+    const active: ActiveSession = { bridge, vmId, pendingText: "" };
     this.activeSessions.set(sessionId, active);
 
     bridge.onEvent((event: AgentEvent) => {
@@ -107,7 +107,7 @@ class AgentManager {
     // Start the bridge (spawns process / connects SSE)
     // Codex bridge needs VM IP, OpenCode bridge uses its own HTTP port
     try {
-      const startArg = agentType === "codex" ? env.vm_ip! : env.id;
+      const startArg = agentType === "codex" ? vm.vm_ip! : vm.id;
       const threadId = await bridge.start(startArg, options);
       if (threadId) {
         updateAgentSessionThreadId(sessionId, threadId);
@@ -145,7 +145,7 @@ class AgentManager {
     active.pendingText = "";
 
     // Broadcast the user message to connected dashboards
-    wsHub.broadcast(active.envId, sessionId, {
+    wsHub.broadcast(active.vmId, sessionId, {
       type: "message.completed",
       text,
       role: "system", // using system to distinguish; dashboard will check
@@ -196,8 +196,8 @@ class AgentManager {
     return (active.bridge as OpenCodeBridge).unrevert();
   }
 
-  listSessions(envId: string, agentType: AgentType): AgentSession[] {
-    return findAgentSessionsByEnv(envId, agentType);
+  listSessions(vmId: string, agentType: AgentType): AgentSession[] {
+    return findAgentSessionsByVM(vmId, agentType);
   }
 
   getSessionWithHistory(sessionId: string): { session: AgentSession; messages: AgentMessage[] } | null {
@@ -229,7 +229,7 @@ class AgentManager {
 
   private handleEvent(sessionId: string, active: ActiveSession, event: AgentEvent): void {
     // Broadcast to WebSocket clients
-    wsHub.broadcast(active.envId, sessionId, event);
+    wsHub.broadcast(active.vmId, sessionId, event);
 
     // Persist completed messages and update session state
     switch (event.type) {

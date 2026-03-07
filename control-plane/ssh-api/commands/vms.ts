@@ -2,14 +2,14 @@ import { customAlphabet } from "nanoid";
 import type { CommandContext } from "../dispatcher.js";
 import { writeJson, writeError } from "../dispatcher.js";
 import {
-  findEnvsByUser,
-  findEnvById,
+  findVMsByUser,
+  findVMById,
   findUserById,
   checkAccess,
-  insertEnv,
-  updateEnvStatus,
-  updateEnvVmInfo,
-  deleteEnv,
+  insertVM,
+  updateVMStatus,
+  updateVMInfo,
+  deleteVM,
   grantAccess,
   revokeAllAccess,
   emitAdminEvent,
@@ -32,36 +32,36 @@ function getBaseDomain(): string {
   return process.env.BASE_DOMAIN || "localhost";
 }
 
-export async function handleEnvsCommand(ctx: CommandContext): Promise<void> {
+export async function handleVMsCommand(ctx: CommandContext): Promise<void> {
   const { args, flags, user, channel } = ctx;
 
-  // No subcommand: list envs
+  // No subcommand: list VMs
   if (args.length === 0) {
-    return listEnvs(ctx);
+    return listVMs(ctx);
   }
 
-  // "envs create --name foo"
+  // "vms create --name foo"
   if (args[0] === "create") {
-    return createEnv(ctx);
+    return createVM(ctx);
   }
 
-  // "envs <id> [action]"
-  const envId = args[0];
+  // "vms <id> [action]"
+  const vmId = args[0];
   const action = args[1] || "show";
 
   switch (action) {
     case "show":
-      return showEnv(envId, ctx);
+      return showVM(vmId, ctx);
     case "delete":
     case "rm":
     case "remove":
-      return deleteEnvCmd(envId, ctx);
+      return deleteVMCmd(vmId, ctx);
     case "start":
     case "wake":
-      return startEnv(envId, ctx);
+      return startVM(vmId, ctx);
     case "stop":
     case "snapshot":
-      return stopEnv(envId, ctx);
+      return stopVM(vmId, ctx);
     default:
       writeError(channel, `Unknown action: ${action}. Try: show, delete, start, stop`);
       channel.exit(1);
@@ -69,9 +69,9 @@ export async function handleEnvsCommand(ctx: CommandContext): Promise<void> {
   }
 }
 
-async function listEnvs(ctx: CommandContext): Promise<void> {
-  const envs = findEnvsByUser(ctx.user.userId);
-  const result = envs.map((e) => ({
+async function listVMs(ctx: CommandContext): Promise<void> {
+  const vms = findVMsByUser(ctx.user.userId);
+  const result = vms.map((e) => ({
     id: e.id,
     name: e.name,
     status: e.status,
@@ -87,34 +87,34 @@ async function listEnvs(ctx: CommandContext): Promise<void> {
   ctx.channel.close();
 }
 
-async function showEnv(envId: string, ctx: CommandContext): Promise<void> {
-  const env = findEnvById(envId);
-  if (!env) {
-    writeError(ctx.channel, `Environment not found: ${envId}`);
+async function showVM(vmId: string, ctx: CommandContext): Promise<void> {
+  const vm = findVMById(vmId);
+  if (!vm) {
+    writeError(ctx.channel, `VM not found: ${vmId}`);
     ctx.channel.exit(1);
     ctx.channel.close();
     return;
   }
 
-  const role = checkAccess(envId, ctx.user.userId);
+  const role = checkAccess(vmId, ctx.user.userId);
   if (!role) {
-    writeError(ctx.channel, `No access to environment: ${envId}`);
+    writeError(ctx.channel, `No access to VM: ${vmId}`);
     ctx.channel.exit(1);
     ctx.channel.close();
     return;
   }
 
   writeJson(ctx.channel, {
-    id: env.id,
-    name: env.name,
-    status: env.status,
+    id: vm.id,
+    name: vm.name,
+    status: vm.status,
     role,
-    url: `https://${env.id}.${getBaseDomain()}`,
-    ssh_command: `ssh ${env.id}@ssh.${getBaseDomain()}`,
-    ssh_port: env.ssh_port,
-    app_port: env.app_port,
-    created_at: env.created_at,
-    mem_size_mib: env.mem_size_mib,
+    url: `https://${vm.id}.${getBaseDomain()}`,
+    ssh_command: `ssh ${vm.id}@ssh.${getBaseDomain()}`,
+    ssh_port: vm.ssh_port,
+    app_port: vm.app_port,
+    created_at: vm.created_at,
+    mem_size_mib: vm.mem_size_mib,
   });
   ctx.channel.exit(0);
   ctx.channel.close();
@@ -122,12 +122,12 @@ async function showEnv(envId: string, ctx: CommandContext): Promise<void> {
 
 const DEFAULT_MEM_SIZE = 512;
 
-async function createEnv(ctx: CommandContext): Promise<void> {
+async function createVM(ctx: CommandContext): Promise<void> {
   const { flags, user, channel } = ctx;
 
   const name = typeof flags.name === "string" ? flags.name : null;
   if (!name || name.length < 1 || name.length > 64) {
-    writeError(channel, "--name is required (1-64 chars). Usage: envs create --name <name> [--repo owner/repo] [--mem 512]");
+    writeError(channel, "--name is required (1-64 chars). Usage: vms create --name <name> [--repo owner/repo] [--mem 512]");
     channel.exit(1);
     channel.close();
     return;
@@ -147,14 +147,14 @@ async function createEnv(ctx: CommandContext): Promise<void> {
 
   const currentRam = getUserProvisionedRam(user.userId);
   if (currentRam + memSizeMib > userPlan.max_ram_mib) {
-    writeError(channel, `RAM quota exceeded (${currentRam}/${userPlan.max_ram_mib} MiB used). Stop an environment or upgrade your plan.`);
+    writeError(channel, `RAM quota exceeded (${currentRam}/${userPlan.max_ram_mib} MiB used). Stop a VM or upgrade your plan.`);
     channel.exit(1);
     channel.close();
     return;
   }
 
   // Allocate resources
-  const slug = `env-${generateSlug()}`;
+  const slug = `vm-${generateSlug()}`;
   const { appPort, sshPort, opencodePort } = allocatePorts();
   const vsockCid = allocateCid();
   const vmIp = cidToVmIp(vsockCid);
@@ -182,8 +182,8 @@ async function createEnv(ctx: CommandContext): Promise<void> {
 
   const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
 
-  // Insert env record (reserves ports/CID)
-  insertEnv({
+  // Insert VM record (reserves ports/CID)
+  insertVM({
     id: slug,
     name,
     owner_id: user.userId,
@@ -203,7 +203,7 @@ async function createEnv(ctx: CommandContext): Promise<void> {
   });
   grantAccess(slug, user.userId, "owner");
 
-  channel.write(`Creating environment "${name}" (${memSizeMib} MiB)...\r\n`);
+  channel.write(`Creating VM "${name}" (${memSizeMib} MiB)...\r\n`);
 
   // Create VM
   try {
@@ -224,17 +224,17 @@ async function createEnv(ctx: CommandContext): Promise<void> {
       vmIp,
       memSizeMib,
     });
-    updateEnvVmInfo(slug, vmId, vmIp, vsockCid, null);
+    updateVMInfo(slug, vmId, vmIp, vsockCid, null);
   } catch (err: any) {
     revokeAllAccess(slug);
-    deleteEnv(slug);
+    deleteVM(slug);
     writeError(channel, `Failed to create VM: ${err.message}`);
     channel.exit(2);
     channel.close();
     return;
   }
 
-  updateEnvStatus(slug, "running");
+  updateVMStatus(slug, "running");
 
   // Register Caddy route (non-fatal)
   try {
@@ -258,18 +258,18 @@ async function createEnv(ctx: CommandContext): Promise<void> {
   channel.close();
 }
 
-async function deleteEnvCmd(envId: string, ctx: CommandContext): Promise<void> {
-  const env = findEnvById(envId);
-  if (!env) {
-    writeError(ctx.channel, `Environment not found: ${envId}`);
+async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
+  const vm = findVMById(vmId);
+  if (!vm) {
+    writeError(ctx.channel, `VM not found: ${vmId}`);
     ctx.channel.exit(1);
     ctx.channel.close();
     return;
   }
 
-  const role = checkAccess(envId, ctx.user.userId);
+  const role = checkAccess(vmId, ctx.user.userId);
   if (role !== "owner") {
-    writeError(ctx.channel, "Only the owner can delete an environment");
+    writeError(ctx.channel, "Only the owner can delete a VM");
     ctx.channel.exit(1);
     ctx.channel.close();
     return;
@@ -277,49 +277,49 @@ async function deleteEnvCmd(envId: string, ctx: CommandContext): Promise<void> {
 
   try {
     await removeVMFull(
-      envId,
-      env.vm_ip || cidToVmIp(env.vsock_cid || 3),
-      env.app_port,
-      env.ssh_port,
-      env.opencode_port,
+      vmId,
+      vm.vm_ip || cidToVmIp(vm.vsock_cid || 3),
+      vm.app_port,
+      vm.ssh_port,
+      vm.opencode_port,
     );
   } catch { /* may already be stopped */ }
 
-  try { await removeRoute(envId); } catch { /* may not exist */ }
+  try { await removeRoute(vmId); } catch { /* may not exist */ }
 
-  revokeAllAccess(envId);
-  deleteEnv(envId);
-  emitAdminEvent("vm.deleted", envId, ctx.user.userId);
+  revokeAllAccess(vmId);
+  deleteVM(vmId);
+  emitAdminEvent("vm.deleted", vmId, ctx.user.userId);
 
-  writeJson(ctx.channel, { ok: true, message: `Environment ${envId} destroyed` });
+  writeJson(ctx.channel, { ok: true, message: `VM ${vmId} destroyed` });
   ctx.channel.exit(0);
   ctx.channel.close();
 }
 
-async function startEnv(envId: string, ctx: CommandContext): Promise<void> {
-  const env = findEnvById(envId);
-  if (!env) {
-    writeError(ctx.channel, `Environment not found: ${envId}`);
+async function startVM(vmId: string, ctx: CommandContext): Promise<void> {
+  const vm = findVMById(vmId);
+  if (!vm) {
+    writeError(ctx.channel, `VM not found: ${vmId}`);
     ctx.channel.exit(1);
     ctx.channel.close();
     return;
   }
 
-  const role = checkAccess(envId, ctx.user.userId);
+  const role = checkAccess(vmId, ctx.user.userId);
   if (!role) {
-    writeError(ctx.channel, `No access to environment: ${envId}`);
+    writeError(ctx.channel, `No access to VM: ${vmId}`);
     ctx.channel.exit(1);
     ctx.channel.close();
     return;
   }
 
   try {
-    await ensureVMRunning(envId);
-    writeJson(ctx.channel, { ok: true, status: "running", message: `Environment ${envId} is running` });
+    await ensureVMRunning(vmId);
+    writeJson(ctx.channel, { ok: true, status: "running", message: `VM ${vmId} is running` });
     ctx.channel.exit(0);
   } catch (err: any) {
     if (err instanceof QuotaExceededError) {
-      writeError(ctx.channel, `RAM quota exceeded. Stop another environment or upgrade your plan.`);
+      writeError(ctx.channel, `RAM quota exceeded. Stop another VM or upgrade your plan.`);
     } else {
       writeError(ctx.channel, `Failed to start: ${err.message}`);
     }
@@ -328,26 +328,26 @@ async function startEnv(envId: string, ctx: CommandContext): Promise<void> {
   ctx.channel.close();
 }
 
-async function stopEnv(envId: string, ctx: CommandContext): Promise<void> {
-  const env = findEnvById(envId);
-  if (!env) {
-    writeError(ctx.channel, `Environment not found: ${envId}`);
+async function stopVM(vmId: string, ctx: CommandContext): Promise<void> {
+  const vm = findVMById(vmId);
+  if (!vm) {
+    writeError(ctx.channel, `VM not found: ${vmId}`);
     ctx.channel.exit(1);
     ctx.channel.close();
     return;
   }
 
-  const role = checkAccess(envId, ctx.user.userId);
+  const role = checkAccess(vmId, ctx.user.userId);
   if (role !== "owner" && role !== "editor") {
-    writeError(ctx.channel, "Only the owner or editors can stop an environment");
+    writeError(ctx.channel, "Only the owner or editors can stop a VM");
     ctx.channel.exit(1);
     ctx.channel.close();
     return;
   }
 
   try {
-    await snapshotVM(envId);
-    writeJson(ctx.channel, { ok: true, status: "snapshotted", message: `Environment ${envId} snapshotted` });
+    await snapshotVM(vmId);
+    writeJson(ctx.channel, { ok: true, status: "snapshotted", message: `VM ${vmId} snapshotted` });
     ctx.channel.exit(0);
   } catch (err: any) {
     writeError(ctx.channel, `Failed to stop: ${err.message}`);

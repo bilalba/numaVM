@@ -1,6 +1,6 @@
 import type { ServerChannel } from "ssh2";
 import type { SshUser } from "../services/ssh-key-lookup.js";
-import { handleEnvsCommand } from "./commands/envs.js";
+import { handleVMsCommand } from "./commands/vms.js";
 import { handleMetaCommand } from "./commands/meta.js";
 
 /**
@@ -89,14 +89,16 @@ export async function dispatchSshCommand(
 
   try {
     switch (resource) {
+      case "vms":
+      case "vm":
       case "envs":
       case "env":
-        await handleEnvsCommand(ctx);
+        await handleVMsCommand(ctx);
         break;
       case "new":
-        // "new --name xyz" → "envs create --name xyz"
+        // "new --name xyz" → "vms create --name xyz"
         ctx.args = ["create", ...ctx.args];
-        await handleEnvsCommand(ctx);
+        await handleVMsCommand(ctx);
         break;
       case "whoami":
       case "version":

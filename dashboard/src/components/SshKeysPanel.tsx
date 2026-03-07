@@ -3,12 +3,12 @@ import { api } from "../lib/api";
 import { useToast } from "./Toast";
 
 interface SshKeysPanelProps {
-  /** If provided, shows sync button + SSH command for this env */
-  envId?: string;
+  /** If provided, shows sync button + SSH command for this VM */
+  vmId?: string;
   sshCommand?: string;
 }
 
-export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
+export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
   const [keys, setKeys] = useState("");
   const [githubKeys, setGithubKeys] = useState("");
   const [loading, setLoading] = useState(true);
@@ -31,12 +31,12 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
 
   // Check if keys are already synced to the VM
   useEffect(() => {
-    if (!envId) return;
+    if (!vmId) return;
     api
-      .checkSshKeysStatus(envId)
+      .checkSshKeysStatus(vmId)
       .then((data) => setKeysSynced(data.synced))
       .catch(() => setKeysSynced(false));
-  }, [envId]);
+  }, [vmId]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -53,7 +53,7 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
   };
 
   const handleSync = async () => {
-    if (!envId) return;
+    if (!vmId) return;
     setSyncing(true);
     try {
       // Save first if there are unsaved changes
@@ -61,9 +61,9 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
         await api.saveSshKeys(keys.trim());
         setDirty(false);
       }
-      await api.syncSshKeys(envId);
+      await api.syncSshKeys(vmId);
       setKeysSynced(true);
-      toast("SSH keys synced to environment", "success");
+      toast("SSH keys synced to VM", "success");
     } catch (err: any) {
       toast(err.message, "error");
     } finally {
@@ -88,7 +88,7 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
 
   return (
     <div className="max-w-2xl space-y-4">
-      {/* SSH command (per-env only) */}
+      {/* SSH command (per-VM only) */}
       {sshCommand && (
         <div className="bg-panel-chat border border-neutral-200 p-4">
           <h3 className="text-xs font-semibold mb-2">SSH command</h3>
@@ -156,13 +156,13 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
           >
             {saving ? "Saving..." : "Save"}
           </button>
-          {envId && (
+          {vmId && (
             <button
               onClick={handleSync}
               disabled={syncing || (keysSynced && !dirty)}
               className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer"
             >
-              {syncing ? "Syncing..." : keysSynced && !dirty ? "Synced" : "Sync to this environment"}
+              {syncing ? "Syncing..." : keysSynced && !dirty ? "Synced" : "Sync to this VM"}
             </button>
           )}
           {keyCount > 0 && (
@@ -173,9 +173,9 @@ export function SshKeysPanel({ envId, sshCommand }: SshKeysPanelProps) {
         </div>
       </div>
 
-      {!envId && (
+      {!vmId && (
         <p className="text-[10px] text-neutral-500">
-          Keys are injected into new environments automatically. For existing environments, use "Sync" from the environment's Access tab.
+          Keys are injected into new VMs automatically. For existing VMs, use "Sync" from the VM's Access tab.
         </p>
       )}
     </div>
