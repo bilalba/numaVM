@@ -24,6 +24,7 @@ import { registerAgentRoutes } from "./routes/agents.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerUserRoutes } from "./routes/user.js";
 import { registerAdminRoutes } from "./routes/admin.js";
+import { registerBillingRoutes } from "./routes/billing.js";
 import { destroyAllTerminals } from "./terminal/pty-handler.js";
 import { agentManager } from "./agents/manager.js";
 import { getHealthStats } from "./services/health.js";
@@ -39,6 +40,20 @@ declare module "fastify" {
 }
 
 const app = Fastify({ logger: true });
+
+// Preserve raw body for Stripe webhook signature verification
+app.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+  const isWebhook = req.url === "/billing/webhook";
+  try {
+    const parsed = JSON.parse(body.toString());
+    if (isWebhook) {
+      (req as any).rawBody = body;
+    }
+    done(null, parsed);
+  } catch (err: any) {
+    done(err, undefined);
+  }
+});
 
 const baseDomain = process.env.BASE_DOMAIN || "localhost";
 await app.register(websocket);
@@ -82,8 +97,8 @@ async function verifyBearerToken(
 
 // Extract auth headers set by Caddy forward_auth (or Bearer token from CLI)
 app.addHook("preHandler", async (request, reply) => {
-  // Skip auth for health check and status pages
-  if (request.url === "/health" || request.url.endsWith("/status-page")) return;
+  // Skip auth for health check, status pages, and Stripe webhook
+  if (request.url === "/health" || request.url.endsWith("/status-page") || request.url === "/billing/webhook" || request.url.match(/^\/link-ssh\/[^/]+$/) || request.url.match(/^\/link-ssh\/[^/]+\/status$/)) return;
 
   const userId = request.headers["x-user-id"] as string | undefined;
   const userEmail = request.headers["x-user-email"] as string | undefined;
@@ -130,7 +145,7 @@ app.get("/health", async () => {
 
 // Current user (for CLI `numavm auth whoami`)
 app.get("/me", async (request) => {
-  const { db } = await import("./db/client.js");
+  const { db, getUserPlan } = await import("./db/client.js");
   const user = db
     .prepare("SELECT id, email, name, avatar_url, github_username, github_token FROM users WHERE id = ?")
     .get(request.userId) as { id: string; email: string; name: string; avatar_url: string; github_username: string | null; github_token: string | null } | undefined;
@@ -138,7 +153,8 @@ app.get("/me", async (request) => {
     return { id: request.userId, email: request.userEmail, has_github_token: false };
   }
   const { github_token, ...rest } = user;
-  return { ...rest, has_github_token: !!github_token };
+  const plan = getUserPlan(request.userId);
+  return { ...rest, has_github_token: !!github_token, plan: plan.plan, plan_label: plan.label, trial_active: plan.trial_active, trial_expires_at: plan.trial_expires_at };
 });
 
 // Register route modules
@@ -150,6 +166,7 @@ registerAgentRoutes(app);
 registerFileRoutes(app);
 registerUserRoutes(app);
 registerAdminRoutes(app);
+registerBillingRoutes(app);
 
 // Global error handler
 app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {

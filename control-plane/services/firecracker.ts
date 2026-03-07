@@ -32,6 +32,7 @@ export interface CreateVMParams {
   vmIp: string;
   vcpuCount?: number;
   memSizeMib?: number;
+  onProgress?: (detail: string) => void;
 }
 
 export interface VMStatus {
@@ -65,12 +66,12 @@ export function getInternalSshPubKey(): string {
   if (internalSshPubKey) return internalSshPubKey;
 
   const keyDir = join(getDataDir(), ".ssh");
-  const keyPath = join(keyDir, "deploymagi_internal");
+  const keyPath = join(keyDir, "numavm_internal");
   const pubPath = keyPath + ".pub";
 
   if (!existsSync(pubPath)) {
     mkdirSync(keyDir, { recursive: true });
-    execSync(`ssh-keygen -t ed25519 -f "${keyPath}" -N "" -C "deploymagi-internal"`, { stdio: "pipe" });
+    execSync(`ssh-keygen -t ed25519 -f "${keyPath}" -N "" -C "numavm-internal"`, { stdio: "pipe" });
   }
 
   internalSshKeyPath = keyPath;
@@ -195,13 +196,18 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     vsockCid, vmIp,
     vcpuCount = getDefaultVcpu(),
     memSizeMib = getDefaultMem(),
+    onProgress,
   } = params;
+
+  const progress = onProgress || (() => {});
 
   const socketPath = join(getSocketDir(), `fc-${slug}.sock`);
   const tapDev = `tap-${slug}`;
   const dataDir = join(getDataDir(), slug);
   const overlayDir = join(dataDir, "overlay");
   const snapshotDir = join(dataDir, "snapshot");
+
+  progress("Allocating resources");
 
   // Clean up any stale socket
   if (existsSync(socketPath)) unlinkSync(socketPath);
@@ -222,6 +228,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
       execSync(`cp "${getRootfsPath()}" "${vmRootfs}"`, { stdio: "pipe" });
     }
   }
+
+  progress("Creating rootfs overlay");
 
   // Create TAP device
   createTap(tapDev, vmIp);
@@ -254,7 +262,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     "nomodules",
     "random.trust_cpu=on",
     "i8042.noaux",
-    "init=/sbin/deploymagi-init",
+    "init=/sbin/numavm-init",
     `dm.ip=${vmIp}`,
     `dm.gateway=${getVmGateway()}`,
     `dm.dns=8.8.8.8`,
@@ -268,6 +276,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     `dm.anthropic_api_key=${anthropicApiKey || ""}`,
     `dm.env_name=${envNameB64}`,
   ].join(" ");
+
+  progress("Starting Firecracker");
 
   // Spawn Firecracker as a transient systemd service so it survives CP restarts.
   // `systemd-run` (without --scope) forks the command as an independent service unit
@@ -291,6 +301,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
 
   // Wait for socket to be ready
   await waitForSocket(socketPath, 5000);
+
+  progress("Configuring VM");
 
   // Configure VM via REST API
   // 1. Machine config
@@ -340,6 +352,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   });
 
   // 7. Start the VM
+  progress("Booting kernel");
   await fcApi(socketPath, "PUT", "/actions", {
     action_type: "InstanceStart",
   });
@@ -362,6 +375,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   });
 
   // Wait for VM to be ready (SSH accessible over bridge network)
+  progress("Waiting for SSH");
   await waitForVmSsh(vmIp, 30000);
 
   return slug;
@@ -456,6 +470,21 @@ export async function inspectVM(vmId: string): Promise<VMStatus> {
     startedAt: null,
     vsockCid: 0,
   };
+}
+
+// --- Pause / Resume (without snapshot, for disk copy) ---
+
+export async function pauseVM(vmId: string): Promise<void> {
+  const vm = runningVMs.get(vmId);
+  if (!vm) throw new Error(`VM ${vmId} is not running`);
+  await fcApi(vm.socketPath, "PATCH", "/vm", { state: "Paused" });
+  await sleep(200); // let Firecracker quiesce
+}
+
+export async function resumeVM(vmId: string): Promise<void> {
+  const vm = runningVMs.get(vmId);
+  if (!vm) throw new Error(`VM ${vmId} is not running`);
+  await fcApi(vm.socketPath, "PATCH", "/vm", { state: "Resumed" });
 }
 
 // --- Snapshot / Restore ---

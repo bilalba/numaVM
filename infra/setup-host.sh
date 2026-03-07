@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# DeployMagi — Host Setup for Firecracker
+# NumaVM — Host Setup for Firecracker
 # Run once on a bare-metal Linux server with /dev/kvm.
 #
 # Usage: sudo ./setup-host.sh
@@ -23,7 +23,7 @@ BRIDGE_IF="br0"
 BRIDGE_SUBNET="172.16.0.0/16"
 BRIDGE_IP="172.16.0.1/16"
 
-echo "=== DeployMagi Host Setup ==="
+echo "=== NumaVM Host Setup ==="
 echo "Firecracker version: ${FC_VERSION}"
 echo "Architecture: ${ARCH}"
 echo "Install dir: ${INSTALL_DIR}"
@@ -105,7 +105,7 @@ fi
 
 echo "Configuring /dev/kvm access..."
 
-# Allow the deploymagi user/group to access KVM
+# Allow the numavm user/group to access KVM
 if getent group kvm > /dev/null 2>&1; then
   chmod 660 /dev/kvm
   chgrp kvm /dev/kvm
@@ -143,7 +143,7 @@ fi
 # Enable IP forwarding + route_localnet (needed for localhost DNAT to VMs)
 sysctl -w net.ipv4.ip_forward=1 > /dev/null
 sysctl -w net.ipv4.conf.all.route_localnet=1 > /dev/null
-cat > /etc/sysctl.d/99-deploymagi.conf <<EOF
+cat > /etc/sysctl.d/99-numavm.conf <<EOF
 net.ipv4.ip_forward=1
 net.ipv4.conf.all.route_localnet=1
 EOF
@@ -250,9 +250,9 @@ echo "Data directory: ${DATA_DIR}"
 
 # --- 8. Create systemd service for bridge persistence (optional) ---
 
-cat > /etc/systemd/system/deploymagi-bridge.service <<EOF
+cat > /etc/systemd/system/numavm-bridge.service <<EOF
 [Unit]
-Description=DeployMagi Bridge Interface
+Description=NumaVM Bridge Interface
 After=network.target
 
 [Service]
@@ -266,7 +266,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable deploymagi-bridge.service 2>/dev/null || true
+systemctl enable numavm-bridge.service 2>/dev/null || true
 
 echo ""
 echo "=== Setup Complete ==="

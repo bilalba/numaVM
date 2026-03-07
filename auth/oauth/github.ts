@@ -32,7 +32,9 @@ interface GitHubEmail {
 
 export function registerGithubRoutes(app: FastifyInstance) {
   app.get("/auth/github", async (request, reply) => {
-    const redirect = (request.query as Record<string, string>).redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
+    const query = request.query as Record<string, string>;
+    const redirect = query.redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
+    const email = request.cookies.login_email || "";
     const state = arctic.generateState();
 
     reply.setCookie("oauth_state", state, {
@@ -47,8 +49,17 @@ export function registerGithubRoutes(app: FastifyInstance) {
       maxAge: 600,
       sameSite: "lax",
     });
+    if (email) {
+      reply.setCookie("oauth_required_email", email, {
+        path: "/",
+        httpOnly: true,
+        maxAge: 600,
+        sameSite: "lax",
+      });
+    }
 
     const url = github.createAuthorizationURL(state, ["user:email"]);
+    // GitHub doesn't support login_hint, but we validate email after callback
     return reply.redirect(url.toString());
   });
 
@@ -116,9 +127,21 @@ export function registerGithubRoutes(app: FastifyInstance) {
       return reply.status(400).send("Could not retrieve email from GitHub");
     }
 
+    const requiredEmail = request.cookies.oauth_required_email || "";
+
     reply.clearCookie("oauth_state", { path: "/" });
     reply.clearCookie("oauth_redirect", { path: "/" });
     reply.clearCookie("oauth_flow", { path: "/" });
+    reply.clearCookie("oauth_required_email", { path: "/" });
+    reply.clearCookie("login_email", { path: "/" });
+
+    // Enforce email match if required (e.g., SSH key linking flow)
+    if (requiredEmail && email!.toLowerCase() !== requiredEmail.toLowerCase()) {
+      // Re-set cookies for retry
+      reply.setCookie("login_email", requiredEmail, { path: "/", httpOnly: true, maxAge: 600, sameSite: "lax" });
+      const loginUrl = `/login?redirect=${encodeURIComponent(redirect)}&error=email_mismatch`;
+      return reply.redirect(loginUrl);
+    }
 
     if (flow === "repo") {
       // Repo-scope flow: save the token to the currently logged-in user

@@ -3,7 +3,7 @@ import { findEnvById, checkAccess } from "../db/client.js";
 import { inspectVM } from "../services/firecracker.js";
 import { execInVM } from "../services/vsock-ssh.js";
 import { createTerminal } from "../terminal/pty-handler.js";
-import { ensureVMRunning } from "../services/wake.js";
+import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 
 export interface TmuxSession {
   name: string;
@@ -36,8 +36,12 @@ export function registerTerminalRoutes(app: FastifyInstance) {
       try {
         await ensureVMRunning(env.id);
       } catch (err: any) {
-        request.log.error({ err, envId: id }, "Failed to wake VM for terminal");
-        socket.close(4005, "VM is not running");
+        if (err instanceof QuotaExceededError) {
+          socket.close(4008, "RAM quota exceeded");
+        } else {
+          request.log.error({ err, envId: id }, "Failed to wake VM for terminal");
+          socket.close(4005, "VM is not running");
+        }
         return;
       }
 

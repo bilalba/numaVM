@@ -7,7 +7,7 @@ const docker = new Dockerode({
 function getDataDir() {
   return process.env.DATA_DIR || "/data/envs";
 }
-const envImage = process.env.ENV_IMAGE || "deploymagi-env";
+const envImage = process.env.ENV_IMAGE || "numavm-env";
 
 export interface ContainerStatus {
   running: boolean;

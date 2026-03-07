@@ -7,7 +7,7 @@ export function Header() {
   return (
     <header className="flex items-center justify-between px-4 py-2 border-b border-neutral-200 text-xs">
       <div className="flex items-center gap-1.5 text-neutral-900 font-medium">
-        <span>deploymagi</span>
+        <span>numavm</span>
         <span className="text-neutral-400">/</span>
         <span>admin</span>
       </div>

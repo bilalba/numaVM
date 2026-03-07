@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='700' font-size='16' fill='%23f8f4ee'%3EN%3C/text%3E%3C/svg%3E" />
-  <title>Sign in — DeployMagi</title>
+  <title>Sign in — NumaVM</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap" rel="stylesheet" />
@@ -60,8 +60,8 @@
 <body>
   <div class="container">
     <div>
-      <h1 class="title">DeployMagi</h1>
-      <p class="subtitle">Sign in to your workspace</p>
+      <h1 class="title">NumaVM</h1>
+      <p class="subtitle" id="subtitle">Sign in to your workspace</p>
     </div>
 
     <div class="oauth-links">
@@ -82,7 +82,7 @@
     </div>
 
     <form id="email-form" class="email-form">
-      <input type="email" name="email" required placeholder="you@example.com" class="email-input">
+      <input type="email" name="email" required placeholder="you@example.com" class="email-input" value="__EMAIL_VALUE__">
       <button type="submit" class="submit-btn">Send magic link</button>
     </form>
 
@@ -92,8 +92,24 @@
   <script>
     const form = document.getElementById('email-form');
     const msg = document.getElementById('email-message');
+    const subtitle = document.getElementById('subtitle');
     const params = new URLSearchParams(window.location.search);
     const redirect = params.get('redirect') || '/';
+    const error = params.get('error') || '';
+
+    // Email pre-filled server-side from cookie (SSH key linking flow)
+    const prefilled = form.email.value;
+    if (prefilled) {
+      subtitle.textContent = 'Verify your identity as ' + prefilled;
+      form.email.readOnly = true;
+      form.email.style.opacity = '0.6';
+    }
+
+    // Show error for email mismatch
+    if (error === 'email_mismatch') {
+      msg.classList.add('visible', 'error');
+      msg.textContent = 'Please sign in with the correct email address.';
+    }
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();

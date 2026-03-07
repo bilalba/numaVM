@@ -52,10 +52,14 @@ ${scheme}auth.${domain} {${tlsDirective}
     reverse_proxy localhost:${authPort}
 }
 
-# Control plane API — skip forward_auth for CORS preflight, auth the rest
+# Control plane API — skip forward_auth for CORS preflight + webhooks, auth the rest
 ${scheme}api.${domain} {${tlsDirective}
     @options method OPTIONS
     handle @options {
+        reverse_proxy localhost:${cpPort}
+    }
+    @webhook path /billing/webhook
+    handle @webhook {
         reverse_proxy localhost:${cpPort}
     }
     handle {
@@ -74,7 +78,7 @@ ${scheme}app.${domain} {${tlsDirective}
         copy_headers X-User-Id X-User-Email
         @unauthorized status 401 403
         handle_response @unauthorized {
-            redir ${authLoginUrl}
+            redir ${authLoginUrl}?redirect=${scheme}app.${domain}{http.request.uri}
         }
     }
     reverse_proxy localhost:${dashPort}
@@ -87,7 +91,7 @@ ${scheme}admin.${domain} {${tlsDirective}
         copy_headers X-User-Id X-User-Email X-User-Admin
         @unauthorized status 401 403
         handle_response @unauthorized {
-            redir ${authLoginUrl}
+            redir ${authLoginUrl}?redirect=${scheme}admin.${domain}{http.request.uri}
         }
     }
     reverse_proxy localhost:${adminPort}
@@ -102,7 +106,7 @@ ${scheme}admin.${domain} {${tlsDirective}
         copy_headers X-User-Id X-User-Email
         @unauthorized status 401 403
         handle_response @unauthorized {
-            redir ${authLoginUrl}
+            redir ${authLoginUrl}?redirect=${scheme}${env.id}.${domain}{http.request.uri}
         }
     }`;
 

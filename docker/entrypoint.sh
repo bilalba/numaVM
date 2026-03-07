@@ -3,12 +3,11 @@ set -e
 
 # MOTD
 cat > /etc/motd <<'MOTD'
-  ____             _             __  __             _
- |  _ \  ___ _ __ | | ___  _   _|  \/  | __ _  __ _(_)
- | | | |/ _ \ '_ \| |/ _ \| | | | |\/| |/ _` |/ _` | |
- | |_| |  __/ |_) | | (_) | |_| | |  | | (_| | (_| | |
- |____/ \___| .__/|_|\___/ \__, |_|  |_|\__,_|\__, |_|
-             |_|            |___/              |___/
+  _   _                     __     ____  __
+ | \ | |_   _ _ __ ___   __ \ \   / /  \/  |
+ |  \| | | | | '_ ` _ \ / _` \ \ / /| |\/| |
+ | |\  | |_| | | | | | | (_| |\ V / | |  | |
+ |_| \_|\__,_|_| |_| |_|\__,_| \_/  |_|  |_|
 
   Run `claude` in ~/repo to start Claude Code.
   Run `codex` for Codex, `opencode` for OpenCode.
@@ -24,7 +23,7 @@ chown -R dev:dev /home/dev/.ssh
 /usr/sbin/sshd
 
 # Git config
-su - dev -c 'git config --global user.email "agent@deploymagi.dev"'
+su - dev -c 'git config --global user.email "agent@numavm.dev"'
 su - dev -c 'git config --global user.name "Agent"'
 
 # Clone or pull repo

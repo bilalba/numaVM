@@ -1,0 +1,685 @@
+import type { ServerChannel } from "ssh2";
+import type { SshUser } from "../services/ssh-key-lookup.js";
+import { customAlphabet, nanoid } from "nanoid";
+import {
+  findEnvsByUser,
+  findUserById,
+  insertEnv,
+  updateEnvStatus,
+  updateEnvVmInfo,
+  grantAccess,
+  revokeAllAccess,
+  deleteEnv,
+  emitAdminEvent,
+  getUserPlan,
+  getUserProvisionedRam,
+} from "../db/client.js";
+import { allocatePorts, allocateCid, cidToVmIp } from "../services/port-allocator.js";
+import { createAndStartVM } from "../services/firecracker.js";
+import { fetchSshKeys } from "../services/github.js";
+import { addRoute } from "../services/caddy.js";
+import { registerPendingKey } from "../routes/user.js";
+
+const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
+
+// ANSI escape codes
+const ESC = "\x1b";
+const BOLD = `${ESC}[1m`;
+const DIM = `${ESC}[2m`;
+const RESET = `${ESC}[0m`;
+const CYAN = `${ESC}[36m`;
+const GREEN = `${ESC}[32m`;
+const YELLOW = `${ESC}[33m`;
+const WHITE = `${ESC}[37m`;
+const HIDE_CURSOR = `${ESC}[?25l`;
+const SHOW_CURSOR = `${ESC}[?25h`;
+const ALT_SCREEN_ON = `${ESC}[?1049h`;
+const ALT_SCREEN_OFF = `${ESC}[?1049l`;
+const CLEAR_LINE = `${ESC}[2K`;
+const HOME = `${ESC}[H`;
+
+function moveTo(row: number, col: number): string {
+  return `${ESC}[${row};${col}H`;
+}
+
+function clearBelow(): string {
+  return `${ESC}[J`;
+}
+
+interface MenuItem {
+  label: string;
+  description: string;
+  action: () => Promise<void> | void;
+}
+
+function getBaseDomain(): string {
+  return process.env.BASE_DOMAIN || "localhost";
+}
+
+/**
+ * Write a full frame to the channel in a single write call.
+ * Builds the entire screen content as a string, then flushes once — no flicker.
+ */
+function writeFrame(channel: ServerChannel, lines: string[]): void {
+  let buf = HOME;
+  for (const line of lines) {
+    buf += CLEAR_LINE + line + "\r\n";
+  }
+  buf += clearBelow();
+  channel.write(buf);
+}
+
+/**
+ * Show interactive TUI for authenticated users.
+ */
+export async function showAuthenticatedTui(channel: ServerChannel, user: SshUser, firstEntry = true): Promise<void> {
+  const name = user.name || user.email;
+
+  const mainMenu: MenuItem[] = [
+    { label: "New Environment", description: "Create a new environment", action: () => showCreateEnv(channel, user) },
+    { label: "My Environments", description: "List and connect to your environments", action: () => showEnvList(channel, user) },
+    { label: "Account Info", description: "View your account details", action: () => showAccountInfo(channel, user) },
+    { label: "Help", description: "Show available SSH commands", action: async () => { await showHelp(channel); return showAuthenticatedTui(channel, user, false); } },
+    { label: "Quit", description: "Disconnect", action: () => exitTui(channel) },
+  ];
+
+  if (firstEntry) {
+    channel.write(ALT_SCREEN_ON + HIDE_CURSOR);
+  }
+  await showMenu(channel, `Welcome, ${name}`, mainMenu, () => exitTui(channel));
+}
+
+function exitTui(channel: ServerChannel): void {
+  channel.write(SHOW_CURSOR + ALT_SCREEN_OFF);
+  channel.exit(0);
+  channel.close();
+}
+
+/**
+ * Show interactive TUI for unauthenticated users (SSH key not recognized).
+ * Collects email, shows verification link, polls until confirmed.
+ */
+export async function showUnauthenticatedTui(
+  channel: ServerChannel,
+  keyFingerprint: string,
+  keyAlgo?: string,
+  keyData?: Buffer,
+): Promise<string> {
+  const token = nanoid(16);
+  const domain = getBaseDomain();
+
+  channel.write(ALT_SCREEN_ON + HIDE_CURSOR);
+
+  // Step 1: Welcome + ask for email
+  channel.write(HOME + clearBelow());
+  channel.write(`\r\n  ${BOLD}${CYAN}NUMAVM${RESET}${DIM}: get a VM over ssh${RESET}\r\n`);
+  channel.write(`  To get started, please verify your email.\r\n`);
+  channel.write(`\r\n`);
+  channel.write(`  Please enter your email address: `);
+  channel.write(SHOW_CURSOR);
+
+  const email = await readLine(channel);
+  channel.write(HIDE_CURSOR);
+
+  if (!email || !email.includes("@")) {
+    const errLines = [
+      "",
+      `  ${BOLD}${CYAN}NUMAVM${RESET}`,
+      "",
+      `  Invalid email address. Please try again.`,
+      "",
+    ];
+    writeFrame(channel, errLines);
+    await sleep(2000);
+    exitTui(channel);
+    return token;
+  }
+
+  // Step 2: Register the pending key with email
+  if (keyAlgo && keyData) {
+    const pubKeyStr = `${keyAlgo} ${keyData.toString("base64")} linked-via-ssh`;
+    registerPendingKey(token, pubKeyStr, keyFingerprint, email);
+  }
+
+  // Step 3: Show verification link and poll
+  const linkUrl = `https://app.${domain}/link-ssh?token=${token}`;
+
+  const verifyLines = [
+    "",
+    `  ${BOLD}${CYAN}NUMAVM${RESET}`,
+    "",
+    `  Verify your email: ${GREEN}${linkUrl}${RESET}`,
+    `  ${DIM}Waiting for verification...${RESET}`,
+    "",
+  ];
+  writeFrame(channel, verifyLines);
+
+  // Poll for confirmation
+  const confirmed = await pollForConfirmation(channel, token, domain);
+
+  if (confirmed) {
+    const successLines = [
+      "",
+      `  ${BOLD}${CYAN}NUMAVM${RESET}`,
+      "",
+      `  ${GREEN}✓ Email verified successfully!${RESET}`,
+      "",
+      `  Your SSH key has been linked to your account.`,
+      `  Reconnect to access your environments.`,
+      "",
+      `  ${DIM}Disconnecting...${RESET}`,
+      "",
+    ];
+    writeFrame(channel, successLines);
+    await sleep(3000);
+  }
+
+  exitTui(channel);
+  return token;
+}
+
+/**
+ * Read a line of text input from the channel.
+ */
+function readLine(channel: ServerChannel): Promise<string> {
+  return new Promise((resolve) => {
+    let buf = "";
+    let closed = false;
+
+    function onData(data: Buffer) {
+      const str = data.toString();
+
+      for (const ch of str) {
+        // Enter
+        if (ch === "\r" || ch === "\n") {
+          channel.removeListener("data", onData);
+          resolve(buf.trim());
+          return;
+        }
+        // Ctrl+C
+        if (ch === "\x03") {
+          channel.removeListener("data", onData);
+          resolve("");
+          return;
+        }
+        // Backspace
+        if (ch === "\x7f" || ch === "\b") {
+          if (buf.length > 0) {
+            buf = buf.slice(0, -1);
+            channel.write("\b \b");
+          }
+          continue;
+        }
+        // Printable chars
+        if (ch >= " " && ch <= "~") {
+          buf += ch;
+          channel.write(ch);
+        }
+      }
+    }
+
+    channel.on("data", onData);
+    channel.on("close", () => {
+      if (!closed) {
+        closed = true;
+        channel.removeListener("data", onData);
+        resolve("");
+      }
+    });
+  });
+}
+
+/**
+ * Poll the link-ssh status endpoint until confirmed or timeout.
+ */
+async function pollForConfirmation(channel: ServerChannel, token: string, domain: string): Promise<boolean> {
+  const apiBase = `http://localhost:4001`; // internal API
+  const maxWaitMs = 10 * 60 * 1000; // 10 minutes
+  const pollIntervalMs = 2000;
+  const startTime = Date.now();
+  let cancelled = false;
+
+  // Listen for Ctrl+C to cancel
+  const cancelHandler = (data: Buffer) => {
+    if (data.toString() === "\x03") {
+      cancelled = true;
+    }
+  };
+  channel.on("data", cancelHandler);
+
+  while (!cancelled && Date.now() - startTime < maxWaitMs) {
+    try {
+      const res = await fetch(`${apiBase}/link-ssh/${token}/status`);
+      if (res.ok) {
+        const body = await res.json() as { confirmed: boolean };
+        if (body.confirmed) {
+          channel.removeListener("data", cancelHandler);
+          return true;
+        }
+      } else {
+        // Token expired
+        channel.removeListener("data", cancelHandler);
+        return false;
+      }
+    } catch {
+      // API unreachable — keep trying
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  channel.removeListener("data", cancelHandler);
+  return false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function showMenu(
+  channel: ServerChannel,
+  title: string,
+  items: MenuItem[],
+  onExit: () => void,
+): Promise<void> {
+  let selected = 0;
+
+  function render() {
+    const lines: string[] = [""];
+    // Support multi-line titles (split on \n)
+    for (const tl of title.split("\n")) {
+      lines.push(`  ${BOLD}${CYAN}${tl}${RESET}`);
+    }
+    lines.push("");
+
+    for (let i = 0; i < items.length; i++) {
+      if (i === selected) {
+        lines.push(`${GREEN}  ▸ ${BOLD}${WHITE}${items[i].label}${RESET}  ${DIM}${items[i].description}${RESET}`);
+      } else {
+        lines.push(`${DIM}    ${items[i].label}${RESET}`);
+      }
+    }
+
+    lines.push("");
+    lines.push(`  ${DIM}↑/↓ navigate  ↵ select  q quit${RESET}`);
+
+    writeFrame(channel, lines);
+  }
+
+  render();
+
+  return new Promise<void>((resolve) => {
+    function onData(data: Buffer) {
+      const key = data.toString();
+
+      if (key === "\x03" || key === "q" || key === "Q") {
+        channel.removeListener("data", onData);
+        onExit();
+        resolve();
+        return;
+      }
+
+      // Arrow up / k
+      if (key === `${ESC}[A` || key === "k") {
+        selected = (selected - 1 + items.length) % items.length;
+        render();
+        return;
+      }
+
+      // Arrow down / j
+      if (key === `${ESC}[B` || key === "j") {
+        selected = (selected + 1) % items.length;
+        render();
+        return;
+      }
+
+      // Enter
+      if (key === "\r" || key === "\n") {
+        channel.removeListener("data", onData);
+        const action = items[selected].action();
+        if (action instanceof Promise) {
+          action.then(resolve).catch(() => resolve());
+        } else {
+          resolve();
+        }
+        return;
+      }
+    }
+
+    channel.on("data", onData);
+
+    channel.on("close", () => {
+      channel.removeListener("data", onData);
+      resolve();
+    });
+  });
+}
+
+async function showEnvList(channel: ServerChannel, user: SshUser): Promise<void> {
+  const envs = findEnvsByUser(user.userId);
+
+  const items: MenuItem[] = [
+    { label: "+ New Environment", description: "Create a new environment", action: () => showCreateEnv(channel, user) },
+  ];
+
+  if (envs.length === 0) {
+    items.push({
+      label: "← Back",
+      description: "Return to main menu",
+      action: () => showAuthenticatedTui(channel, user, false),
+    });
+    await showMenu(channel, "My Environments\n  No environments yet", items, () => showAuthenticatedTui(channel, user, false));
+    return;
+  }
+
+  for (const env of envs) {
+    items.push({
+      label: `${env.name} ${DIM}(${env.id})${RESET}`,
+      description: statusBadge(env.status),
+      action: () => showEnvDetail(channel, user, env.id),
+    });
+  }
+
+  items.push({
+    label: "← Back",
+    description: "Return to main menu",
+    action: () => showAuthenticatedTui(channel, user, false),
+  });
+
+  await showMenu(channel, "My Environments", items, () => showAuthenticatedTui(channel, user, false));
+}
+
+async function showCreateEnv(channel: ServerChannel, user: SshUser): Promise<void> {
+  const baseDomain = getBaseDomain();
+  const userPlan = getUserPlan(user.userId);
+
+  // Check quota before prompting
+  const currentRam = getUserProvisionedRam(user.userId);
+  const minMem = Math.min(...userPlan.valid_mem_sizes);
+  if (currentRam + minMem > userPlan.max_ram_mib) {
+    const lines = [
+      "",
+      `  ${BOLD}New Environment${RESET}`,
+      "",
+      `  ${YELLOW}RAM quota exceeded (${currentRam}/${userPlan.max_ram_mib} MiB used).${RESET}`,
+      `  Stop an environment or upgrade your plan.`,
+      "",
+      `  ${DIM}Press any key to go back...${RESET}`,
+    ];
+    writeFrame(channel, lines);
+    await waitForKey(channel);
+    return showAuthenticatedTui(channel, user, false);
+  }
+
+  // Step 1: Name
+  channel.write(HOME + clearBelow());
+  channel.write(`\r\n  ${BOLD}${CYAN}New Environment${RESET}\r\n\r\n`);
+  channel.write(`  Name: `);
+  channel.write(SHOW_CURSOR);
+  const name = await readLine(channel);
+  channel.write(HIDE_CURSOR);
+
+  if (!name || name.length < 1 || name.length > 64) {
+    const lines = ["", `  ${YELLOW}Name is required (1-64 chars). Cancelled.${RESET}`, ""];
+    writeFrame(channel, lines);
+    await sleep(1500);
+    return showAuthenticatedTui(channel, user, false);
+  }
+
+  // Step 2: Memory size
+  const availableMem = userPlan.valid_mem_sizes.filter(
+    (m: number) => currentRam + m <= userPlan.max_ram_mib,
+  );
+  let memSizeMib = 512;
+  if (availableMem.length === 1) {
+    memSizeMib = availableMem[0];
+  } else if (availableMem.length > 1) {
+    const memItems: MenuItem[] = availableMem.map((m: number) => ({
+      label: `${m} MiB`,
+      description: m === 512 ? "default" : "",
+      action: () => { memSizeMib = m; },
+    }));
+    await showMenu(channel, `New Environment: ${name}\n  Select memory size`, memItems, () => { memSizeMib = 0; });
+    if (memSizeMib === 0) {
+      return showAuthenticatedTui(channel, user, false);
+    }
+  }
+
+  // Step 3: GitHub repo (optional)
+  channel.write(HOME + clearBelow());
+  channel.write(`\r\n  ${BOLD}${CYAN}New Environment: ${name}${RESET}\r\n`);
+  channel.write(`  ${DIM}Memory: ${memSizeMib} MiB${RESET}\r\n\r\n`);
+  channel.write(`  GitHub repo ${DIM}(owner/repo, Enter to skip)${RESET}: `);
+  channel.write(SHOW_CURSOR);
+  const repoInput = await readLine(channel);
+  channel.write(HIDE_CURSOR);
+  const repoFullName = repoInput && repoInput.includes("/") ? repoInput : null;
+
+  // GitHub token check
+  const dbUser = findUserById(user.userId);
+  const ghToken = dbUser?.github_token || process.env.GH_PAT || null;
+  if (repoFullName && !ghToken) {
+    const lines = [
+      "",
+      `  ${YELLOW}GitHub not connected. Connect your GitHub account first to use repo cloning.${RESET}`,
+      "",
+      `  ${DIM}Press any key to go back...${RESET}`,
+    ];
+    writeFrame(channel, lines);
+    await waitForKey(channel);
+    return showAuthenticatedTui(channel, user, false);
+  }
+
+  // Step 4: Create
+  const creatingLines = [
+    "",
+    `  ${BOLD}${CYAN}Creating environment...${RESET}`,
+    "",
+    `  Name:    ${name}`,
+    `  Memory:  ${memSizeMib} MiB`,
+    ...(repoFullName ? [`  Repo:    ${repoFullName}`] : []),
+    "",
+    `  ${DIM}Starting VM, this may take 30-60 seconds...${RESET}`,
+    "",
+  ];
+  writeFrame(channel, creatingLines);
+
+  const slug = `env-${generateSlug()}`;
+  const { appPort, sshPort, opencodePort } = allocatePorts();
+  const vsockCid = allocateCid();
+  const vmIp = cidToVmIp(vsockCid);
+
+  // Fetch SSH keys
+  const keyParts: string[] = [];
+  if (dbUser?.github_username) {
+    const ghKeys = await fetchSshKeys(dbUser.github_username);
+    if (ghKeys) keyParts.push(ghKeys);
+  }
+  if (dbUser?.ssh_public_keys) {
+    keyParts.push(dbUser.ssh_public_keys);
+  }
+  const sshKeys = keyParts.join("\n");
+
+  const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
+
+  insertEnv({
+    id: slug,
+    name,
+    owner_id: user.userId,
+    gh_repo: repoFullName,
+    gh_token: ghToken,
+    container_id: null,
+    vm_ip: vmIp,
+    vsock_cid: vsockCid,
+    vm_pid: null,
+    snapshot_path: null,
+    app_port: appPort,
+    ssh_port: sshPort,
+    opencode_port: opencodePort,
+    opencode_password: opencodePassword,
+    status: "creating",
+    mem_size_mib: memSizeMib,
+  });
+  grantAccess(slug, user.userId, "owner");
+
+  try {
+    const vmId = await createAndStartVM({
+      slug,
+      name,
+      appPort,
+      sshPort,
+      opencodePort,
+      ghRepo: repoFullName || undefined,
+      ghToken: ghToken || undefined,
+      githubUsername: dbUser?.github_username || undefined,
+      sshKeys,
+      opencodePassword,
+      openaiApiKey: process.env.OPENAI_API_KEY,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      vsockCid,
+      vmIp,
+      memSizeMib,
+    });
+    updateEnvVmInfo(slug, vmId, vmIp, vsockCid, null);
+  } catch (err: any) {
+    revokeAllAccess(slug);
+    deleteEnv(slug);
+    const errLines = [
+      "",
+      `  ${BOLD}New Environment${RESET}`,
+      "",
+      `  ${YELLOW}Failed to create VM: ${err.message}${RESET}`,
+      "",
+      `  ${DIM}Press any key to go back...${RESET}`,
+    ];
+    writeFrame(channel, errLines);
+    await waitForKey(channel);
+    return showAuthenticatedTui(channel, user, false);
+  }
+
+  updateEnvStatus(slug, "running");
+
+  try { await addRoute(slug, appPort); } catch { /* non-fatal */ }
+  emitAdminEvent("vm.created", slug, user.userId, { name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}), source: "ssh-tui" });
+
+  // Success screen
+  const successItems: MenuItem[] = [
+    {
+      label: "Connect now",
+      description: `ssh ${slug}@ssh.${baseDomain}`,
+      action: () => {
+        // Exit TUI and show connection info
+        channel.write(SHOW_CURSOR + ALT_SCREEN_OFF);
+        channel.write(`\r\nConnect with: ${CYAN}ssh ${slug}@ssh.${baseDomain}${RESET}\r\n`);
+        channel.exit(0);
+        channel.close();
+      },
+    },
+    {
+      label: "Back to menu",
+      description: "Return to main menu",
+      action: () => showAuthenticatedTui(channel, user, false),
+    },
+  ];
+
+  const title = [
+    `Environment Created`,
+    ``,
+    `  ${GREEN}✓${RESET} ${BOLD}${name}${RESET} ${DIM}(${slug})${RESET}`,
+    `  URL:  ${CYAN}https://${slug}.${baseDomain}${RESET}`,
+    `  SSH:  ${CYAN}ssh ${slug}@ssh.${baseDomain}${RESET}`,
+  ].join("\n");
+
+  await showMenu(channel, title, successItems, () => showAuthenticatedTui(channel, user, false));
+}
+
+async function showEnvDetail(channel: ServerChannel, user: SshUser, envId: string): Promise<void> {
+  const env = findEnvsByUser(user.userId).find((e) => e.id === envId);
+  if (!env) {
+    return showEnvList(channel, user);
+  }
+
+  const lines = [
+    "",
+    `  ${BOLD}${env.name}${RESET} ${DIM}${env.id}${RESET}`,
+    "",
+    `  Status:  ${statusBadge(env.status)}`,
+    `  Role:    ${env.role}`,
+    `  RAM:     ${env.mem_size_mib} MiB`,
+    `  URL:     ${CYAN}https://${env.id}.${getBaseDomain()}${RESET}`,
+    `  SSH:     ${CYAN}ssh ${env.id}@ssh.${getBaseDomain()}${RESET}`,
+    "",
+    `  ${DIM}Press any key to go back...${RESET}`,
+  ];
+  writeFrame(channel, lines);
+
+  await waitForKey(channel);
+  return showEnvList(channel, user);
+}
+
+async function showAccountInfo(channel: ServerChannel, user: SshUser): Promise<void> {
+  const lines = [
+    "",
+    `  ${BOLD}Account Info${RESET}`,
+    "",
+    `  Email:    ${user.email}`,
+  ];
+  if (user.name) lines.push(`  Name:     ${user.name}`);
+  if (user.githubUsername) lines.push(`  GitHub:   ${user.githubUsername}`);
+  lines.push(`  Plan:     ${user.plan}`);
+  lines.push(`  User ID:  ${DIM}${user.userId}${RESET}`);
+  lines.push("");
+  lines.push(`  ${DIM}Press any key to go back...${RESET}`);
+
+  writeFrame(channel, lines);
+  await waitForKey(channel);
+  return showAuthenticatedTui(channel, user, false);
+}
+
+async function showHelp(channel: ServerChannel): Promise<void> {
+  const lines = [
+    "",
+    `  ${BOLD}SSH API Commands${RESET}`,
+    "",
+    `  ${CYAN}ssh ssh.numavm.com new --name <n>${RESET}           Create new environment`,
+    `  ${CYAN}ssh ssh.numavm.com envs${RESET}                     List environments`,
+    `  ${CYAN}ssh ssh.numavm.com envs create --name <n>${RESET}   Create new environment`,
+    `  ${CYAN}ssh ssh.numavm.com envs <id>${RESET}                Environment details`,
+    `  ${CYAN}ssh ssh.numavm.com envs <id> start${RESET}          Start/wake environment`,
+    `  ${CYAN}ssh ssh.numavm.com envs <id> stop${RESET}           Snapshot environment`,
+    `  ${CYAN}ssh ssh.numavm.com envs <id> delete${RESET}         Delete environment`,
+    `  ${CYAN}ssh ssh.numavm.com whoami${RESET}                   Account info (JSON)`,
+    `  ${CYAN}ssh ssh.numavm.com help${RESET}                     This help`,
+    "",
+    `  ${BOLD}Environment shell access:${RESET}`,
+    `  ${CYAN}ssh <env-id>@ssh.numavm.com${RESET}                 Interactive shell`,
+    `  ${CYAN}ssh <env-id>@ssh.numavm.com <command>${RESET}       Run command in env`,
+    "",
+    `  ${DIM}Press any key to go back...${RESET}`,
+  ];
+  writeFrame(channel, lines);
+  await waitForKey(channel);
+}
+
+function statusBadge(status: string): string {
+  switch (status) {
+    case "running": return `${GREEN}● running${RESET}`;
+    case "snapshotted": return `${YELLOW}◉ snapshotted${RESET}`;
+    case "paused": return `${YELLOW}◉ paused${RESET}`;
+    case "creating": return `${CYAN}◌ creating${RESET}`;
+    default: return `${DIM}○ ${status}${RESET}`;
+  }
+}
+
+function waitForKey(channel: ServerChannel): Promise<void> {
+  return new Promise((resolve) => {
+    function onData() {
+      channel.removeListener("data", onData);
+      resolve();
+    }
+    channel.on("data", onData);
+    channel.on("close", () => {
+      channel.removeListener("data", onData);
+      resolve();
+    });
+  });
+}

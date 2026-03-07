@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, githubConnectUrl, type EnvSummary, type GitHubRepo } from "../lib/api";
+import { api, githubConnectUrl, type EnvSummary, type GitHubRepo, type RamQuota } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { SshKeysPanel } from "../components/SshKeysPanel";
 import { relativeTime } from "../lib/time";
@@ -18,10 +18,12 @@ function EnvCardMenu({
   env,
   onDelete,
   onClone,
+  onPause,
 }: {
   env: EnvSummary;
   onDelete: () => void;
   onClone: () => void;
+  onPause: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -78,6 +80,19 @@ function EnvCardMenu({
           >
             Clone Environment
           </button>
+          {env.role === "owner" && env.status === "running" && (
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setOpen(false);
+                onPause();
+              }}
+              className="block w-full text-left px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-100 transition-colors cursor-pointer"
+            >
+              Pause Environment
+            </button>
+          )}
           {env.role === "owner" && (
             <>
               <div className="border-t border-neutral-200 my-1" />
@@ -132,6 +147,8 @@ export function EnvList() {
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+  const [memSizeMib, setMemSizeMib] = useState(512);
+  const [ramQuota, setRamQuota] = useState<RamQuota | null>(null);
   const { toast } = useToast();
   const navigate = useNavigate();
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -144,8 +161,13 @@ export function EnvList() {
       .finally(() => setLoading(false));
   };
 
+  const loadQuota = () => {
+    api.getRamQuota().then(setRamQuota).catch(() => {});
+  };
+
   useEffect(() => {
     loadEnvs();
+    loadQuota();
     api.getGithubStatus().then(setGithubStatus).catch(() => {});
   }, []);
 
@@ -179,6 +201,7 @@ export function EnvList() {
     setSelectedRepo(null);
     setNewRepoName("");
     setNewRepoPrivate(true);
+    setMemSizeMib(512);
   };
 
   const handleDelete = async (env: EnvSummary) => {
@@ -186,24 +209,41 @@ export function EnvList() {
       await api.deleteEnv(env.id);
       toast(`Deleted ${env.name}`, "success");
       loadEnvs();
+      loadQuota();
     } catch (err: any) {
       toast(err.message, "error");
     }
   };
 
   const handleClone = async (env: EnvSummary) => {
+    const isRunning = env.status === "running";
+    const msg = isRunning
+      ? `This will briefly pause "${env.name}" to copy its disk state. It will resume automatically after cloning.\n\nContinue?`
+      : `Clone "${env.name}"? This will create a copy with the same files and configuration.`;
+    if (!window.confirm(msg)) return;
+
     setCreating(true);
+    toast("Cloning environment...", "info");
     try {
-      const result = await api.createEnv({
-        name: `${env.name} (copy)`,
-      });
-      toast(`Cloned as ${result.name || env.name + " (copy)"}`, "success");
+      const result = await api.cloneEnv(env.id);
+      toast(`Cloned as ${result.name}`, "success");
       setLoading(true);
       loadEnvs();
     } catch (err: any) {
       toast(err.message, "error");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handlePause = async (env: EnvSummary) => {
+    if (!window.confirm(`Pause "${env.name}"? The environment will be snapshotted and can be resumed later.`)) return;
+    try {
+      await api.pauseEnv(env.id);
+      toast(`Paused ${env.name}`, "success");
+      loadEnvs();
+    } catch (err: any) {
+      toast(err.message, "error");
     }
   };
 
@@ -226,12 +266,13 @@ export function EnvList() {
         const created = await api.createGithubRepo(newRepoName.trim(), newRepoPrivate);
         ghRepo = created.fullName;
       }
-      await api.createEnv({ name: newName.trim(), gh_repo: ghRepo });
+      await api.createEnv({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib });
       setNewName("");
       setShowCreate(false);
       resetRepoState();
       setLoading(true);
       loadEnvs();
+      loadQuota();
     } catch (err: any) {
       setError(err.message);
       toast(err.message, "error");
@@ -325,6 +366,49 @@ export function EnvList() {
             >
               {creating ? "Creating..." : "Create"}
             </button>
+          </div>
+
+          {/* RAM selector */}
+          <div className="mt-4 pt-4 border-t border-neutral-200">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs text-neutral-600">Memory</label>
+              {ramQuota && (
+                <span className="text-[10px] text-neutral-400">
+                  <span className={ramQuota.plan === "free" ? "text-amber-600" : "text-neutral-400"}>
+                    {ramQuota.plan_label}
+                    {ramQuota.trial_active && ramQuota.trial_expires_at && (
+                      <> &middot; trial ends {relativeTime(ramQuota.trial_expires_at)}</>
+                    )}
+                  </span>
+                  {" \u00B7 "}
+                  {ramQuota.used_mib} / {ramQuota.max_mib} MB used
+                </span>
+              )}
+            </div>
+            <div className="flex gap-1.5">
+              {[256, 512, 768, 1024, 1280, 1536].map((size) => {
+                const notInPlan = ramQuota ? !ramQuota.valid_mem_sizes.includes(size) : false;
+                const exceedsQuota = ramQuota ? ramQuota.used_mib + size > ramQuota.max_mib : false;
+                const disabled = notInPlan || exceedsQuota;
+                const label = size >= 1024 ? `${(size / 1024).toFixed(size % 1024 ? 2 : 0)} GB` : `${size} MB`;
+                return (
+                  <button
+                    key={size}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => setMemSizeMib(size)}
+                    title={notInPlan ? `Requires Base plan` : exceedsQuota ? "Exceeds quota" : undefined}
+                    className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                      memSizeMib === size
+                        ? "border-black bg-white font-medium"
+                        : "border-neutral-200 bg-neutral-50 hover:border-neutral-300"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Repo picker — only when GitHub is connected */}
@@ -436,7 +520,7 @@ export function EnvList() {
         <p className="text-neutral-500 text-xs">Loading environments...</p>
       ) : envs.length === 0 ? (
         <div className="text-center py-16">
-          <h2 className="text-2xl font-semibold mb-3">Welcome to DeployMagi</h2>
+          <h2 className="text-2xl font-semibold mb-3">Welcome to NumaVM</h2>
           <p className="text-xs text-neutral-600 mb-8 max-w-lg mx-auto">
             Create always-on development environments with built-in AI agents, web terminals, and team collaboration.
           </p>
@@ -478,11 +562,18 @@ export function EnvList() {
                   env={env}
                   onDelete={() => handleDelete(env)}
                   onClone={() => handleClone(env)}
+                  onPause={() => handlePause(env)}
                 />
               </div>
               <p className="text-xs text-neutral-500 mb-3">{env.id}</p>
               <div className="flex items-center justify-between text-xs text-neutral-500">
                 <span className="capitalize">{env.role}</span>
+                <span>
+                  {env.mem_size_mib >= 1024
+                    ? `${(env.mem_size_mib / 1024).toFixed(env.mem_size_mib % 1024 ? 2 : 0)} GB`
+                    : `${env.mem_size_mib} MB`}
+                  {" RAM"}
+                </span>
                 <span>{relativeTime(env.created_at)}</span>
               </div>
             </div>

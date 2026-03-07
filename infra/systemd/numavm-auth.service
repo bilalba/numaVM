@@ -1,17 +1,17 @@
 [Unit]
-Description=DeployMagi Auth Service
+Description=NumaVM Auth Service
 After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/home/ubuntu/deploymagi
+WorkingDirectory=/home/ubuntu/numavm
 ExecStart=/usr/bin/node --import tsx auth/server.ts
-EnvironmentFile=/home/ubuntu/deploymagi/.env
+EnvironmentFile=/home/ubuntu/numavm/.env
 Restart=on-failure
 RestartSec=5
-SyslogIdentifier=deploymagi-auth
+SyslogIdentifier=numavm-auth
 StandardOutput=journal
 StandardError=journal
 

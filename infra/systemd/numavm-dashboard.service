@@ -1,17 +1,17 @@
 [Unit]
-Description=DeployMagi Dashboard
+Description=NumaVM Dashboard
 After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/home/ubuntu/deploymagi/dashboard
+WorkingDirectory=/home/ubuntu/numavm/dashboard
 ExecStart=/usr/bin/npx serve -s dist -l 4002 --cors
-EnvironmentFile=/home/ubuntu/deploymagi/.env
+EnvironmentFile=/home/ubuntu/numavm/.env
 Restart=on-failure
 RestartSec=5
-SyslogIdentifier=deploymagi-dashboard
+SyslogIdentifier=numavm-dashboard
 StandardOutput=journal
 StandardError=journal
 

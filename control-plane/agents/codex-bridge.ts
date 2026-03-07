@@ -60,8 +60,8 @@ export class CodexBridge implements AgentBridge {
     // Initialize handshake (required before any other method)
     await this.rpcCall("initialize", {
       clientInfo: {
-        name: "deploymagi",
-        title: "DeployMagi",
+        name: "numavm",
+        title: "NumaVM",
         version: "0.1.0",
       },
       capabilities: {

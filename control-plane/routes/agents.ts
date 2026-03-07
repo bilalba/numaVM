@@ -5,7 +5,7 @@ import { wsHub } from "../agents/ws-hub.js";
 import type { AgentCommand, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort } from "../agents/types.js";
 import { OpenCodeBridge } from "../agents/opencode-bridge.js";
 import { spawnProcessOverVsock } from "../services/vsock-ssh.js";
-import { ensureVMRunning } from "../services/wake.js";
+import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 
 const VALID_AGENT_TYPES = new Set(["codex", "opencode"]);
 
@@ -27,6 +27,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
     try {
       await ensureVMRunning(id);
     } catch (err: any) {
+      if (err instanceof QuotaExceededError) {
+        return reply.status(403).send({ error: "RAM quota exceeded. Stop another environment or upgrade your plan.", quota_error: true });
+      }
       request.log.error({ err, envId: id }, "Failed to wake VM for agent session");
       return reply.status(503).send({ error: "Environment is not available. Please try again." });
     }
@@ -112,6 +115,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
     try {
       await ensureVMRunning(id);
     } catch (err: any) {
+      if (err instanceof QuotaExceededError) {
+        return reply.status(403).send({ error: "RAM quota exceeded. Stop another environment or upgrade your plan.", quota_error: true });
+      }
       request.log.error({ err, envId: id }, "Failed to wake VM for agent message");
       return reply.status(503).send({ error: "Environment is not available. Please try again." });
     }

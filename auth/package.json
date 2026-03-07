@@ -1,5 +1,5 @@
 {
-  "name": "@deploymagi/auth",
+  "name": "@numavm/auth",
   "version": "0.1.0",
   "private": true,
   "type": "module",

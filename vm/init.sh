@@ -1,5 +1,5 @@
 #!/bin/bash
-# DeployMagi VM Init Script — runs as PID 1 inside Firecracker VMs
+# NumaVM VM Init Script — runs as PID 1 inside Firecracker VMs
 #
 # Kernel cmdline passes config as dm.* parameters:
 #   dm.ip=172.16.0.X dm.gateway=172.16.0.1 dm.dns=8.8.8.8
@@ -7,14 +7,14 @@
 #   dm.opencode_password=<pw> dm.openai_api_key=<key>
 #   dm.anthropic_api_key=<key> dm.vsock_cid=<cid>
 #
-# The init script in /sbin/deploymagi-init mounts filesystems and
+# The init script in /sbin/numavm-init mounts filesystems and
 # parses dm.* params before exec-ing this script.
 
 set -e
 
-echo "[init] DeployMagi VM starting..."
+echo "[init] NumaVM VM starting..."
 
-# --- Mount essential filesystems (if not already done by deploymagi-init) ---
+# --- Mount essential filesystems (if not already done by numavm-init) ---
 
 mountpoint -q /proc || mount -t proc proc /proc
 mountpoint -q /sys || mount -t sysfs sysfs /sys
@@ -27,7 +27,7 @@ mountpoint -q /tmp || mount -t tmpfs tmpfs /tmp
 
 # --- Parse kernel cmdline ---
 
-# The deploymagi-init wrapper exports DM_* vars from dm.* kernel params.
+# The numavm-init wrapper exports DM_* vars from dm.* kernel params.
 # If not set, parse them ourselves.
 if [ -z "${DM_ip:-}" ]; then
   for param in $(cat /proc/cmdline); do
@@ -126,8 +126,8 @@ fi
 
 # --- Git config ---
 
-su - dev -c 'git config --global user.email "agent@deploymagi.dev"' 2>/dev/null
-su - dev -c 'git config --global user.name "Agent"' 2>/dev/null
+sudo -u dev bash -lc 'git config --global user.email "agent@numavm.dev"' 2>/dev/null
+sudo -u dev bash -lc 'git config --global user.name "Agent"' 2>/dev/null
 
 # --- Clone or pull repo ---
 
@@ -138,27 +138,47 @@ GH_TOKEN="${DM_gh_token:-}"
 WORK_DIR="/home/dev/${SAFE_DIR_NAME}"
 
 if [ -n "${GH_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
-  # Extract repo name from owner/repo for the clone target
+  # Authenticated clone (private or user-connected repos)
   REPO_NAME="${GH_REPO##*/}"
   CLONE_DIR="/home/dev/${REPO_NAME}"
 
   if [ ! -d "${CLONE_DIR}/.git" ]; then
+    echo "cloning" > /tmp/init-progress
     echo "[init] Cloning ${GH_REPO} into ${CLONE_DIR}..."
-    su - dev -c "git clone 'https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
+    sudo -u dev bash -lc "git clone 'https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
       echo "[init] WARNING: git clone failed, creating empty workspace"
-      su - dev -c "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
+      sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
       CLONE_DIR=""
     }
   else
     echo "[init] Repo exists at ${CLONE_DIR}, pulling..."
-    su - dev -c "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
+    sudo -u dev bash -lc "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
   fi
 
   # Use the cloned repo dir as the working dir
   [ -n "${CLONE_DIR}" ] && WORK_DIR="${CLONE_DIR}"
+elif [ -n "${GH_REPO}" ]; then
+  # Public clone (no token — deploy button flow)
+  REPO_NAME="${GH_REPO##*/}"
+  CLONE_DIR="/home/dev/${REPO_NAME}"
+
+  if [ ! -d "${CLONE_DIR}/.git" ]; then
+    echo "cloning" > /tmp/init-progress
+    echo "[init] Cloning public repo ${GH_REPO} into ${CLONE_DIR}..."
+    sudo -u dev bash -lc "git clone 'https://github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
+      echo "[init] WARNING: clone failed (repo may be private or not found)"
+      sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
+      CLONE_DIR=""
+    }
+  else
+    echo "[init] Repo exists at ${CLONE_DIR}, pulling..."
+    sudo -u dev bash -lc "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
+  fi
+
+  [ -n "${CLONE_DIR}" ] && WORK_DIR="${CLONE_DIR}"
 else
-  echo "[init] No GH_REPO/GH_TOKEN, creating empty workspace"
-  su - dev -c "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init" 2>/dev/null
+  echo "[init] No GH_REPO, creating empty workspace"
+  sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init" 2>/dev/null
 fi
 
 # --- Persist env vars for SSH sessions ---
@@ -169,7 +189,8 @@ export GH_TOKEN="${GH_TOKEN}"
 export OPENAI_API_KEY="${DM_openai_api_key:-}"
 export ANTHROPIC_API_KEY="${DM_anthropic_api_key:-}"
 export OPENCODE_SERVER_PASSWORD="${DM_opencode_password:-}"
-export DEPLOYMAGI_WORK_DIR="${WORK_DIR}"
+export NUMAVM_WORK_DIR="${WORK_DIR}"
+export PORT=3000
 EOF
 
 # Source .env in bashrc if not already
@@ -184,7 +205,8 @@ GH_TOKEN=${GH_TOKEN}
 OPENAI_API_KEY=${DM_openai_api_key:-}
 ANTHROPIC_API_KEY=${DM_anthropic_api_key:-}
 OPENCODE_SERVER_PASSWORD=${DM_opencode_password:-}
-DEPLOYMAGI_WORK_DIR=${WORK_DIR}
+NUMAVM_WORK_DIR=${WORK_DIR}
+PORT=3000
 EOF
 chmod 600 /home/dev/.ssh/environment
 
@@ -195,8 +217,8 @@ grep -q 'PermitUserEnvironment' /etc/ssh/sshd_config || {
 
 # Set up git credential helper so git clone/push works with GH_TOKEN automatically
 if [ -n "${GH_TOKEN}" ]; then
-  su - dev -c "git config --global credential.helper '!f() { echo username=x-access-token; echo password=\$GH_TOKEN; }; f'"
-  su - dev -c "git config --global user.name '${DM_github_username:-dev}'"
+  sudo -u dev bash -lc "git config --global credential.helper '!f() { echo username=x-access-token; echo password=\$GH_TOKEN; }; f'"
+  sudo -u dev bash -lc "git config --global user.name '${DM_github_username:-dev}'"
 fi
 
 chown dev:dev /home/dev/.env /home/dev/.bashrc /home/dev/.ssh/environment
@@ -204,7 +226,7 @@ chown dev:dev /home/dev/.env /home/dev/.bashrc /home/dev/.ssh/environment
 # Pre-start OpenCode server so it's ready when the user creates a session
 # (avoids ~3s cold-start delay on first session creation)
 if command -v opencode &>/dev/null && [ -n "${DM_opencode_password:-}" ]; then
-  su - dev -c "source ~/.env 2>/dev/null; cd '${WORK_DIR}' 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${DM_opencode_password}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown" &
+  sudo -u dev bash -lc "source ~/.env 2>/dev/null; cd '${WORK_DIR}' 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${DM_opencode_password}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown" &
   echo "[init] OpenCode server starting in background on port 5000 (cwd: ${WORK_DIR})"
 fi
 
@@ -213,15 +235,130 @@ fi
 cd "${WORK_DIR}" 2>/dev/null || true
 export PORT=3000
 
-if [ -f package.json ]; then
-  echo "[init] Starting Node.js app..."
-  su - dev -c "cd '${WORK_DIR}' && npm install 2>/dev/null && pm2 start npm --name app -- start" 2>/dev/null || true
-elif [ -f requirements.txt ]; then
-  pip install -r requirements.txt --break-system-packages 2>/dev/null || true
-  [ -f app.py ] && su - dev -c "cd '${WORK_DIR}' && pm2 start 'python3 app.py' --name app" 2>/dev/null || true
+# Detect framework and build the right start command.
+# DNAT routes host appPort → VM port 3000, so we must ensure the app listens there.
+# Most frameworks respect PORT=3000 from env. For those that don't (vite dev, astro dev),
+# we detect them from package.json and append --port 3000.
+# Patch vite/nuxt/svelte-kit configs to allow all hosts (needed for subdomain access).
+# --allowedHosts is NOT a valid CLI flag — must be set in config.
+patch_vite_allowed_hosts() {
+  local dir="$1"
+  # Look for vite.config.{ts,js,mts,mjs} or nuxt.config.{ts,js}
+  for cfg in "${dir}/vite.config.ts" "${dir}/vite.config.js" "${dir}/vite.config.mts" "${dir}/vite.config.mjs"; do
+    if [ -f "$cfg" ]; then
+      # Only patch if not already configured
+      if ! grep -q 'allowedHosts' "$cfg" 2>/dev/null; then
+        # Insert server.allowedHosts into defineConfig (after the opening { of defineConfig)
+        sed -i 's/defineConfig(\s*{/defineConfig({ server: { allowedHosts: true },/' "$cfg" 2>/dev/null || true
+        echo "[init] Patched $cfg with allowedHosts: true"
+      fi
+      return 0
+    fi
+  done
+  return 1
+}
+
+detect_start_cmd() {
+  local pkg="${WORK_DIR}/package.json"
+  [ -f "$pkg" ] || return 1
+
+  # Helper: check if a script exists in package.json
+  has_script() {
+    grep -q "\"$1\"[[:space:]]*:" "$pkg" 2>/dev/null
+  }
+
+  # Check if there's a start script
+  local start_script
+  start_script=$(grep -o '"start"[[:space:]]*:[[:space:]]*"[^"]*"' "$pkg" | head -1 | sed 's/.*: *"//;s/"$//')
+
+  if [ -n "$start_script" ]; then
+    # Detect frameworks that need explicit --port flag
+    case "$start_script" in
+      *astro*dev*|*astro*preview*)
+        echo "npm start -- --port 3000"
+        return 0
+        ;;
+      *vite*|*nuxt*dev*|*svelte-kit*dev*)
+        echo "npm start -- --port 3000 --host 0.0.0.0"
+        return 0
+        ;;
+      *next*dev*)
+        echo "npm start -- -p 3000"
+        return 0
+        ;;
+      *remix*dev*)
+        echo "npm start -- --port 3000"
+        return 0
+        ;;
+    esac
+
+    # Check devDependencies / dependencies for frameworks (start script may just be "node server.js")
+    if grep -q '"astro"' "$pkg" 2>/dev/null && echo "$start_script" | grep -qE 'dev|preview'; then
+      echo "npm start -- --port 3000"
+      return 0
+    fi
+
+    # Default: rely on PORT=3000 env var (works for express, fastify, next start, hono, etc.)
+    echo "npm start"
+    return 0
+  fi
+
+  # No start script — fall back to dev (preview requires a successful build)
+  if has_script "dev"; then
+    echo "npm run dev -- --port 3000 --host 0.0.0.0"
+    return 0
+  fi
+  if has_script "preview"; then
+    echo "npm run preview -- --port 3000 --host 0.0.0.0"
+    return 0
+  fi
+
+  return 1
+}
+
+if [ -f "${WORK_DIR}/package.json" ]; then
+  echo "installing" > /tmp/init-progress
+  echo "[init] Detected Node.js project, installing dependencies..."
+  sudo -u dev bash -lc "cd '${WORK_DIR}' && npm install" 2>/dev/null || {
+    echo "error:npm install failed" > /tmp/init-progress
+    echo "[init] WARNING: npm install failed"
+  }
+
+  START_CMD=$(detect_start_cmd)
+
+  # Patch vite config to allow subdomain access
+  patch_vite_allowed_hosts "${WORK_DIR}"
+
+  # Only run build if we have a start script (not falling back to dev mode)
+  # Dev mode (npm run dev) doesn't need a build step
+  if [ -n "$START_CMD" ] && ! echo "$START_CMD" | grep -q 'npm run dev'; then
+    if grep -q '"build"' "${WORK_DIR}/package.json" 2>/dev/null; then
+      echo "building" > /tmp/init-progress
+      echo "[init] Running build step..."
+      sudo -u dev bash -lc "cd '${WORK_DIR}' && source ~/.env 2>/dev/null && npm run build" 2>/dev/null || {
+        echo "error:build failed" > /tmp/init-progress
+        echo "[init] WARNING: build failed, app may not start"
+      }
+    fi
+  fi
+
+  echo "starting" > /tmp/init-progress
+  echo "[init] Starting app with: ${START_CMD}"
+  sudo -u dev bash -lc "cd '${WORK_DIR}' && source ~/.env 2>/dev/null && pm2 start '${START_CMD}' --name app" 2>/dev/null || {
+    echo "error:app failed to start" > /tmp/init-progress
+    echo "[init] WARNING: app failed to start"
+  }
+elif [ -f "${WORK_DIR}/requirements.txt" ]; then
+  echo "installing" > /tmp/init-progress
+  pip install -r "${WORK_DIR}/requirements.txt" --break-system-packages 2>/dev/null || true
+  if [ -f "${WORK_DIR}/app.py" ]; then
+    echo "starting" > /tmp/init-progress
+    sudo -u dev bash -lc "cd '${WORK_DIR}' && pm2 start 'PORT=3000 python3 app.py' --name app" 2>/dev/null || true
+  fi
 fi
 
-echo "[init] DeployMagi VM ready"
+echo "ready" > /tmp/init-progress
+echo "[init] NumaVM VM ready"
 
 # --- Keep PID 1 alive ---
 # Use a wait loop that handles signals for clean shutdown
@@ -229,7 +366,7 @@ echo "[init] DeployMagi VM ready"
 _shutdown() {
   echo "[init] Shutting down..."
   # Stop services gracefully
-  su - dev -c 'pm2 kill' 2>/dev/null || true
+  sudo -u dev bash -lc 'pm2 kill' 2>/dev/null || true
   kill $(jobs -p) 2>/dev/null || true
   sync
   echo "[init] Goodbye"

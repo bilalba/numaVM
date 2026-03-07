@@ -11,7 +11,7 @@ export interface Config {
 }
 
 const DEFAULT_CONFIG: Config = {
-  api_url: "https://deploymagi.com",
+  api_url: "https://numavm.com",
 };
 
 export function loadConfig(): Config {

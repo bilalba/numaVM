@@ -102,7 +102,7 @@ admin/
     │   ├── api.ts        # adminApi with typed fetch helpers for /admin/* endpoints
     │   └── time.ts       # relativeTime + formatBytes helpers
     ├── components/
-    │   ├── Header.tsx    # "deploymagi / admin" breadcrumb + link to app dashboard
+    │   ├── Header.tsx    # "numavm / admin" breadcrumb + link to app dashboard
     │   ├── Sidebar.tsx   # NavLink list: Overview, Users, Environments, Sessions, Events
     │   ├── StatsCard.tsx # Reusable stat card (label, value, subtitle, optional status dot)
     │   ├── DataTable.tsx # Generic sortable table with column definitions
@@ -119,7 +119,7 @@ admin/
 
 ### systemd service
 
-`infra/systemd/deploymagi-admin.service` — serves the built `dist/` via `npx serve -s dist -l 4003 --cors`. Auto-restarts on failure.
+`infra/systemd/numavm-admin.service` — serves the built `dist/` via `npx serve -s dist -l 4003 --cors`. Auto-restarts on failure.
 
 ### deploy.sh
 

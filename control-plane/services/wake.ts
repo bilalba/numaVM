@@ -4,12 +4,30 @@ import {
   updateEnvSnapshotPath,
   updateEnvVmInfo,
   emitAdminEvent,
+  getUserPlan,
+  getUserProvisionedRam,
 } from "../db/client.js";
 import { restoreVM, createAndStartVM, isVmRunning, getInternalSshPubKey } from "./firecracker.js";
 import { addRoute } from "./caddy.js";
 import { resetIdleTimer } from "./idle-monitor.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+
+export class QuotaExceededError extends Error {
+  current_ram_mib: number;
+  env_ram_mib: number;
+  max_ram_mib: number;
+  plan: string;
+
+  constructor(current: number, envRam: number, max: number, plan: string) {
+    super(`RAM quota exceeded: ${current} MiB in use + ${envRam} MiB needed > ${max} MiB limit (${plan} plan)`);
+    this.name = "QuotaExceededError";
+    this.current_ram_mib = current;
+    this.env_ram_mib = envRam;
+    this.max_ram_mib = max;
+    this.plan = plan;
+  }
+}
 
 /**
  * Wake-on-Request Service
@@ -59,6 +77,13 @@ export async function ensureVMRunning(envId: string): Promise<void> {
     }
     console.warn(`[wake] ${envId} cannot wake from status: ${env.status}`);
     throw new Error(`Cannot wake VM in state: ${env.status}`);
+  }
+
+  // Check RAM quota before waking
+  const userPlan = getUserPlan(env.owner_id);
+  const currentRam = getUserProvisionedRam(env.owner_id);
+  if (currentRam + env.mem_size_mib > userPlan.max_ram_mib) {
+    throw new QuotaExceededError(currentRam, env.mem_size_mib, userPlan.max_ram_mib, userPlan.plan);
   }
 
   // Coalesce concurrent wake requests
@@ -164,5 +189,6 @@ async function createFreshVM(
     anthropicApiKey: envConfig.anthropic_api_key || "",
     vsockCid: env.vsock_cid!,
     vmIp: env.vm_ip!,
+    memSizeMib: env.mem_size_mib,
   });
 }

@@ -29,12 +29,25 @@ export interface EnvSummary {
   url: string;
   repo_url?: string;
   created_at: string;
+  mem_size_mib: number;
+}
+
+export interface RamQuota {
+  used_mib: number;
+  max_mib: number;
+  available_mib: number;
+  plan: "free" | "base";
+  plan_label: string;
+  valid_mem_sizes: number[];
+  trial_active: boolean;
+  trial_expires_at: string | null;
 }
 
 export interface EnvDetail {
   id: string;
   name: string;
   status: string;
+  status_detail: string | null;
   url: string;
   repo_url?: string;
   ssh_command: string;
@@ -49,6 +62,14 @@ export interface EnvDetail {
   } | null;
   role: string;
   created_at: string;
+  mem_size_mib: number;
+  quota_error?: {
+    message: string;
+    current_ram_mib: number;
+    env_ram_mib: number;
+    max_ram_mib: number;
+    plan: string;
+  };
 }
 
 export interface ClaudeSession {
@@ -157,6 +178,21 @@ export interface User {
   avatar_url?: string;
   github_username?: string;
   has_github_token?: boolean;
+  plan?: "free" | "base";
+  plan_label?: string;
+  trial_active?: boolean;
+  trial_expires_at?: string | null;
+}
+
+export interface Subscription {
+  plan: "free" | "base";
+  plan_label: string;
+  trial_active: boolean;
+  trial_expires_at: string | null;
+  stripe_subscription_id: string | null;
+  stripe_status: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
 }
 
 export interface GitHubRepo {
@@ -174,14 +210,28 @@ export const api = {
 
   getEnv: (id: string) => apiFetch<EnvDetail>(`/envs/${id}`),
 
-  createEnv: (body: { name: string; gh_repo?: string }) =>
+  createEnv: (body: { name: string; gh_repo?: string; mem_size_mib?: number }) =>
     apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
       "/envs",
       { method: "POST", body: JSON.stringify(body) }
     ),
 
+  getRamQuota: () => apiFetch<RamQuota>("/envs/quota"),
+
   deleteEnv: (id: string) =>
     apiFetch<{ ok: boolean }>(`/envs/${id}`, { method: "DELETE" }),
+
+  cloneEnv: (id: string, name?: string) =>
+    apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
+      `/envs/${id}/clone`,
+      { method: "POST", body: JSON.stringify(name ? { name } : {}) }
+    ),
+
+  pauseEnv: (id: string) =>
+    apiFetch<{ ok: boolean; message: string }>(`/envs/${id}/pause`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
 
   getClaudeSessions: (envId: string) =>
     apiFetch<{ sessions: ClaudeSession[] }>(`/envs/${envId}/claude/sessions`),
@@ -335,6 +385,31 @@ export const api = {
     apiFetch<{ fullName: string; cloneUrl: string }>("/me/repos", {
       method: "POST",
       body: JSON.stringify({ name, private: isPrivate }),
+    }),
+
+  // SSH key linking
+  getPendingKey: (token: string) =>
+    apiFetch<{ fingerprint: string; email: string }>(`/link-ssh/${token}`),
+
+  confirmLinkSshKey: (token: string) =>
+    apiFetch<{ ok: boolean; message: string }>(`/link-ssh/${token}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+
+  // Billing
+  getSubscription: () => apiFetch<Subscription>("/billing/subscription"),
+
+  createCheckoutSession: () =>
+    apiFetch<{ url: string }>("/billing/checkout", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+
+  getPortalUrl: () =>
+    apiFetch<{ url: string }>("/billing/portal", {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
 
   // Access control

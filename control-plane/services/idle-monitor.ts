@@ -7,7 +7,7 @@ import { removeRoute } from "./caddy.js";
  * Network Idle Monitor
  *
  * Polls TAP device traffic counters for each running VM. When a VM
- * transfers less than IDLE_THRESHOLD_BYTES (default 10 KB) within
+ * transfers less than IDLE_THRESHOLD_BYTES (default 20 KB) within
  * IDLE_TIMEOUT_MS (default 2 min), it's snapshotted and freed.
  *
  * Traffic is measured via /sys/class/net/tap-{slug}/statistics/{rx,tx}_bytes.
@@ -15,7 +15,7 @@ import { removeRoute } from "./caddy.js";
  */
 
 const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || "120000", 10); // 2 min
-const IDLE_THRESHOLD_BYTES = parseInt(process.env.IDLE_THRESHOLD_BYTES || "10240", 10); // 10 KB
+const IDLE_THRESHOLD_BYTES = parseInt(process.env.IDLE_THRESHOLD_BYTES || "20480", 10); // 20 KB
 const POLL_INTERVAL_MS = parseInt(process.env.IDLE_POLL_INTERVAL_MS || "30000", 10); // 30s
 
 interface VMTraffic {

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# DeployMagi — Build Alpine Rootfs for Firecracker
+# NumaVM — Build Alpine Rootfs for Firecracker
 #
 # Builds a minimal Alpine ext4 rootfs image with all packages pre-installed.
 # This image is used as the read-only base layer; each VM gets a writable
@@ -57,7 +57,7 @@ trap cleanup EXIT
 
 echo "Creating ${ROOTFS_SIZE_MB}MB ext4 image..."
 dd if=/dev/zero of="${OUTPUT}" bs=1M count="${ROOTFS_SIZE_MB}" status=progress
-mkfs.ext4 -F -L deploymagi-root "${OUTPUT}"
+mkfs.ext4 -F -L numavm-root "${OUTPUT}"
 
 # Mount it
 LOOP=$(losetup --find --show "${OUTPUT}")
@@ -191,9 +191,9 @@ chroot "${MOUNTDIR}" rc-update add sshd default 2>/dev/null || true
 
 # Create a simple init script that will be PID 1
 # This is the main entry point when Firecracker boots the VM
-cat > "${MOUNTDIR}/sbin/deploymagi-init" <<'INIT'
+cat > "${MOUNTDIR}/sbin/numavm-init" <<'INIT'
 #!/bin/bash
-# DeployMagi VM init — executed as PID 1 by the kernel
+# NumaVM VM init — executed as PID 1 by the kernel
 # See vm/init.sh for the full version with overlayfs + env setup
 
 set -e
@@ -212,8 +212,8 @@ mount -t tmpfs tmpfs /tmp
 eval $(cat /proc/cmdline | tr ' ' '\n' | grep '^dm\.' | sed 's/^dm\./export DM_/' | sed 's/=\(.*\)/="\1"/')
 
 # Run the actual init script
-if [ -f /opt/deploymagi/init.sh ]; then
-  exec /opt/deploymagi/init.sh
+if [ -f /opt/numavm/init.sh ]; then
+  exec /opt/numavm/init.sh
 fi
 
 # Fallback: just start SSH and wait
@@ -222,28 +222,27 @@ fi
 # Keep PID 1 alive
 exec sleep infinity
 INIT
-chmod +x "${MOUNTDIR}/sbin/deploymagi-init"
+chmod +x "${MOUNTDIR}/sbin/numavm-init"
 
-# Create the deploymagi dir for init script
-mkdir -p "${MOUNTDIR}/opt/deploymagi"
+# Create the numavm dir for init script
+mkdir -p "${MOUNTDIR}/opt/numavm"
 
 # Copy the actual init script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "${SCRIPT_DIR}/init.sh" ]; then
-  cp "${SCRIPT_DIR}/init.sh" "${MOUNTDIR}/opt/deploymagi/init.sh"
-  chmod +x "${MOUNTDIR}/opt/deploymagi/init.sh"
-  echo "Installed init.sh to /opt/deploymagi/init.sh"
+  cp "${SCRIPT_DIR}/init.sh" "${MOUNTDIR}/opt/numavm/init.sh"
+  chmod +x "${MOUNTDIR}/opt/numavm/init.sh"
+  echo "Installed init.sh to /opt/numavm/init.sh"
 fi
 
 # --- Create MOTD ---
 
 cat > "${MOUNTDIR}/etc/motd" <<'MOTD'
-  ____             _             __  __             _
- |  _ \  ___ _ __ | | ___  _   _|  \/  | __ _  __ _(_)
- | | | |/ _ \ '_ \| |/ _ \| | | | |\/| |/ _` |/ _` | |
- | |_| |  __/ |_) | | (_) | |_| | |  | | (_| | (_| | |
- |____/ \___| .__/|_|\___/ \__, |_|  |_|\__,_|\__, |_|
-             |_|            |___/              |___/
+  _   _                     __     ____  __
+ | \ | |_   _ _ __ ___   __ \ \   / /  \/  |
+ |  \| | | | | '_ ` _ \ / _` \ \ / /| |\/| |
+ | |\  | |_| | | | | | | (_| |\ V / | |  | |
+ |_| \_|\__,_|_| |_| |_|\__,_| \_/  |_|  |_|
 
   Your project is in ~/ — run `claude`, `codex`, or `opencode` there.
 

@@ -57,11 +57,11 @@ async function sendMagicLinkEmail(
       Authorization: `Bearer ${RESEND_API_KEY}`,
     },
     body: JSON.stringify({
-      from: "DeployMagi <noreply@auth.autodevice.io>",
+      from: "NumaVM <noreply@auth.autodevice.io>",
       to: [email],
-      subject: "Sign in to DeployMagi",
+      subject: "Sign in to NumaVM",
       html: `
-        <p>Click the link below to sign in to DeployMagi:</p>
+        <p>Click the link below to sign in to NumaVM:</p>
         <p><a href="${link}">Sign in</a></p>
         <p>This link expires in 15 minutes.</p>
         <p>If you didn't request this, you can safely ignore this email.</p>

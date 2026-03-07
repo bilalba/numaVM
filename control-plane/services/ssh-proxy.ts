@@ -13,8 +13,11 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { findEnvById, getAuthorizedUsersForEnv } from "../db/client.js";
-import { ensureVMRunning } from "./wake.js";
+import { ensureVMRunning, QuotaExceededError } from "./wake.js";
 import { getInternalSshKeyPath, isVmRunning } from "./firecracker.js";
+import { findUserByPublicKey, computeKeyFingerprint, type SshUser } from "./ssh-key-lookup.js";
+import { dispatchSshCommand } from "../ssh-api/dispatcher.js";
+import { showAuthenticatedTui, showUnauthenticatedTui } from "../ssh-api/tui.js";
 
 function getDataDir() { return process.env.DATA_DIR || "/data/envs"; }
 
@@ -30,7 +33,7 @@ function getHostKey(): Buffer {
 
   if (!existsSync(keyPath)) {
     mkdirSync(keyDir, { recursive: true });
-    execSync(`ssh-keygen -t ed25519 -f "${keyPath}" -N "" -C "deploymagi-ssh-proxy"`, { stdio: "pipe" });
+    execSync(`ssh-keygen -t ed25519 -f "${keyPath}" -N "" -C "numavm-ssh-proxy"`, { stdio: "pipe" });
   }
 
   hostKeyData = readFileSync(keyPath);
@@ -96,6 +99,11 @@ function isKeyAuthorized(clientKey: { algo: string; data: Buffer }, authorizedKe
 function handleConnection(client: Connection, _info: ClientInfo) {
   let env: ReturnType<typeof findEnvById> = undefined;
   let authenticatedUser: string | null = null;
+  let apiMode = false;
+  let apiUser: SshUser | null = null;
+  let capturedKeyFingerprint: string | null = null;
+  let capturedKeyAlgo: string | null = null;
+  let capturedKeyData: Buffer | null = null;
 
   client.on("authentication", (ctx: AuthContext) => {
     if (ctx.method === "none") {
@@ -106,34 +114,117 @@ function handleConnection(client: Connection, _info: ClientInfo) {
       return ctx.reject(["publickey"]);
     }
 
-    // Username = env slug (e.g., "env-50u9xs")
-    const envSlug = ctx.username;
-    env = findEnvById(envSlug);
-    if (!env) {
-      console.warn(`[ssh-proxy] No env found for slug "${envSlug}"`);
-      return ctx.reject(["publickey"]);
-    }
-
+    const username = ctx.username;
     const pkCtx = ctx as PublicKeyAuthContext;
-    const authorizedKeys = getAuthorizedKeys(env.id);
 
-    if (!isKeyAuthorized(pkCtx.key, authorizedKeys)) {
-      return ctx.reject(["publickey"]);
+    // Determine mode: env slug (starts with "env-") → env proxy, anything else → API mode
+    if (username.startsWith("env-")) {
+      // --- Env proxy mode (existing behavior) ---
+      env = findEnvById(username);
+      if (!env) {
+        console.warn(`[ssh-proxy] No env found for slug "${username}"`);
+        return ctx.reject(["publickey"]);
+      }
+
+      const authorizedKeys = getAuthorizedKeys(env.id);
+      if (!isKeyAuthorized(pkCtx.key, authorizedKeys)) {
+        return ctx.reject(["publickey"]);
+      }
+
+      if (!pkCtx.signature) {
+        return ctx.accept();
+      }
+
+      authenticatedUser = pkCtx.username;
+      ctx.accept();
+    } else {
+      // --- API mode: authenticate by reverse key lookup ---
+      apiMode = true;
+
+      // Capture key info for unauthenticated flow
+      capturedKeyAlgo = pkCtx.key.algo;
+      capturedKeyData = pkCtx.key.data;
+      try {
+        capturedKeyFingerprint = computeKeyFingerprint(pkCtx.key.data);
+      } catch { /* ignore errors */ }
+
+      // Try to find user by their SSH key
+      const user = findUserByPublicKey(pkCtx.key);
+      if (user) {
+        apiUser = user;
+        if (!pkCtx.signature) {
+          return ctx.accept(); // Key probe — accept to proceed with signing
+        }
+        console.log(`[ssh-api] Authenticated user ${user.email} via SSH key`);
+        ctx.accept();
+      } else {
+        // Unknown key — still accept for unauthenticated TUI
+        if (!pkCtx.signature) {
+          return ctx.accept();
+        }
+        console.log(`[ssh-api] Unauthenticated connection (unknown key)`);
+        ctx.accept();
+      }
     }
-
-    // Key is authorized
-    if (!pkCtx.signature) {
-      // This is a key probe — client is asking "would you accept this key?"
-      // Accept the probe to let the client proceed with signing
-      return ctx.accept();
-    }
-
-    // Signature present — ssh2 has already verified it, accept auth
-    authenticatedUser = pkCtx.username;
-    ctx.accept();
   });
 
   client.on("ready", () => {
+    if (apiMode) {
+      // --- API mode ---
+      console.log(`[ssh-api] Client ready (user: ${apiUser?.email ?? "unauthenticated"})`);
+
+      client.on("session", (accept, reject) => {
+        const session = accept();
+
+        session.on("pty", (accept) => {
+          if (typeof accept === "function") accept();
+        });
+
+        session.on("env", (accept) => {
+          if (typeof accept === "function") accept();
+        });
+
+        session.on("shell", (accept) => {
+          const channel = accept();
+          if (apiUser) {
+            showAuthenticatedTui(channel, apiUser).catch(() => {
+              channel.exit(1);
+              channel.close();
+            });
+          } else {
+            // Unauthenticated — show key linking menu
+            const fingerprint = capturedKeyFingerprint || "unknown";
+            showUnauthenticatedTui(
+              channel,
+              fingerprint,
+              capturedKeyAlgo || undefined,
+              capturedKeyData || undefined,
+            ).catch(() => {
+              channel.exit(1);
+              channel.close();
+            });
+          }
+        });
+
+        session.on("exec", (accept, reject, info) => {
+          const channel = accept();
+          if (!apiUser) {
+            channel.stderr.write("Error: SSH key not linked to an account. Run: ssh ssh.numavm.com\n");
+            channel.exit(1);
+            channel.close();
+            return;
+          }
+          dispatchSshCommand(info.command, apiUser, channel).catch((err) => {
+            channel.stderr.write(`Error: ${err.message}\n`);
+            channel.exit(2);
+            channel.close();
+          });
+        });
+      });
+      return;
+    }
+
+    // --- Env proxy mode (existing behavior) ---
     if (!env) { client.end(); return; }
     console.log(`[ssh-proxy] Client authenticated for ${env.id} (user: ${authenticatedUser})`);
 
@@ -318,7 +409,11 @@ function handleConnection(client: Connection, _info: ClientInfo) {
                     connectUpstream(env, clientChan, opts);
                   })
                   .catch((wakeErr) => {
-                    clientChan.stderr.write(`failed: ${wakeErr.message}\r\n`);
+                    if (wakeErr instanceof QuotaExceededError) {
+                      clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another environment or upgrade your plan.\r\n`);
+                    } else {
+                      clientChan.stderr.write(`failed: ${wakeErr.message}\r\n`);
+                    }
                     clientChan.close();
                   });
                 return;
@@ -337,7 +432,11 @@ function handleConnection(client: Connection, _info: ClientInfo) {
             } as any);
           })
           .catch((err) => {
-            clientChan.stderr.write(`Wake failed: ${err.message}\r\n`);
+            if (err instanceof QuotaExceededError) {
+              clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another environment or upgrade your plan.\r\n`);
+            } else {
+              clientChan.stderr.write(`Wake failed: ${err.message}\r\n`);
+            }
             clientChan.close();
           });
       }

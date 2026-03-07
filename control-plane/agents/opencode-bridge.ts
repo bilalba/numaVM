@@ -85,13 +85,13 @@ export class OpenCodeBridge implements AgentBridge {
       }
 
       // Start OpenCode server (SSH connects as dev by default)
-      // Source ~/.env to pick up API keys and DEPLOYMAGI_WORK_DIR
+      // Source ~/.env to pick up API keys and NUMAVM_WORK_DIR
       // disown prevents bash from sending SIGHUP when SSH session ends
       await execInVM(
         this.vmIp,
         [
           "bash", "-c",
-          `source ~/.env 2>/dev/null; cd "\${DEPLOYMAGI_WORK_DIR:-$HOME}" 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
+          `source ~/.env 2>/dev/null; cd "\${NUMAVM_WORK_DIR:-$HOME}" 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
         ],
         { timeoutMs: 5000 },
       );

@@ -1,6 +1,6 @@
-# DeployMagi — EC2 Deployment Guide
+# NumaVM — EC2 Deployment Guide
 
-This document covers deploying DeployMagi on a bare-metal/EC2 instance with Firecracker support.
+This document covers deploying NumaVM on a bare-metal/EC2 instance with Firecracker support.
 
 ## Production Instance Requirements
 
@@ -81,12 +81,12 @@ Must be rebuilt (`cd dashboard && npm run build`) after changing this value.
 ### 1. Transfer files
 ```bash
 rsync -avz --exclude node_modules --exclude '*.db' --exclude .data --exclude .claude \
-  /path/to/deploymagi/ deploymagi:~/deploymagi/
+  /path/to/numavm/ numavm:~/numavm/
 ```
 
 ### 2. Install system dependencies
 ```bash
-ssh deploymagi
+ssh numavm
 sudo apt-get install -y build-essential python3 socat
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
@@ -98,7 +98,7 @@ echo 'vhost_vsock' | sudo tee /etc/modules-load.d/vhost-vsock.conf
 
 ### 3. Run host setup (Firecracker, bridge, NAT)
 ```bash
-cd ~/deploymagi && sudo bash infra/setup-host.sh
+cd ~/numavm && sudo bash infra/setup-host.sh
 ```
 
 ### 4. Download kernel 6.1 (replaces the broken 4.14 fallback)
@@ -112,14 +112,14 @@ sudo curl -fsSL \
 
 ### 5. Build VM rootfs
 ```bash
-cd ~/deploymagi/vm && sudo bash build-rootfs.sh
+cd ~/numavm/vm && sudo bash build-rootfs.sh
 ```
 
 Takes ~2-3 minutes. Installs Alpine packages + Node.js + agent CLIs.
 
 ### 6. Install npm dependencies
 ```bash
-cd ~/deploymagi && npm install
+cd ~/numavm && npm install
 ```
 
 ### 7. Fix data dir permissions
@@ -132,19 +132,19 @@ See "Environment Variables" section above.
 
 ### 9. Build dashboard
 ```bash
-cd ~/deploymagi/dashboard && npm run build
+cd ~/numavm/dashboard && npm run build
 ```
 
 ### 10. Start services
 ```bash
 # Auth (as regular user)
-cd ~/deploymagi && nohup npx tsx auth/server.ts > /tmp/auth.log 2>&1 &
+cd ~/numavm && nohup npx tsx auth/server.ts > /tmp/auth.log 2>&1 &
 
 # Control plane (as root — needs TAP/iptables)
-cd ~/deploymagi && sudo -E nohup npx tsx control-plane/server.ts > /tmp/control-plane.log 2>&1 &
+cd ~/numavm && sudo -E nohup npx tsx control-plane/server.ts > /tmp/control-plane.log 2>&1 &
 
 # Dashboard (static file server)
-cd ~/deploymagi/dashboard && nohup npx serve -s dist -l 4002 --cors > /tmp/dashboard.log 2>&1 &
+cd ~/numavm/dashboard && nohup npx serve -s dist -l 4002 --cors > /tmp/dashboard.log 2>&1 &
 ```
 
 ### 11. AWS Security Group
@@ -200,8 +200,8 @@ MOUNTDIR=$(mktemp -d)
 LOOP=$(losetup --find --show /opt/firecracker/rootfs/base.ext4)
 mount $LOOP $MOUNTDIR
 # Make your changes, e.g.:
-cp /home/ubuntu/deploymagi/vm/init.sh $MOUNTDIR/opt/deploymagi/init.sh
-chmod +x $MOUNTDIR/opt/deploymagi/init.sh
+cp /home/ubuntu/numavm/vm/init.sh $MOUNTDIR/opt/numavm/init.sh
+chmod +x $MOUNTDIR/opt/numavm/init.sh
 umount $MOUNTDIR
 losetup -d $LOOP
 rmdir $MOUNTDIR
@@ -234,7 +234,7 @@ The control plane executes commands inside VMs via SSH over the bridge network:
 Control Plane → SSH (tcp) → 172.16.0.x:22 → VM sshd → command
 ```
 
-- **Auth**: Internal ed25519 keypair at `/data/envs/.ssh/deploymagi_internal`
+- **Auth**: Internal ed25519 keypair at `/data/envs/.ssh/numavm_internal`
 - **User**: Commands run as `dev` (UID 1000, sudo NOPASSWD)
 - **Functions** (`control-plane/services/vsock-ssh.ts`):
   - `execInVM(vmIp, cmd)` — run a command, return stdout

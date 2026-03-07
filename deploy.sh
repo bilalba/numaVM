@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# DeployMagi deploy script
+# NumaVM deploy script
 # Usage: ./deploy.sh [flags]
 #   --skip-build        Skip dashboard + admin build
 #   --dashboard-only    Only deploy dashboard
@@ -10,8 +10,8 @@ set -euo pipefail
 #   --cp-only           Only deploy and restart control plane
 #   --install-services  Install systemd units and migrate from nohup (one-time)
 
-REMOTE="deploymagi"
-REMOTE_DIR="/home/ubuntu/deploymagi"
+REMOTE="numavm"
+REMOTE_DIR="/home/ubuntu/numavm"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Parse flags
@@ -85,10 +85,10 @@ if [[ "$INSTALL_SERVICES" == true ]]; then
   log "Installing systemd services..."
   ssh "$REMOTE" "sudo bash -s" <<'REMOTE_SCRIPT'
 set -e
-cp /home/ubuntu/deploymagi/infra/systemd/deploymagi-auth.service /etc/systemd/system/
-cp /home/ubuntu/deploymagi/infra/systemd/deploymagi-control-plane.service /etc/systemd/system/
-cp /home/ubuntu/deploymagi/infra/systemd/deploymagi-dashboard.service /etc/systemd/system/
-cp /home/ubuntu/deploymagi/infra/systemd/deploymagi-admin.service /etc/systemd/system/
+cp /home/ubuntu/numavm/infra/systemd/numavm-auth.service /etc/systemd/system/
+cp /home/ubuntu/numavm/infra/systemd/numavm-control-plane.service /etc/systemd/system/
+cp /home/ubuntu/numavm/infra/systemd/numavm-dashboard.service /etc/systemd/system/
+cp /home/ubuntu/numavm/infra/systemd/numavm-admin.service /etc/systemd/system/
 systemctl daemon-reload
 
 # Kill old nohup processes
@@ -100,16 +100,16 @@ pkill -f "serve -s dist -l 4003" 2>/dev/null || true
 sleep 2
 
 # Enable and start services
-systemctl enable deploymagi-auth deploymagi-control-plane deploymagi-dashboard deploymagi-admin
-systemctl start deploymagi-auth
+systemctl enable numavm-auth numavm-control-plane numavm-dashboard numavm-admin
+systemctl start numavm-auth
 echo "Auth service started"
 sleep 3
-systemctl start deploymagi-control-plane
+systemctl start numavm-control-plane
 echo "Control plane started"
 sleep 2
-systemctl start deploymagi-dashboard
+systemctl start numavm-dashboard
 echo "Dashboard started"
-systemctl start deploymagi-admin
+systemctl start numavm-admin
 echo "Admin dashboard started"
 REMOTE_SCRIPT
   log "Systemd services installed and started"
@@ -130,25 +130,25 @@ wait_for_health() {
 
 restart_auth() {
   log "Restarting auth service..."
-  ssh "$REMOTE" "sudo systemctl restart deploymagi-auth"
+  ssh "$REMOTE" "sudo systemctl restart numavm-auth"
   wait_for_health "Auth" "http://localhost:4000/health"
 }
 
 restart_cp() {
   log "Restarting control plane..."
-  ssh "$REMOTE" "sudo systemctl restart deploymagi-control-plane"
+  ssh "$REMOTE" "sudo systemctl restart numavm-control-plane"
   wait_for_health "Control plane" "http://localhost:4001/health"
 }
 
 restart_dashboard() {
   log "Restarting dashboard..."
-  ssh "$REMOTE" "sudo systemctl restart deploymagi-dashboard"
+  ssh "$REMOTE" "sudo systemctl restart numavm-dashboard"
   wait_for_health "Dashboard" "http://localhost:4002" 10
 }
 
 restart_admin() {
   log "Restarting admin dashboard..."
-  ssh "$REMOTE" "sudo systemctl restart deploymagi-admin"
+  ssh "$REMOTE" "sudo systemctl restart numavm-admin"
   wait_for_health "Admin" "http://localhost:4003" 10
 }
 
@@ -200,4 +200,4 @@ else
 fi
 
 log "Deploy complete!"
-ssh "$REMOTE" "sudo systemctl status deploymagi-auth deploymagi-control-plane deploymagi-dashboard deploymagi-admin --no-pager -l" 2>/dev/null | head -40 || true
+ssh "$REMOTE" "sudo systemctl status numavm-auth numavm-control-plane numavm-dashboard numavm-admin --no-pager -l" 2>/dev/null | head -40 || true

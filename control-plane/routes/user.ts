@@ -1,6 +1,48 @@
 import type { FastifyInstance } from "fastify";
-import { findUserById, updateUserSshKeys, clearUserGithubToken } from "../db/client.js";
+import { findUserById, updateUserSshKeys, appendUserSshKey, clearUserGithubToken } from "../db/client.js";
 import { fetchSshKeys, listRepos, createRepo } from "../services/github.js";
+import { invalidateKeyCache } from "../services/ssh-key-lookup.js";
+
+// --- Pending SSH key linking ---
+// In-memory store: token → { publicKey, fingerprint, email, confirmed, createdAt }
+// Entries expire after 10 minutes.
+interface PendingKey {
+  publicKey: string;
+  fingerprint: string;
+  email: string;
+  confirmed: boolean;
+  createdAt: number;
+}
+const pendingKeys = new Map<string, PendingKey>();
+const PENDING_KEY_TTL_MS = 10 * 60 * 1000;
+
+// Cleanup expired keys periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, entry] of pendingKeys) {
+    if (now - entry.createdAt > PENDING_KEY_TTL_MS) {
+      pendingKeys.delete(token);
+    }
+  }
+}, 60_000);
+
+export function registerPendingKey(token: string, publicKey: string, fingerprint: string, email: string): void {
+  pendingKeys.set(token, { publicKey, fingerprint, email, confirmed: false, createdAt: Date.now() });
+}
+
+export function getPendingKey(token: string): PendingKey | undefined {
+  const entry = pendingKeys.get(token);
+  if (!entry) return undefined;
+  if (Date.now() - entry.createdAt > PENDING_KEY_TTL_MS) {
+    pendingKeys.delete(token);
+    return undefined;
+  }
+  return entry;
+}
+
+export function deletePendingKey(token: string): void {
+  pendingKeys.delete(token);
+}
 
 export function registerUserRoutes(app: FastifyInstance) {
   // Get current user's SSH keys
@@ -86,5 +128,56 @@ export function registerUserRoutes(app: FastifyInstance) {
     }
     const result = await createRepo(body.name.trim(), body.private ?? false, user.github_token);
     return result;
+  });
+
+  // --- SSH key linking (from SSH TUI) ---
+
+  // Get pending key info by token (user must be logged in)
+  app.get("/link-ssh/:token", async (request, reply) => {
+    const { token } = request.params as { token: string };
+    const pending = getPendingKey(token);
+    if (!pending) {
+      return reply.status(404).send({ error: "Link token expired or invalid" });
+    }
+    return {
+      fingerprint: pending.fingerprint,
+      email: pending.email,
+    };
+  });
+
+  // Poll endpoint for the SSH TUI to check if key was confirmed
+  // This is unauthenticated — the token is the secret
+  app.get("/link-ssh/:token/status", async (request, reply) => {
+    const { token } = request.params as { token: string };
+    const pending = getPendingKey(token);
+    if (!pending) {
+      return reply.status(404).send({ error: "expired" });
+    }
+    return { confirmed: pending.confirmed };
+  });
+
+  // Confirm linking — adds the pending key to the authenticated user's account
+  app.post("/link-ssh/:token", async (request, reply) => {
+    const { token } = request.params as { token: string };
+    const pending = getPendingKey(token);
+    if (!pending) {
+      return reply.status(404).send({ error: "Link token expired or invalid" });
+    }
+
+    // Check if this key is already in the user's keys
+    const user = findUserById(request.userId);
+    const existingKeys = user?.ssh_public_keys || "";
+    if (existingKeys.includes(pending.publicKey.trim())) {
+      pending.confirmed = true;
+      return { ok: true, message: "Key already linked to your account" };
+    }
+
+    // Append the key
+    appendUserSshKey(request.userId, pending.publicKey.trim());
+    invalidateKeyCache();
+    pending.confirmed = true;
+    // Don't delete yet — the TUI needs to poll and see confirmed=true
+
+    return { ok: true, message: "SSH key linked to your account" };
   });
 }

@@ -93,6 +93,27 @@ if (ghRepoCol && ghRepoCol.notnull === 1) {
   db.pragma("foreign_keys = ON");
 }
 
+// Migrate: add mem_size_mib column to envs
+const envCols2 = db.pragma("table_info(envs)") as { name: string }[];
+if (!envCols2.some((c) => c.name === "mem_size_mib")) {
+  db.exec("ALTER TABLE envs ADD COLUMN mem_size_mib INTEGER NOT NULL DEFAULT 512");
+}
+
+// Migrate: add status_detail column to envs (real-time progress during creation)
+const envCols3 = db.pragma("table_info(envs)") as { name: string }[];
+if (!envCols3.some((c) => c.name === "status_detail")) {
+  db.exec("ALTER TABLE envs ADD COLUMN status_detail TEXT");
+}
+
+// Migrate: add plan columns to users
+try { db.exec("ALTER TABLE users ADD COLUMN plan TEXT DEFAULT 'base'"); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE users ADD COLUMN trial_started_at DATETIME"); } catch { /* already exists */ }
+// Backfill: set trial_started_at for existing base users who don't have it
+db.exec("UPDATE users SET trial_started_at = created_at WHERE trial_started_at IS NULL AND plan = 'base' AND id != 'dev-user'");
+
+// Migrate: add stripe_customer_id to users
+try { db.exec("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT"); } catch { /* already exists */ }
+
 // Migrate: add cwd column to agent_sessions
 const agentSessionCols = db.pragma("table_info(agent_sessions)") as { name: string }[];
 if (!agentSessionCols.some((c) => c.name === "cwd")) {
@@ -119,7 +140,9 @@ export interface Env {
   opencode_port: number;
   opencode_password: string | null;
   status: string;
+  status_detail: string | null;
   created_at: string;
+  mem_size_mib: number;
 }
 
 export interface EnvWithRole extends Env {
@@ -137,6 +160,9 @@ export interface User {
   ssh_public_keys: string | null;
   github_token: string | null;
   is_admin: number;
+  plan: string;
+  trial_started_at: string | null;
+  stripe_customer_id: string | null;
   created_at: string;
 }
 
@@ -157,15 +183,15 @@ export function clearUserGithubToken(userId: string): void {
 // --- Env CRUD ---
 
 const insertEnvStmt = db.prepare(`
-  INSERT INTO envs (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO envs (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 export function insertEnv(env: Omit<Env, "created_at">): void {
   insertEnvStmt.run(
     env.id, env.name, env.owner_id, env.gh_repo, env.gh_token,
     env.container_id, env.vm_ip, env.vsock_cid, env.vm_pid, env.snapshot_path,
     env.app_port, env.ssh_port, env.opencode_port,
-    env.opencode_password, env.status
+    env.opencode_password, env.status, env.mem_size_mib
   );
 }
 
@@ -189,6 +215,11 @@ export function updateEnvStatus(id: string, status: string): void {
   updateEnvStatusStmt.run(status, id);
 }
 
+const updateEnvStatusDetailStmt = db.prepare("UPDATE envs SET status_detail = ? WHERE id = ?");
+export function updateEnvStatusDetail(id: string, detail: string | null): void {
+  updateEnvStatusDetailStmt.run(detail, id);
+}
+
 const updateEnvContainerIdStmt = db.prepare("UPDATE envs SET container_id = ? WHERE id = ?");
 export function updateEnvContainerId(id: string, containerId: string): void {
   updateEnvContainerIdStmt.run(containerId, id);
@@ -204,6 +235,69 @@ export function updateEnvVmInfo(id: string, vmId: string, vmIp: string, vsockCid
 const updateEnvSnapshotPathStmt = db.prepare("UPDATE envs SET snapshot_path = ? WHERE id = ?");
 export function updateEnvSnapshotPath(id: string, snapshotPath: string | null): void {
   updateEnvSnapshotPathStmt.run(snapshotPath, id);
+}
+
+// --- RAM quota ---
+
+const getUserProvisionedRamStmt = db.prepare(`
+  SELECT COALESCE(SUM(e.mem_size_mib), 0) as total_ram
+  FROM envs e
+  INNER JOIN env_access ea ON ea.env_id = e.id
+  WHERE ea.user_id = ? AND ea.role = 'owner'
+  AND e.status IN ('running', 'creating')
+`);
+export function getUserProvisionedRam(userId: string): number {
+  const row = getUserProvisionedRamStmt.get(userId) as { total_ram: number };
+  return row.total_ram;
+}
+
+// --- Plan resolution ---
+
+const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+
+const PLAN_LIMITS = {
+  free: { max_ram_mib: 512, valid_mem_sizes: [256, 512] as number[], label: "Free" },
+  base: { max_ram_mib: 1536, valid_mem_sizes: [256, 512, 768, 1024, 1280, 1536] as number[], label: "Base" },
+} as const;
+
+export interface UserPlan {
+  plan: "free" | "base";
+  label: string;
+  max_ram_mib: number;
+  valid_mem_sizes: number[];
+  trial_active: boolean;
+  trial_expires_at: string | null;
+}
+
+const downgradeToFreeStmt = db.prepare(
+  "UPDATE users SET plan = 'free' WHERE id = ?"
+);
+
+export function getUserPlan(userId: string): UserPlan {
+  const user = findUserById(userId);
+  if (!user) {
+    return { plan: "free", ...PLAN_LIMITS.free, trial_active: false, trial_expires_at: null };
+  }
+
+  if (user.plan === "base") {
+    // trial_started_at = NULL means permanent base (no expiry) — e.g. dev-user, admin grants
+    if (!user.trial_started_at) {
+      return { plan: "base", ...PLAN_LIMITS.base, trial_active: false, trial_expires_at: null };
+    }
+
+    const trialStart = new Date(user.trial_started_at).getTime();
+    const expiresAt = new Date(trialStart + TRIAL_DURATION_MS);
+
+    if (Date.now() < expiresAt.getTime()) {
+      return { plan: "base", ...PLAN_LIMITS.base, trial_active: true, trial_expires_at: expiresAt.toISOString() };
+    }
+
+    // Trial expired — lazy downgrade
+    downgradeToFreeStmt.run(userId);
+    return { plan: "free", ...PLAN_LIMITS.free, trial_active: false, trial_expires_at: null };
+  }
+
+  return { plan: "free", ...PLAN_LIMITS.free, trial_active: false, trial_expires_at: null };
 }
 
 // --- Vsock CID allocation ---
@@ -302,6 +396,20 @@ export function findUserById(id: string): User | undefined {
 const findUserByEmailStmt = db.prepare("SELECT * FROM users WHERE email = ?");
 export function findUserByEmail(email: string): User | undefined {
   return findUserByEmailStmt.get(email) as User | undefined;
+}
+
+const findAllUsersWithSshKeysStmt = db.prepare(
+  "SELECT id, email, name, github_username, ssh_public_keys, plan FROM users WHERE ssh_public_keys IS NOT NULL AND ssh_public_keys != ''"
+);
+export function findAllUsersWithSshKeys(): { id: string; email: string; name: string | null; github_username: string | null; ssh_public_keys: string; plan: string }[] {
+  return findAllUsersWithSshKeysStmt.all() as any[];
+}
+
+const appendUserSshKeyStmt = db.prepare(
+  "UPDATE users SET ssh_public_keys = CASE WHEN ssh_public_keys IS NULL OR ssh_public_keys = '' THEN ? ELSE ssh_public_keys || char(10) || ? END WHERE id = ?"
+);
+export function appendUserSshKey(userId: string, key: string): void {
+  appendUserSshKeyStmt.run(key, key, userId);
 }
 
 // --- VM Traffic ---
@@ -429,4 +537,27 @@ const deleteAgentSessionStmt = db.prepare(
 export function deleteAgentSession(id: string): void {
   deleteAgentMessagesBySessionStmt.run(id);
   deleteAgentSessionStmt.run(id);
+}
+
+// --- Stripe helpers ---
+
+const setStripeCustomerIdStmt = db.prepare(
+  "UPDATE users SET stripe_customer_id = ? WHERE id = ?"
+);
+export function setStripeCustomerId(userId: string, customerId: string): void {
+  setStripeCustomerIdStmt.run(customerId, userId);
+}
+
+const updateUserPlanStmt = db.prepare(
+  "UPDATE users SET plan = ?, trial_started_at = NULL WHERE id = ?"
+);
+export function updateUserPlan(userId: string, plan: "free" | "base"): void {
+  updateUserPlanStmt.run(plan, userId);
+}
+
+const findUserByStripeCustomerIdStmt = db.prepare(
+  "SELECT * FROM users WHERE stripe_customer_id = ?"
+);
+export function findUserByStripeCustomerId(customerId: string): User | undefined {
+  return findUserByStripeCustomerIdStmt.get(customerId) as User | undefined;
 }

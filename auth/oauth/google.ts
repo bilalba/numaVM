@@ -17,7 +17,9 @@ const google = new arctic.Google(
 
 export function registerGoogleRoutes(app: FastifyInstance) {
   app.get("/auth/google", async (request, reply) => {
-    const redirect = (request.query as Record<string, string>).redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
+    const query = request.query as Record<string, string>;
+    const redirect = query.redirect || `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
+    const email = request.cookies.login_email || "";
     const state = arctic.generateState();
     const codeVerifier = arctic.generateCodeVerifier();
 
@@ -39,12 +41,24 @@ export function registerGoogleRoutes(app: FastifyInstance) {
       maxAge: 600,
       sameSite: "lax",
     });
+    if (email) {
+      reply.setCookie("oauth_required_email", email, {
+        path: "/",
+        httpOnly: true,
+        maxAge: 600,
+        sameSite: "lax",
+      });
+    }
 
     const url = google.createAuthorizationURL(state, codeVerifier, [
       "openid",
       "email",
       "profile",
     ]);
+    // Pre-select the right Google account
+    if (email) {
+      url.searchParams.set("login_hint", email);
+    }
     return reply.redirect(url.toString());
   });
 
@@ -60,6 +74,8 @@ export function registerGoogleRoutes(app: FastifyInstance) {
       return reply.status(400).send("Invalid OAuth state");
     }
 
+    const requiredEmail = request.cookies.oauth_required_email || "";
+
     const tokens = await google.validateAuthorizationCode(code, codeVerifier);
     const idToken = tokens.idToken();
     const claims = arctic.decodeIdToken(idToken) as {
@@ -68,6 +84,18 @@ export function registerGoogleRoutes(app: FastifyInstance) {
       name?: string;
       picture?: string;
     };
+
+    // Enforce email match if required (e.g., SSH key linking flow)
+    if (requiredEmail && claims.email.toLowerCase() !== requiredEmail.toLowerCase()) {
+      reply.clearCookie("oauth_state", { path: "/" });
+      reply.clearCookie("oauth_code_verifier", { path: "/" });
+      reply.clearCookie("oauth_redirect", { path: "/" });
+      reply.clearCookie("oauth_required_email", { path: "/" });
+      // Re-set cookies for retry
+      reply.setCookie("login_email", requiredEmail, { path: "/", httpOnly: true, maxAge: 600, sameSite: "lax" });
+      const loginUrl = `/login?redirect=${encodeURIComponent(redirect)}&error=email_mismatch`;
+      return reply.redirect(loginUrl);
+    }
 
     const user = upsertUserFromGoogle({
       id: nanoid(),
@@ -82,6 +110,8 @@ export function registerGoogleRoutes(app: FastifyInstance) {
     reply.clearCookie("oauth_state", { path: "/" });
     reply.clearCookie("oauth_code_verifier", { path: "/" });
     reply.clearCookie("oauth_redirect", { path: "/" });
+    reply.clearCookie("oauth_required_email", { path: "/" });
+    reply.clearCookie("login_email", { path: "/" });
 
     // CLI auth: redirect with token in query param instead of setting cookie
     if (isCliRedirect(redirect)) {

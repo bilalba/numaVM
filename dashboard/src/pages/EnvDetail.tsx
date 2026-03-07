@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api, type EnvDetail as EnvDetailType } from "../lib/api";
+import { useToast } from "../components/Toast";
 import { TerminalTab } from "../components/TerminalTab";
 import { ClaudeCodeTab } from "../components/ClaudeCodeTab";
 import { AgentTab } from "../components/AgentTab";
@@ -24,6 +25,8 @@ export function EnvDetail() {
   const [activeTab, setActiveTab] = useState<TabId>("codex");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pausing, setPausing] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     if (!slug) return;
@@ -37,12 +40,13 @@ export function EnvDetail() {
   // Poll for status updates when env is snapshotted/paused (waking up)
   useEffect(() => {
     if (!slug || !env) return;
+    if (env.quota_error) return; // Don't poll if quota exceeded — wake won't proceed
     if (env.status !== "snapshotted" && env.status !== "paused" && env.status !== "creating") return;
 
     const interval = setInterval(() => {
       api.getEnv(slug).then((updated) => {
         setEnv(updated);
-        if (updated.status === "running") clearInterval(interval);
+        if (updated.status === "running" || updated.quota_error) clearInterval(interval);
       }).catch(() => {});
     }, 3000);
 
@@ -117,8 +121,35 @@ export function EnvDetail() {
           )}
           <span className="text-neutral-400">|</span>
           <span className="text-neutral-500 capitalize">
-            {env.role} &middot; {env.status}
+            {env.role} &middot; {env.status} &middot;{" "}
+            {env.mem_size_mib >= 1024
+              ? `${(env.mem_size_mib / 1024).toFixed(env.mem_size_mib % 1024 ? 2 : 0)} GB`
+              : `${env.mem_size_mib} MB`} RAM
           </span>
+          {env.status === "running" && env.role === "owner" && (
+            <>
+              <span className="text-neutral-400">|</span>
+              <button
+                onClick={async () => {
+                  if (!window.confirm(`Pause "${env.name}"? The environment will be snapshotted and can be resumed later.`)) return;
+                  setPausing(true);
+                  try {
+                    await api.pauseEnv(env.id);
+                    toast(`Paused ${env.name}`, "success");
+                    setEnv({ ...env, status: "snapshotted" });
+                  } catch (err: any) {
+                    toast(err.message, "error");
+                  } finally {
+                    setPausing(false);
+                  }
+                }}
+                disabled={pausing}
+                className="underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer disabled:opacity-30"
+              >
+                {pausing ? "Pausing..." : "Pause"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -127,13 +158,25 @@ export function EnvDetail() {
         <div className="mb-4 border border-neutral-200 px-4 py-3 flex items-center gap-3 bg-panel-chat">
           <div className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]" />
           <span className="text-xs text-neutral-600">
-            Your environment is being set up. This usually takes a minute.
+            {env.status_detail || "Setting up your environment..."}
+          </span>
+        </div>
+      )}
+
+      {/* RAM quota exceeded banner */}
+      {env.quota_error && (
+        <div className="mb-4 border border-red-200 px-4 py-3 flex items-center gap-3 bg-red-50">
+          <div className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+          <span className="text-xs text-red-700">
+            This environment can't wake up — you've reached your plan's RAM limit ({env.quota_error.current_ram_mib}/{env.quota_error.max_ram_mib} MiB in use).{" "}
+            Stop another environment or{" "}
+            <Link to="/plan" className="underline font-medium">upgrade your plan</Link>.
           </span>
         </div>
       )}
 
       {/* Waking up banner */}
-      {(env.status === "snapshotted" || env.status === "paused") && (
+      {(env.status === "snapshotted" || env.status === "paused") && !env.quota_error && (
         <div className="mb-4 border border-neutral-200 px-4 py-3 flex items-center gap-3 bg-panel-chat">
           <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-[pulseDot_1s_ease-in-out_infinite]" />
           <span className="text-xs text-neutral-600">

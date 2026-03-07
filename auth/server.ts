@@ -40,10 +40,39 @@ app.get("/login", async (request, reply) => {
   const query = request.query as Record<string, string>;
   const cliRedirect = query.cli_redirect;
   const appUrl = `https://app.${process.env.BASE_DOMAIN || "localhost:4002"}`;
-  const redirect = cliRedirect || query.redirect || appUrl;
-  const redirectParam = `?redirect=${encodeURIComponent(redirect)}`;
+  let redirect = cliRedirect || query.redirect || appUrl;
 
-  const html = loginHtml.replace(/__REDIRECT_PARAM__/g, redirectParam);
+  // Email from server-side link token lookup (SSH key linking flow)
+  // Caddy redirects: /login?redirect=https://app.../link-ssh?token=TOKEN
+  // The full redirect URL (including ?token=) is in query.redirect as one value
+  let email = request.cookies.login_email || "";
+  let linkToken = "";
+  if (redirect.includes("/link-ssh")) {
+    try {
+      const redirectUrl = new URL(redirect);
+      linkToken = redirectUrl.searchParams.get("token") || "";
+    } catch {}
+  }
+  const redirectParam = `?redirect=${encodeURIComponent(redirect)}`;
+  if (linkToken && !email) {
+    try {
+      const cpPort = process.env.CP_PORT || "4001";
+      const res = await fetch(`http://localhost:${cpPort}/link-ssh/${encodeURIComponent(linkToken)}`);
+      if (res.ok) {
+        const data = (await res.json()) as { email: string };
+        email = data.email;
+        reply.setCookie("login_email", email, {
+          path: "/",
+          httpOnly: true,
+          maxAge: 600,
+          sameSite: "lax",
+        });
+      }
+    } catch {}
+  }
+
+  let html = loginHtml.replace(/__REDIRECT_PARAM__/g, redirectParam);
+  html = html.replace(/__EMAIL_VALUE__/g, email);
   reply.type("text/html").send(html);
 });
 

@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS envs (
   status            TEXT NOT NULL DEFAULT 'creating'
                     CHECK(status IN ('creating', 'running', 'stopped', 'paused', 'snapshotted', 'error')),
   created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
-  pages_port        INTEGER UNIQUE
+  pages_port        INTEGER UNIQUE,
+  mem_size_mib      INTEGER NOT NULL DEFAULT 512
 );
 
 CREATE INDEX IF NOT EXISTS idx_envs_owner ON envs(owner_id);

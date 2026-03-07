@@ -20,6 +20,11 @@ try { db.exec("ALTER TABLE users ADD COLUMN github_username TEXT"); } catch { /*
 try { db.exec("ALTER TABLE users ADD COLUMN ssh_public_keys TEXT"); } catch { /* already exists */ }
 try { db.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0"); } catch { /* already exists */ }
 try { db.exec("ALTER TABLE users ADD COLUMN github_token TEXT"); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE users ADD COLUMN plan TEXT DEFAULT 'base'"); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE users ADD COLUMN trial_started_at DATETIME"); } catch { /* already exists */ }
+
+// Backfill: set trial_started_at for existing base users who don't have it
+db.exec("UPDATE users SET trial_started_at = created_at WHERE trial_started_at IS NULL AND plan = 'base' AND id != 'dev-user'");
 
 // Seed admin user
 db.prepare("UPDATE users SET is_admin = 1 WHERE email = ?").run("bilalbakhtahmad@gmail.com");
@@ -39,6 +44,8 @@ export interface User {
   ssh_public_keys: string | null;
   github_token: string | null;
   is_admin: number;
+  plan: string;
+  trial_started_at: string | null;
   created_at: string;
 }
 
@@ -81,8 +88,8 @@ export function findUserById(id: string): User | undefined {
 }
 
 const insertUserStmt = db.prepare(`
-  INSERT INTO users (id, email, name, github_id, github_username, google_id, avatar_url)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO users (id, email, name, github_id, github_username, google_id, avatar_url, trial_started_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 `);
 
 const updateUserGithubStmt = db.prepare(`

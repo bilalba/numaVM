@@ -1,5 +1,5 @@
 {
-  "name": "@deploymagi/control-plane",
+  "name": "@numavm/control-plane",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -18,7 +18,8 @@
     "nanoid": "^5.1.5",
     "node-pty": "^1.0.0",
     "octokit": "^4.1.2",
-    "ssh2": "^1.17.0"
+    "ssh2": "^1.17.0",
+    "stripe": "^20.4.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
