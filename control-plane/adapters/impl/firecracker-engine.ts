@@ -19,6 +19,7 @@ import {
   reconcileRunningVMs as _reconcileRunningVMs,
   destroyAllVMs as _destroyAllVMs,
   getDataDir,
+  getAvailableImages as _getAvailableImages,
 } from "../../services/firecracker.js";
 import { execInVM, spawnPtyOverVsock, spawnProcessOverVsock } from "../../services/vsock-ssh.js";
 import { allocatePorts, allocateCid, cidToVmIp } from "../../services/port-allocator.js";
@@ -128,6 +129,10 @@ export class FirecrackerEngine implements IVMEngine {
 
   hasRootfs(vmId: string): boolean {
     return existsSync(join(getDataDir(), vmId, "rootfs.ext4"));
+  }
+
+  getAvailableImages(): { distro: string; version: number; distro_version: string; node_version: string }[] {
+    return _getAvailableImages();
   }
 
   // --- Monitoring ---

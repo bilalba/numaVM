@@ -548,6 +548,8 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     status_detail: null,
     mem_size_mib: memSizeMib,
     disk_size_gib: diskSizeGib,
+    image: "alpine",
+    image_version: 1,
   });
   getDatabase().grantAccess(slug, user.userId, "owner");
 

@@ -26,6 +26,7 @@ export interface CreateVMParams {
   vcpuCount?: number;
   memSizeMib?: number;
   diskSizeGib?: number;
+  image?: string;
   onProgress?: (detail: string) => void;
 }
 
@@ -115,6 +116,9 @@ export interface IVMEngine {
 
   /** Check if source VM has a rootfs available for cloning. */
   hasRootfs(vmId: string): boolean;
+
+  /** Get available rootfs images (distros) from the rootfs directory. */
+  getAvailableImages(): { distro: string; version: number; distro_version: string; node_version: string }[];
 
   // --- Monitoring (enterprise: aggregated from node agents) ---
 

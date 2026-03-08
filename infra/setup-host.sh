@@ -243,12 +243,23 @@ echo "Removed DNAT: host:${HOST_PORT} -> ${VM_IP}:${VM_PORT} (${PROTO})"
 TAPSCRIPT
 chmod +x "${INSTALL_DIR}/bin/remove-dnat"
 
-# --- 7. Create data directories ---
+# --- 7. Install build dependencies for rootfs images ---
+
+echo "Installing rootfs build dependencies..."
+if command -v apt-get &>/dev/null; then
+  apt-get install -y debootstrap 2>/dev/null || echo "  WARNING: Failed to install debootstrap (needed for Ubuntu rootfs)"
+elif command -v yum &>/dev/null; then
+  yum install -y debootstrap 2>/dev/null || echo "  WARNING: Failed to install debootstrap (needed for Ubuntu rootfs)"
+else
+  echo "  NOTE: Install debootstrap manually if you plan to build Ubuntu rootfs images"
+fi
+
+# --- 8. Create data directories ---
 
 mkdir -p "${DATA_DIR}"
 echo "Data directory: ${DATA_DIR}"
 
-# --- 8. Create systemd service for bridge persistence (optional) ---
+# --- 9. Create systemd service for bridge persistence (optional) ---
 
 cat > /etc/systemd/system/numavm-bridge.service <<EOF
 [Unit]
@@ -281,6 +292,8 @@ echo "  - DNAT helpers:   ${INSTALL_DIR}/bin/{add,remove}-dnat"
 echo "  - Data dir:       ${DATA_DIR}"
 echo ""
 echo "Next steps:"
-echo "  1. Build the rootfs:  cd ../vm && sudo ./build-rootfs.sh"
+echo "  1. Build rootfs images:"
+echo "       cd ../vm && sudo ./build-rootfs.sh --distro alpine"
+echo "       cd ../vm && sudo ./build-rootfs.sh --distro ubuntu"
 echo "  2. Test a VM manually before wiring up the control plane"
 echo "  3. Update .env with FC_INSTALL_DIR=${INSTALL_DIR}"

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { api, githubConnectUrl, type VMSummary, type GitHubRepo, type RamQuota } from "../lib/api";
+import { api, githubConnectUrl, type VMSummary, type GitHubRepo, type RamQuota, type ImageInfo } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { SshKeysPanel } from "../components/SshKeysPanel";
 import { relativeTime } from "../lib/time";
@@ -157,6 +157,8 @@ export function VMList() {
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [memSizeMib, setMemSizeMib] = useState(256);
   const [diskSizeGib, setDiskSizeGib] = useState(1);
+  const [selectedImage, setSelectedImage] = useState("alpine");
+  const [availableImages, setAvailableImages] = useState<ImageInfo[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [ramQuota, setRamQuota] = useState<RamQuota | null>(null);
   const [pausingIds, setPausingIds] = useState<Set<string>>(new Set());
@@ -200,6 +202,10 @@ export function VMList() {
     loadVMs();
     loadQuota();
     api.getGithubStatus().then(setGithubStatus).catch(() => {});
+    api.getImages().then((data) => {
+      setAvailableImages(data.images);
+      setSelectedImage(data.default);
+    }).catch(() => {});
   }, []);
 
   const loadRepos = (query: string, page: number) => {
@@ -234,6 +240,7 @@ export function VMList() {
     setNewRepoPrivate(true);
     setMemSizeMib(512);
     setDiskSizeGib(5);
+    setSelectedImage("alpine");
     setShowAdvanced(false);
   };
 
@@ -302,7 +309,7 @@ export function VMList() {
         const created = await api.createGithubRepo(newRepoName.trim(), newRepoPrivate);
         ghRepo = created.fullName;
       }
-      await api.createVM({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib });
+      await api.createVM({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib, image: selectedImage });
       setNewName("");
       setShowCreate(false);
       resetRepoState();
@@ -411,7 +418,7 @@ export function VMList() {
               className="text-neutral-400 hover:text-neutral-600 text-[11px] cursor-pointer"
             >
               {showAdvanced ? "\u25BE" : "\u25B8"} Advanced
-              {!showAdvanced && <span className="ml-2 text-neutral-500">{memSizeMib >= 1024 ? `${(memSizeMib / 1024).toFixed(memSizeMib % 1024 ? 2 : 0)} GB` : `${memSizeMib} MB`} RAM, {diskSizeGib} GB disk</span>}
+              {!showAdvanced && <span className="ml-2 text-neutral-500">{memSizeMib >= 1024 ? `${(memSizeMib / 1024).toFixed(memSizeMib % 1024 ? 2 : 0)} GB` : `${memSizeMib} MB`} RAM, {diskSizeGib} GB disk{selectedImage !== "alpine" ? `, ${selectedImage}` : ""}</span>}
             </button>
             {showAdvanced && (
               <div className="mt-3 space-y-4">
@@ -485,6 +492,29 @@ export function VMList() {
                     })}
                   </div>
                 </div>
+                {availableImages.length > 1 && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-neutral-600">Image</label>
+                    </div>
+                    <div className="flex gap-1.5">
+                      {availableImages.map((img) => (
+                        <button
+                          key={img.distro}
+                          type="button"
+                          onClick={() => setSelectedImage(img.distro)}
+                          className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer ${
+                            selectedImage === img.distro
+                              ? "border-foreground bg-surface font-medium"
+                              : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
+                          }`}
+                        >
+                          {img.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -650,6 +680,7 @@ export function VMList() {
               <div className="flex items-center justify-between text-xs text-neutral-500">
                 <span className="capitalize">{isPausing ? "Pausing..." : vm.role}</span>
                 <span>
+                  {vm.image !== "alpine" && <>{vm.image} &middot; </>}
                   {vm.mem_size_mib >= 1024
                     ? `${(vm.mem_size_mib / 1024).toFixed(vm.mem_size_mib % 1024 ? 2 : 0)} GB`
                     : `${vm.mem_size_mib} MB`}

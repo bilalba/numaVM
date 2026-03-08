@@ -123,6 +123,7 @@ export function VMDetail() {
           <span className="text-neutral-400">|</span>
           <span className="text-neutral-500 capitalize">
             {vm.role} &middot; {vm.status} &middot;{" "}
+            {vm.image && vm.image !== "alpine" ? `${vm.image} v${vm.image_version} \u00B7 ` : ""}
             {vm.mem_size_mib >= 1024
               ? `${(vm.mem_size_mib / 1024).toFixed(vm.mem_size_mib % 1024 ? 2 : 0)} GB`
               : `${vm.mem_size_mib} MB`} RAM

@@ -15,7 +15,7 @@ const DEFAULT_DISK_SIZE = 1;
 export function registerVMRoutes(app: FastifyInstance) {
   // Create VM
   app.post("/vms", async (request, reply) => {
-    const body = request.body as { name?: string; gh_repo?: string; private?: boolean; mem_size_mib?: number; disk_size_gib?: number };
+    const body = request.body as { name?: string; gh_repo?: string; private?: boolean; mem_size_mib?: number; disk_size_gib?: number; image?: string };
 
     if (!body.name || typeof body.name !== "string" || body.name.length < 1 || body.name.length > 64) {
       return reply.status(400).send({ error: "name is required (1-64 chars)" });
@@ -67,6 +67,20 @@ export function registerVMRoutes(app: FastifyInstance) {
       });
     }
 
+    // Resolve image (distro) — default to alpine
+    const image = body.image || "alpine";
+    let imageVersion = 1;
+    try {
+      const available = getVMEngine().getAvailableImages();
+      const imageInfo = available.find((i) => i.distro === image);
+      if (!imageInfo) {
+        return reply.status(400).send({ error: `Unknown image: ${image}. Available: ${available.map((i) => i.distro).join(", ")}` });
+      }
+      imageVersion = imageInfo.version;
+    } catch {
+      // If manifest is unavailable, allow creation with defaults
+    }
+
     const slug = `vm-${generateSlug()}`;
     const { appPort, sshPort, opencodePort, vsockCid, vmIp } = getVMEngine().allocateResources();
 
@@ -113,6 +127,8 @@ export function registerVMRoutes(app: FastifyInstance) {
       status_detail: null,
       mem_size_mib: memSizeMib,
       disk_size_gib: diskSizeGib,
+      image,
+      image_version: imageVersion,
     });
 
     // Grant owner access (used by auth verify for subdomain gating)
@@ -151,6 +167,7 @@ export function registerVMRoutes(app: FastifyInstance) {
           vmIp,
           memSizeMib: memSizeMib,
           diskSizeGib: diskSizeGib,
+          image,
           onProgress: (detail: string) => {
             getDatabase().updateVMStatusDetail(slug, detail);
           },
@@ -230,6 +247,8 @@ export function registerVMRoutes(app: FastifyInstance) {
         created_at: e.created_at,
         mem_size_mib: e.mem_size_mib,
         disk_size_gib: e.disk_size_gib,
+        image: e.image,
+        image_version: e.image_version,
       })),
     };
   });
@@ -317,6 +336,8 @@ export function registerVMRoutes(app: FastifyInstance) {
       created_at: vm.created_at,
       mem_size_mib: vm.mem_size_mib,
       disk_size_gib: vm.disk_size_gib,
+      image: vm.image,
+      image_version: vm.image_version,
       ...(quotaError ? { quota_error: quotaError } : {}),
       ...(diskQuotaError ? { disk_quota_error: diskQuotaError } : {}),
       ...(dataQuotaError ? { data_quota_error: dataQuotaError } : {}),
@@ -504,6 +525,8 @@ export function registerVMRoutes(app: FastifyInstance) {
       status_detail: null,
       mem_size_mib: cloneMemSize,
       disk_size_gib: cloneDiskSize,
+      image: sourceVM.image,
+      image_version: sourceVM.image_version,
     });
     getDatabase().grantAccess(slug, request.userId, "owner");
 
@@ -749,6 +772,32 @@ export function registerVMRoutes(app: FastifyInstance) {
     } catch (err: any) {
       request.log.error({ err, id }, "Failed to sync SSH keys");
       return reply.status(500).send({ error: "Failed to sync SSH keys", details: err.message });
+    }
+  });
+
+  // Available rootfs images (no auth required — used by create form)
+  app.get("/images", async () => {
+    const distroLabels: Record<string, string> = {
+      alpine: "Alpine Linux (faster boot)",
+      ubuntu: "Ubuntu (glibc)",
+    };
+
+    try {
+      const available = getVMEngine().getAvailableImages();
+      return {
+        images: available.map((img) => ({
+          distro: img.distro,
+          label: distroLabels[img.distro] || img.distro,
+          distro_version: img.distro_version,
+          node_version: img.node_version,
+        })),
+        default: "alpine",
+      };
+    } catch {
+      return {
+        images: [{ distro: "alpine", label: distroLabels.alpine, distro_version: "", node_version: "" }],
+        default: "alpine",
+      };
     }
   });
 }

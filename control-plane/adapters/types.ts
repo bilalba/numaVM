@@ -20,6 +20,8 @@ export interface VM {
   created_at: string;
   mem_size_mib: number;
   disk_size_gib: number;
+  image: string;
+  image_version: number;
 }
 
 export interface VMWithRole extends VM {

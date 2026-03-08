@@ -1,32 +1,88 @@
 #!/bin/bash
 set -euo pipefail
 
-# NumaVM — Build Alpine Rootfs for Firecracker
+# NumaVM — Build Rootfs for Firecracker
 #
-# Builds a minimal Alpine ext4 rootfs image with all packages pre-installed.
-# This image is used as the read-only base layer; each VM gets a writable
-# overlay on top.
+# Framework that sources distro-specific profiles to build ext4 rootfs images.
+# Each VM gets its own copy at creation time; updating base images has no effect
+# on existing VMs.
 #
-# Usage: sudo ./build-rootfs.sh [output-path]
-# Requires: root, debootstrap or alpine-make-rootfs, e2fsprogs
+# Usage: sudo ./build-rootfs.sh [--distro <name>] [--output-dir <path>]
+# Distros: alpine (default), ubuntu
+# Requires: root, e2fsprogs, curl
+#            + debootstrap (for ubuntu)
 
-OUTPUT="${1:-/opt/firecracker/rootfs/base.ext4}"
+# --- Parse arguments ---
+
+DISTRO="alpine"
+OUTPUT_DIR="/opt/firecracker/rootfs"
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-4096}"
-ALPINE_VERSION="${ALPINE_VERSION:-3.21}"
-ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
 ARCH="$(uname -m)"
 
-# Map arch for Alpine
-case "$ARCH" in
-  x86_64) ALPINE_ARCH="x86_64" ;;
-  aarch64) ALPINE_ARCH="aarch64" ;;
-  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --distro)
+      DISTRO="$2"
+      shift 2
+      ;;
+    --output-dir)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --size)
+      ROOTFS_SIZE_MB="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: sudo ./build-rootfs.sh [--distro <name>] [--output-dir <path>] [--size <mb>]" >&2
+      exit 1
+      ;;
+  esac
+done
 
-echo "=== Building Alpine Rootfs ==="
+export ARCH
+
+# --- Validate distro profile ---
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DISTRO_PROFILE="${SCRIPT_DIR}/distros/${DISTRO}.sh"
+
+if [ ! -f "${DISTRO_PROFILE}" ]; then
+  echo "ERROR: Unknown distro '${DISTRO}'. Available:" >&2
+  ls "${SCRIPT_DIR}/distros/"*.sh 2>/dev/null | xargs -I{} basename {} .sh | sed 's/^/  /' >&2
+  exit 1
+fi
+
+# Source the distro profile (defines distro_* functions)
+# shellcheck source=/dev/null
+source "${DISTRO_PROFILE}"
+
+# --- Version calculation ---
+
+MANIFEST="${OUTPUT_DIR}/manifest.json"
+VERSION=1
+
+if [ -f "${MANIFEST}" ]; then
+  # Find the highest version for this distro and increment
+  EXISTING=$(python3 -c "
+import json, sys
+try:
+  m = json.load(open('${MANIFEST}'))
+  versions = [i['version'] for i in m.get('images', []) if i['distro'] == '${DISTRO}']
+  print(max(versions) if versions else 0)
+except: print(0)
+" 2>/dev/null || echo "0")
+  VERSION=$((EXISTING + 1))
+fi
+
+OUTPUT="${OUTPUT_DIR}/${DISTRO}-v${VERSION}.ext4"
+
+echo "=== Building ${DISTRO} Rootfs ==="
 echo "Output: ${OUTPUT}"
+echo "Version: v${VERSION}"
 echo "Size: ${ROOTFS_SIZE_MB}MB"
-echo "Alpine: ${ALPINE_VERSION} (${ALPINE_ARCH})"
+echo "Arch: ${ARCH}"
 echo ""
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -34,10 +90,12 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-# Create output directory
-mkdir -p "$(dirname "${OUTPUT}")"
+# --- Create output directory ---
 
-# Working directory
+mkdir -p "${OUTPUT_DIR}"
+
+# --- Working directory ---
+
 WORKDIR=$(mktemp -d)
 MOUNTDIR="${WORKDIR}/rootfs"
 mkdir -p "${MOUNTDIR}"
@@ -53,75 +111,47 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- Create ext4 image ---
+# ============================================================
+# Phase 1: Create ext4 image (shared)
+# ============================================================
 
 echo "Creating ${ROOTFS_SIZE_MB}MB ext4 image..."
 dd if=/dev/zero of="${OUTPUT}" bs=1M count="${ROOTFS_SIZE_MB}" status=progress
 mkfs.ext4 -F -L numavm-root "${OUTPUT}"
 
-# Mount it
 LOOP=$(losetup --find --show "${OUTPUT}")
 mount "${LOOP}" "${MOUNTDIR}"
 
-# --- Bootstrap Alpine ---
+# ============================================================
+# Phase 2: Bootstrap (distro-specific)
+# ============================================================
 
-echo "Bootstrapping Alpine Linux ${ALPINE_VERSION}..."
-
-# Download and extract Alpine minirootfs
-MINIROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_VERSION}.0-${ALPINE_ARCH}.tar.gz"
-echo "Downloading: ${MINIROOTFS_URL}"
-curl -fsSL "${MINIROOTFS_URL}" | tar -xz -C "${MOUNTDIR}"
-
-# Set up resolv.conf for package installation
-cp /etc/resolv.conf "${MOUNTDIR}/etc/resolv.conf"
+distro_bootstrap "${MOUNTDIR}"
 
 # Mount proc/sys/dev for chroot
 mount -t proc proc "${MOUNTDIR}/proc"
 mount -t sysfs sys "${MOUNTDIR}/sys"
 mount --bind /dev "${MOUNTDIR}/dev"
 
-# Configure Alpine repositories
-# Use edge for Node.js + matching libssl/libcrypto
-cat > "${MOUNTDIR}/etc/apk/repositories" <<EOF
-${ALPINE_MIRROR}/v${ALPINE_VERSION}/main
-${ALPINE_MIRROR}/v${ALPINE_VERSION}/community
-${ALPINE_MIRROR}/edge/main
-${ALPINE_MIRROR}/edge/community
-${ALPINE_MIRROR}/edge/testing
-EOF
+# ============================================================
+# Phase 3: Install packages (distro-specific)
+# ============================================================
 
-# --- Install packages ---
+distro_install_packages "${MOUNTDIR}"
 
-echo "Installing packages..."
+# ============================================================
+# Phase 4: Install Node.js (distro-specific)
+# ============================================================
 
-chroot "${MOUNTDIR}" apk update
-
-# Core system
-chroot "${MOUNTDIR}" apk add --no-cache \
-  bash coreutils util-linux \
-  openrc \
-  openssh openssh-server \
-  sudo shadow \
-  curl wget jq \
-  git tmux \
-  python3 py3-pip \
-  build-base \
-  socat \
-  e2fsprogs \
-  iptables \
-  procps
-
-# Node.js from edge — must upgrade libssl3/libcrypto3 first to match edge's Node
-chroot "${MOUNTDIR}" apk upgrade --no-cache \
-  --repository="${ALPINE_MIRROR}/edge/main" \
-  libssl3 libcrypto3
-chroot "${MOUNTDIR}" apk add --no-cache nodejs npm
+distro_install_node "${MOUNTDIR}"
 
 # Verify Node.js version
 NODE_VERSION=$(chroot "${MOUNTDIR}" node --version 2>/dev/null || echo "none")
 echo "Node.js version: ${NODE_VERSION}"
 
-# --- Install agent CLIs ---
+# ============================================================
+# Phase 5: Install agent CLIs (shared)
+# ============================================================
 
 echo "Installing agent CLIs..."
 
@@ -148,27 +178,25 @@ fi
 # PM2 process manager
 chroot "${MOUNTDIR}" npm install -g pm2
 
-# --- Create dev user ---
+# ============================================================
+# Phase 6: Create user (distro-specific)
+# ============================================================
 
-echo "Setting up dev user..."
+distro_create_user "${MOUNTDIR}"
 
-chroot "${MOUNTDIR}" adduser -D -s /bin/bash dev
-# Unlock account — OpenSSH 10+ rejects pubkey auth for locked accounts ("!" in shadow)
-chroot "${MOUNTDIR}" sed -i 's/^dev:!:/dev:*:/' /etc/shadow
-chroot "${MOUNTDIR}" sh -c 'echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers'
-mkdir -p "${MOUNTDIR}/home/dev/.ssh"
-chmod 700 "${MOUNTDIR}/home/dev/.ssh"
-chroot "${MOUNTDIR}" chown -R dev:dev /home/dev
-
-# --- Configure SSH ---
+# ============================================================
+# Phase 7: Configure SSH (shared)
+# ============================================================
 
 echo "Configuring SSH..."
 
 # Generate host keys
 chroot "${MOUNTDIR}" ssh-keygen -A
 
-# Configure sshd
-cat > "${MOUNTDIR}/etc/ssh/sshd_config" <<'SSHD_CONF'
+# Configure sshd — use distro-specific SFTP path
+SFTP_PATH=$(distro_sftp_path)
+
+cat > "${MOUNTDIR}/etc/ssh/sshd_config" <<SSHD_CONF
 Port 22
 PermitRootLogin no
 PasswordAuthentication no
@@ -179,18 +207,19 @@ UsePAM no
 X11Forwarding no
 PrintMotd yes
 AcceptEnv LANG LC_*
-Subsystem sftp /usr/lib/ssh/sftp-server
+Subsystem sftp ${SFTP_PATH}
 SSHD_CONF
 
-# --- Configure init system ---
+# ============================================================
+# Phase 8: Init scripts (shared)
+# ============================================================
 
 echo "Configuring init..."
 
-# Enable OpenRC services
+# Enable OpenRC services (Alpine-specific but harmless on Ubuntu)
 chroot "${MOUNTDIR}" rc-update add sshd default 2>/dev/null || true
 
-# Create a simple init script that will be PID 1
-# This is the main entry point when Firecracker boots the VM
+# Create numavm-init (PID 1)
 cat > "${MOUNTDIR}/sbin/numavm-init" <<'INIT'
 #!/bin/bash
 # NumaVM VM init — executed as PID 1 by the kernel
@@ -198,15 +227,15 @@ cat > "${MOUNTDIR}/sbin/numavm-init" <<'INIT'
 
 set -e
 
-# Mount essential filesystems
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
+# Mount essential filesystems (use mountpoint to skip already-mounted ones)
+mountpoint -q /proc  || mount -t proc proc /proc
+mountpoint -q /sys   || mount -t sysfs sysfs /sys
+mountpoint -q /dev   || mount -t devtmpfs devtmpfs /dev
 mkdir -p /dev/pts /dev/shm
-mount -t devpts devpts /dev/pts
-mount -t tmpfs tmpfs /dev/shm
-mount -t tmpfs tmpfs /run
-mount -t tmpfs tmpfs /tmp
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
+mountpoint -q /dev/shm || mount -t tmpfs tmpfs /dev/shm
+mountpoint -q /run     || mount -t tmpfs tmpfs /run
+mountpoint -q /tmp     || mount -t tmpfs tmpfs /tmp
 
 # Parse kernel cmdline for env vars
 eval $(cat /proc/cmdline | tr ' ' '\n' | grep '^dm\.' | sed 's/^dm\./export DM_/' | sed 's/=\(.*\)/="\1"/')
@@ -228,14 +257,15 @@ chmod +x "${MOUNTDIR}/sbin/numavm-init"
 mkdir -p "${MOUNTDIR}/opt/numavm"
 
 # Copy the actual init script
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "${SCRIPT_DIR}/init.sh" ]; then
   cp "${SCRIPT_DIR}/init.sh" "${MOUNTDIR}/opt/numavm/init.sh"
   chmod +x "${MOUNTDIR}/opt/numavm/init.sh"
   echo "Installed init.sh to /opt/numavm/init.sh"
 fi
 
-# --- Create MOTD ---
+# ============================================================
+# Phase 9: MOTD (shared)
+# ============================================================
 
 cat > "${MOUNTDIR}/etc/motd" <<'MOTD'
   _   _                     __     ____  __
@@ -250,19 +280,20 @@ cat > "${MOUNTDIR}/etc/motd" <<'MOTD'
   Set ANTHROPIC_API_KEY or run `claude /login` to authenticate.
 MOTD
 
-# --- Create swap file ---
+# ============================================================
+# Phase 10: Swap (shared)
+# ============================================================
 
 echo "Creating 1GB swap file..."
 dd if=/dev/zero of="${MOUNTDIR}/swapfile" bs=1M count=1024 status=progress
 chmod 600 "${MOUNTDIR}/swapfile"
 mkswap "${MOUNTDIR}/swapfile"
 
-# --- Cleanup ---
+# ============================================================
+# Phase 11: Cleanup (distro-specific + shared)
+# ============================================================
 
-echo "Cleaning up rootfs..."
-
-# Remove APK cache
-rm -rf "${MOUNTDIR}/var/cache/apk/*"
+distro_cleanup "${MOUNTDIR}"
 
 # Remove npm cache (can be 100MB+)
 rm -rf "${MOUNTDIR}/root/.npm" "${MOUNTDIR}/tmp/"*
@@ -270,19 +301,73 @@ rm -rf "${MOUNTDIR}/root/.npm" "${MOUNTDIR}/tmp/"*
 # Remove resolv.conf (will be set at boot)
 rm -f "${MOUNTDIR}/etc/resolv.conf"
 
-# Unmount
+# ============================================================
+# Phase 12: Write manifest (shared)
+# ============================================================
+
+echo "Writing manifest..."
+
+# Compute SHA256
 umount "${MOUNTDIR}/dev"
 umount "${MOUNTDIR}/sys"
 umount "${MOUNTDIR}/proc"
 umount "${MOUNTDIR}"
 losetup -d "${LOOP}"
 
+SHA256=$(sha256sum "${OUTPUT}" | awk '{print $1}')
+SIZE_BYTES=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "0")
+DISTRO_VERSION=$(distro_version_string)
+BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Read existing manifest or create empty one
+if [ -f "${MANIFEST}" ]; then
+  MANIFEST_JSON=$(cat "${MANIFEST}")
+else
+  MANIFEST_JSON='{"images":[]}'
+fi
+
+# Append new entry
+MANIFEST_JSON=$(python3 -c "
+import json, sys
+m = json.loads('''${MANIFEST_JSON}''')
+m['images'].append({
+  'distro': '${DISTRO}',
+  'version': ${VERSION},
+  'distro_version': '${DISTRO_VERSION}',
+  'node_version': '${NODE_VERSION}',
+  'built_at': '${BUILT_AT}',
+  'sha256': '${SHA256}',
+  'size_bytes': ${SIZE_BYTES}
+})
+print(json.dumps(m, indent=2))
+")
+echo "${MANIFEST_JSON}" > "${MANIFEST}"
+
+# ============================================================
+# Phase 13: Create symlinks (shared)
+# ============================================================
+
+echo "Creating symlinks..."
+
+# Latest symlink: alpine.ext4 -> alpine-v1.ext4
+ln -sf "${DISTRO}-v${VERSION}.ext4" "${OUTPUT_DIR}/${DISTRO}.ext4"
+echo "  ${DISTRO}.ext4 -> ${DISTRO}-v${VERSION}.ext4"
+
+# Backward compat: base.ext4 -> alpine.ext4 (only for alpine, the default)
+if [ "${DISTRO}" = "alpine" ]; then
+  ln -sf "alpine.ext4" "${OUTPUT_DIR}/base.ext4"
+  echo "  base.ext4 -> alpine.ext4"
+fi
+
 # Reset trap (cleanup already done)
 trap - EXIT
 
 echo ""
 echo "=== Rootfs Built Successfully ==="
-echo "Output: ${OUTPUT}"
-echo "Size: $(du -h "${OUTPUT}" | awk '{print $1}')"
+echo "Distro:  ${DISTRO} v${VERSION}"
+echo "Output:  ${OUTPUT}"
+echo "Size:    $(du -h "${OUTPUT}" | awk '{print $1}')"
+echo "Node.js: ${NODE_VERSION}"
+echo "SHA256:  ${SHA256}"
 echo ""
-echo "To use with Firecracker, set FC_ROOTFS=${OUTPUT} in your config."
+echo "Manifest: ${MANIFEST}"

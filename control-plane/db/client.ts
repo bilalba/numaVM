@@ -128,6 +128,13 @@ if (!vmCols4.some((c) => c.name === "disk_size_gib")) {
   db.exec("ALTER TABLE vms ADD COLUMN disk_size_gib INTEGER NOT NULL DEFAULT 5");
 }
 
+// Migrate: add image + image_version columns to vms
+const vmCols5 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols5.some((c) => c.name === "image")) {
+  db.exec("ALTER TABLE vms ADD COLUMN image TEXT NOT NULL DEFAULT 'alpine'");
+  db.exec("ALTER TABLE vms ADD COLUMN image_version INTEGER NOT NULL DEFAULT 1");
+}
+
 // Migrate: add owner_id to vm_traffic so data usage survives VM deletion
 const trafficCols = db.pragma("table_info(vm_traffic)") as { name: string }[];
 if (!trafficCols.some((c) => c.name === "owner_id")) {
@@ -179,6 +186,8 @@ export interface VM {
   created_at: string;
   mem_size_mib: number;
   disk_size_gib: number;
+  image: string;
+  image_version: number;
 }
 
 export interface VMWithRole extends VM {
@@ -219,15 +228,16 @@ export function clearUserGithubToken(userId: string): void {
 // --- VM CRUD ---
 
 const insertVMStmt = db.prepare(`
-  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib, disk_size_gib)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib, disk_size_gib, image, image_version)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 export function insertVM(vm: Omit<VM, "created_at">): void {
   insertVMStmt.run(
     vm.id, vm.name, vm.owner_id, vm.gh_repo, vm.gh_token,
     vm.container_id, vm.vm_ip, vm.vsock_cid, vm.vm_pid, vm.snapshot_path,
     vm.app_port, vm.ssh_port, vm.opencode_port,
-    vm.opencode_password, vm.status, vm.mem_size_mib, vm.disk_size_gib
+    vm.opencode_password, vm.status, vm.mem_size_mib, vm.disk_size_gib,
+    vm.image, vm.image_version
   );
 }
 

@@ -1,12 +1,72 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // --- Config (lazy reads for ESM import hoisting) ---
 
 function getFcBin() { return process.env.FC_BIN || "/opt/firecracker/bin/firecracker"; }
 function getKernelPath() { return process.env.FC_KERNEL || "/opt/firecracker/kernel/vmlinux"; }
-function getRootfsPath() { return process.env.FC_ROOTFS || "/opt/firecracker/rootfs/base.ext4"; }
+function getRootfsDir() { return process.env.FC_ROOTFS_DIR || "/opt/firecracker/rootfs"; }
+
+function resolveRootfsPath(image?: string): string {
+  // Backward compat: explicit FC_ROOTFS env var overrides everything
+  if (process.env.FC_ROOTFS) return process.env.FC_ROOTFS;
+  const distro = image || "alpine";
+  const rootfsDir = getRootfsDir();
+  // Try versioned symlink first (e.g. alpine.ext4 -> alpine-v1.ext4)
+  const symlinkPath = join(rootfsDir, `${distro}.ext4`);
+  if (existsSync(symlinkPath)) return symlinkPath;
+  // Fallback to base.ext4 for backward compat (only for alpine)
+  if (distro === "alpine") {
+    const basePath = join(rootfsDir, "base.ext4");
+    if (existsSync(basePath)) return basePath;
+  }
+  throw new Error(`Rootfs not found for image '${distro}' at ${symlinkPath}`);
+}
+
+export function getAvailableImages(): { distro: string; version: number; distro_version: string; node_version: string }[] {
+  const rootfsDir = getRootfsDir();
+  const manifestPath = join(rootfsDir, "manifest.json");
+
+  if (existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+      const images = manifest.images as { distro: string; version: number; distro_version: string; node_version: string }[];
+      // Return only the latest version per distro
+      const latest = new Map<string, typeof images[0]>();
+      for (const img of images) {
+        const existing = latest.get(img.distro);
+        if (!existing || img.version > existing.version) {
+          latest.set(img.distro, img);
+        }
+      }
+      return Array.from(latest.values());
+    } catch {
+      // Fall through to detection
+    }
+  }
+
+  // Fallback: detect .ext4 files in rootfs dir
+  const detected: { distro: string; version: number; distro_version: string; node_version: string }[] = [];
+  try {
+    for (const f of readdirSync(rootfsDir) as string[]) {
+      // Match distro.ext4 symlinks (not versioned files)
+      const match = f.match(/^([a-z]+)\.ext4$/);
+      if (match && match[1] !== "base") {
+        detected.push({ distro: match[1], version: 1, distro_version: "", node_version: "" });
+      }
+    }
+  } catch {
+    // rootfs dir may not exist in dev
+  }
+
+  // Always include alpine as a fallback
+  if (detected.length === 0) {
+    detected.push({ distro: "alpine", version: 1, distro_version: "", node_version: "" });
+  }
+
+  return detected;
+}
 export function getDataDir() { return process.env.DATA_DIR || "/data/vms"; }
 function getSocketDir() { return process.env.FC_SOCKET_DIR || "/tmp"; }
 function getVmGateway() { return process.env.VM_GATEWAY || "172.16.0.1"; }
@@ -33,6 +93,7 @@ export interface CreateVMParams {
   vcpuCount?: number;
   memSizeMib?: number;
   diskSizeGib?: number;
+  image?: string;
   onProgress?: (detail: string) => void;
 }
 
@@ -198,6 +259,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     vcpuCount = getDefaultVcpu(),
     memSizeMib = getDefaultMem(),
     diskSizeGib = 5,
+    image,
     onProgress,
   } = params;
 
@@ -224,10 +286,11 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   const vmRootfs = join(dataDir, "rootfs.ext4");
   if (!existsSync(vmRootfs)) {
     // Create a sparse copy — uses reflinks on supported filesystems, falls back to cp
+    const baseRootfs = resolveRootfsPath(image);
     try {
-      execSync(`cp --reflink=auto "${getRootfsPath()}" "${vmRootfs}"`, { stdio: "pipe" });
+      execSync(`cp --reflink=auto "${baseRootfs}" "${vmRootfs}"`, { stdio: "pipe" });
     } catch {
-      execSync(`cp "${getRootfsPath()}" "${vmRootfs}"`, { stdio: "pipe" });
+      execSync(`cp "${baseRootfs}" "${vmRootfs}"`, { stdio: "pipe" });
     }
   }
 

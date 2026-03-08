@@ -31,6 +31,8 @@ export interface VMSummary {
   created_at: string;
   mem_size_mib: number;
   disk_size_gib: number;
+  image: string;
+  image_version: number;
 }
 
 export interface Quota {
@@ -74,6 +76,8 @@ export interface VMDetail {
   role: string;
   created_at: string;
   mem_size_mib: number;
+  image: string;
+  image_version: number;
   quota_error?: {
     message: string;
     current_ram_mib: number;
@@ -206,6 +210,13 @@ export interface Subscription {
   cancel_at_period_end: boolean;
 }
 
+export interface ImageInfo {
+  distro: string;
+  label: string;
+  distro_version: string;
+  node_version: string;
+}
+
 export interface GitHubRepo {
   fullName: string;
   name: string;
@@ -221,13 +232,15 @@ export const api = {
 
   getVM: (id: string) => apiFetch<VMDetail>(`/vms/${id}`),
 
-  createVM: (body: { name: string; gh_repo?: string; mem_size_mib?: number; disk_size_gib?: number }) =>
+  createVM: (body: { name: string; gh_repo?: string; mem_size_mib?: number; disk_size_gib?: number; image?: string }) =>
     apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
       "/vms",
       { method: "POST", body: JSON.stringify(body) }
     ),
 
   getRamQuota: () => apiFetch<Quota>("/vms/quota"),
+
+  getImages: () => apiFetch<{ images: ImageInfo[]; default: string }>("/images"),
 
   deleteVM: (id: string) =>
     apiFetch<{ ok: boolean }>(`/vms/${id}`, { method: "DELETE" }),
