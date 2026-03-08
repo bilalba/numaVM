@@ -260,7 +260,7 @@ export function CommandPalette({
       onClick={onClose}
     >
       <div
-        className="bg-white border border-neutral-300 w-full max-w-[500px] h-fit max-h-[60vh] flex flex-col shadow-lg"
+        className="bg-surface border border-neutral-300 w-full max-w-[500px] h-fit max-h-[60vh] flex flex-col shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search input */}
@@ -268,7 +268,7 @@ export function CommandPalette({
           {mode !== "commands" && (
             <button
               onClick={() => { setMode("commands"); setSearch(""); setSelectedIndex(0); }}
-              className="text-xs text-neutral-500 hover:text-black cursor-pointer mr-2 shrink-0"
+              className="text-xs text-neutral-500 hover:text-foreground cursor-pointer mr-2 shrink-0"
             >
               &larr;
             </button>
@@ -280,7 +280,7 @@ export function CommandPalette({
             onChange={(e) => { setSearch(e.target.value); setSelectedIndex(0); }}
             onKeyDown={handleKeyDown}
             placeholder="Type to filter..."
-            className="flex-1 border-0 bg-transparent px-0 py-2.5 text-sm text-black placeholder:text-neutral-400 focus:outline-none"
+            className="flex-1 border-0 bg-transparent px-0 py-2.5 text-sm text-foreground placeholder:text-neutral-400 focus:outline-none"
           />
         </div>
 
@@ -295,11 +295,11 @@ export function CommandPalette({
                 onClick={item.action}
                 onMouseEnter={() => setSelectedIndex(i)}
                 className={`w-full text-left px-3 py-2 flex items-center justify-between cursor-pointer transition-colors ${
-                  i === selectedIndex ? "bg-neutral-100" : "hover:bg-neutral-50"
+                  i === selectedIndex ? "bg-neutral-100" : "hover:bg-neutral-100"
                 }`}
               >
                 <div className="min-w-0">
-                  <span className="text-xs text-black">{item.label}</span>
+                  <span className="text-xs text-foreground">{item.label}</span>
                   {item.description && (
                     <span className="text-[10px] text-neutral-500 ml-2">{item.description}</span>
                   )}

@@ -19,7 +19,7 @@ export function Sidebar() {
           className={({ isActive }) =>
             `px-2.5 py-1.5 text-xs rounded transition-colors ${
               isActive
-                ? "bg-neutral-900 text-white"
+                ? "bg-foreground text-background"
                 : "text-neutral-600 hover:bg-neutral-100"
             }`
           }

@@ -32,7 +32,7 @@ export function ClaudeCodeTab({ vmId, sshCommand }: ClaudeCodeTabProps) {
       <div className="bg-panel-chat border border-neutral-200 p-5">
         <h3 className="text-sm font-semibold mb-4">Connect via SSH</h3>
         <div className="flex items-center gap-3">
-          <code className="flex-1 bg-white border border-neutral-200 px-4 py-2 text-xs">
+          <code className="flex-1 bg-surface border border-neutral-200 px-4 py-2 text-xs">
             {sshCommand}
           </code>
           <button
@@ -54,14 +54,14 @@ export function ClaudeCodeTab({ vmId, sshCommand }: ClaudeCodeTabProps) {
           Your GitHub SSH keys are pre-configured.
         </p>
         <p className="text-xs text-neutral-500">
-          Set <code className="text-black bg-white border border-neutral-100 px-1.5 py-0.5 text-xs">ANTHROPIC_API_KEY</code> in
+          Set <code className="text-foreground bg-surface border border-neutral-100 px-1.5 py-0.5 text-xs">ANTHROPIC_API_KEY</code> in
           your shell, or run{" "}
-          <code className="text-black bg-white border border-neutral-100 px-1.5 py-0.5 text-xs">claude /login</code> to
+          <code className="text-foreground bg-surface border border-neutral-100 px-1.5 py-0.5 text-xs">claude /login</code> to
           authenticate interactively.
         </p>
         <p className="text-xs text-neutral-500 mt-2">
-          Run <code className="text-black bg-white border border-neutral-100 px-1.5 py-0.5 text-xs">claude</code> in{" "}
-          <code className="text-black bg-white border border-neutral-100 px-1.5 py-0.5 text-xs">~/repo</code> to start.
+          Run <code className="text-foreground bg-surface border border-neutral-100 px-1.5 py-0.5 text-xs">claude</code> in{" "}
+          <code className="text-foreground bg-surface border border-neutral-100 px-1.5 py-0.5 text-xs">~/repo</code> to start.
         </p>
       </div>
 
@@ -72,7 +72,7 @@ export function ClaudeCodeTab({ vmId, sshCommand }: ClaudeCodeTabProps) {
           <p className="text-xs text-neutral-500">Loading sessions...</p>
         ) : sessions.length === 0 ? (
           <p className="text-xs text-neutral-500">
-            No sessions yet. Run <code className="text-black bg-white border border-neutral-100 px-1.5 py-0.5 text-xs">claude</code> in the terminal to create one.
+            No sessions yet. Run <code className="text-foreground bg-surface border border-neutral-100 px-1.5 py-0.5 text-xs">claude</code> in the terminal to create one.
           </p>
         ) : (
           <ul className="space-y-0">

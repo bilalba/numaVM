@@ -61,7 +61,7 @@ function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: (id: numbe
 
   return (
     <div
-      className={`bg-white border border-neutral-300 border-l-4 ${ACCENT[item.type]} px-4 py-3 text-sm flex items-start gap-2 transition-opacity`}
+      className={`bg-surface border border-neutral-300 border-l-4 ${ACCENT[item.type]} px-4 py-3 text-sm flex items-start gap-2 transition-opacity`}
     >
       <span className="flex-1 break-words text-xs">{item.message}</span>
       <button

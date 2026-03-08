@@ -23,7 +23,7 @@ export function useToast(): ToastContextValue {
 const ACCENT: Record<ToastType, string> = {
   error: "border-l-red-500",
   success: "border-l-green-500",
-  info: "border-l-black",
+  info: "border-l-foreground",
 };
 
 const DISMISS_MS = 5000;
@@ -61,7 +61,7 @@ function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: (id: numbe
 
   return (
     <div
-      className={`bg-white border border-neutral-300 border-l-4 ${ACCENT[item.type]} px-4 py-3 text-sm flex items-start gap-2 transition-opacity`}
+      className={`bg-surface border border-neutral-300 border-l-4 ${ACCENT[item.type]} px-4 py-3 text-sm flex items-start gap-2 transition-opacity`}
     >
       <span className="flex-1 break-words text-xs">{item.message}</span>
       <button

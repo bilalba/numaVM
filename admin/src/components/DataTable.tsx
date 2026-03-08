@@ -69,7 +69,7 @@ export function DataTable<T extends Record<string, any>>({
         </thead>
         <tbody>
           {sorted.map((row, i) => (
-            <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-50">
+            <tr key={i} className="border-b border-neutral-100 hover:bg-neutral-100">
               {columns.map((col) => (
                 <td key={col.key} className="py-2 px-3">
                   {col.render ? col.render(row) : String(row[col.key] ?? "")}

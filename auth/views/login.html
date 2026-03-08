@@ -3,17 +3,49 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f8f4ee" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='700' font-size='16' fill='%23f8f4ee'%3EN%3C/text%3E%3C/svg%3E" />
   <title>Sign in — NumaVM</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap" rel="stylesheet" />
+  <script>
+    (function() {
+      var pref = localStorage.getItem('theme') || 'system';
+      var resolved = pref;
+      if (pref === 'system') {
+        resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', resolved);
+      document.documentElement.setAttribute('data-theme-pref', pref);
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', resolved === 'dark' ? '#1a1a1a' : '#f8f4ee');
+    })();
+  </script>
   <style>
+    :root {
+      --background: #f8f4ee;
+      --foreground: #000000;
+      --muted: #8a8a8a;
+      --surface: #ffffff;
+      --neutral-200: #e0dcd6;
+      --neutral-300: #d0ccc6;
+      --neutral-500: #8a8a8a;
+    }
+    [data-theme="dark"] {
+      --background: #1a1a1a;
+      --foreground: #e0e0e0;
+      --muted: #888888;
+      --surface: #2a2a2a;
+      --neutral-200: #333333;
+      --neutral-300: #444444;
+      --neutral-500: #888888;
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-      background: #f8f4ee;
-      color: #000;
+      background: var(--background);
+      color: var(--foreground);
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -21,43 +53,52 @@
     }
     .container { width: 100%; max-width: 24rem; margin: 0 auto; padding: 2rem; }
     .title { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; text-align: center; }
-    .subtitle { font-size: 0.75rem; color: #8a8a8a; text-align: center; margin-bottom: 2rem; }
+    .subtitle { font-size: 0.75rem; color: var(--muted); text-align: center; margin-bottom: 2rem; }
     .oauth-links { display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.5rem; }
     .oauth-link {
       display: flex; align-items: center; justify-content: center; gap: 0.75rem;
       font-size: 0.75rem; text-decoration: underline; text-underline-offset: 4px;
-      color: #000; transition: opacity 0.15s; cursor: pointer;
+      color: var(--foreground); transition: opacity 0.15s; cursor: pointer;
       padding: 0.5rem 0;
     }
     .oauth-link:hover { opacity: 0.6; }
     .oauth-link svg { width: 1rem; height: 1rem; flex-shrink: 0; }
     .divider { position: relative; margin-bottom: 1.5rem; }
-    .divider-line { width: 100%; border: 0; border-top: 1px solid #e5e5e5; }
+    .divider-line { width: 100%; border: 0; border-top: 1px solid var(--neutral-200); }
     .divider-text {
       position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      background: #f8f4ee; padding: 0 0.75rem; font-size: 10px; color: #8a8a8a;
+      background: var(--background); padding: 0 0.75rem; font-size: 10px; color: var(--muted);
     }
     .email-form { display: flex; flex-direction: column; gap: 0.75rem; }
     .email-input {
-      font-family: inherit; font-size: 0.875rem; color: #000;
-      border: 0; border-bottom: 1px solid #d4d4d4; background: transparent;
+      font-family: inherit; font-size: 0.875rem; color: var(--foreground);
+      border: 0; border-bottom: 1px solid var(--neutral-300); background: transparent;
       padding: 0.25rem 0; outline: none; width: 100%;
     }
-    .email-input::placeholder { color: #737373; }
-    .email-input:focus { border-bottom-color: #000; }
+    .email-input::placeholder { color: var(--neutral-500); }
+    .email-input:focus { border-bottom-color: var(--foreground); }
     .submit-btn {
-      font-family: inherit; font-size: 0.75rem; color: #000; background: transparent;
+      font-family: inherit; font-size: 0.75rem; color: var(--foreground); background: transparent;
       border: 0; text-decoration: underline; text-underline-offset: 4px;
       cursor: pointer; transition: opacity 0.15s; padding: 0.5rem 0;
     }
     .submit-btn:hover { opacity: 0.6; }
-    .message { margin-top: 1rem; text-align: center; font-size: 0.75rem; color: #8a8a8a; display: none; }
+    .message { margin-top: 1rem; text-align: center; font-size: 0.75rem; color: var(--muted); display: none; }
     .message.visible { display: block; }
     .message.success { color: #16a34a; }
     .message.error { color: #dc2626; }
+    .theme-toggle {
+      position: fixed; top: 0.75rem; right: 0.75rem;
+      background: none; border: 0; color: var(--muted); cursor: pointer;
+      padding: 0.25rem; transition: opacity 0.15s;
+    }
+    .theme-toggle:hover { opacity: 0.6; }
+    .theme-toggle svg { width: 14px; height: 14px; }
   </style>
 </head>
 <body>
+  <button class="theme-toggle" id="theme-toggle" title="Toggle theme"></button>
+
   <div class="container">
     <div>
       <h1 class="title">NumaVM</h1>
@@ -90,6 +131,44 @@
   </div>
 
   <script>
+    // Theme toggle
+    (function() {
+      var CYCLE = ['system', 'light', 'dark'];
+      var ICONS = {
+        system: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+        light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>',
+        dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>'
+      };
+      var btn = document.getElementById('theme-toggle');
+      var pref = localStorage.getItem('theme') || 'system';
+
+      function apply(p) {
+        var resolved = p;
+        if (p === 'system') resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', resolved);
+        document.documentElement.setAttribute('data-theme-pref', p);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', resolved === 'dark' ? '#1a1a1a' : '#f8f4ee');
+        btn.innerHTML = ICONS[p];
+        btn.title = 'Theme: ' + p;
+      }
+
+      apply(pref);
+
+      btn.addEventListener('click', function() {
+        var i = CYCLE.indexOf(pref);
+        pref = CYCLE[(i + 1) % CYCLE.length];
+        if (pref === 'system') localStorage.removeItem('theme');
+        else localStorage.setItem('theme', pref);
+        apply(pref);
+      });
+
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
+        if (pref === 'system') apply('system');
+      });
+    })();
+
+    // Email form
     const form = document.getElementById('email-form');
     const msg = document.getElementById('email-message');
     const subtitle = document.getElementById('subtitle');

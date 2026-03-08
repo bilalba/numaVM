@@ -474,7 +474,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
 
     return (
       <div className="flex items-center justify-center h-[calc(100vh-200px)] min-h-[400px] px-4">
-        <div className="border border-neutral-300 bg-white p-5 max-w-sm w-full text-center">
+        <div className="border border-neutral-300 bg-surface p-5 max-w-sm w-full text-center">
           <h2 className="text-sm font-semibold mb-2">Sign in to Codex</h2>
           <p className="text-xs text-neutral-500 mb-6">
             Codex requires authentication with your ChatGPT or OpenAI account.
@@ -497,7 +497,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
               <p className="text-xs text-neutral-500 mb-3">
                 2. Enter this device code:
               </p>
-              <div className="border border-neutral-300 bg-[#f8f4ee] py-3 px-6 inline-block mb-6">
+              <div className="border border-neutral-300 bg-background py-3 px-6 inline-block mb-6">
                 <span className="text-2xl font-semibold tracking-widest select-all">{deviceCode}</span>
               </div>
 
@@ -527,7 +527,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
 
               <div className="relative">
                 <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-neutral-200" /></div>
-                <div className="relative flex justify-center"><span className="bg-white px-3 text-[10px] text-neutral-500">or</span></div>
+                <div className="relative flex justify-center"><span className="bg-surface px-3 text-[10px] text-neutral-500">or</span></div>
               </div>
 
               {codexAuth.showApiKey ? (
@@ -537,7 +537,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
                     value={codexAuth.apiKeyInput || ""}
                     onChange={(e) => setCodexAuth((prev) => ({ ...prev, apiKeyInput: e.target.value }))}
                     placeholder="sk-..."
-                    className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none"
+                    className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none"
                   />
                   <button
                     onClick={handleApiKeyLogin}
@@ -571,18 +571,18 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
             <div className="relative min-w-0 flex-1 md:flex-none md:w-full">
               <button
                 onClick={() => setShowModelPicker(!showModelPicker)}
-                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black text-left cursor-pointer hover:border-black transition-colors truncate"
+                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground text-left cursor-pointer hover:border-foreground transition-colors truncate"
               >
                 {selectedOpenCodeModelLabel}
               </button>
               {showModelPicker && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowModelPicker(false)} />
-                  <div className="absolute left-0 top-full mt-1 z-50 w-64 bg-white border border-neutral-200 shadow-lg max-h-80 overflow-y-auto">
+                  <div className="absolute left-0 top-full mt-1 z-50 w-64 bg-surface border border-neutral-200 shadow-lg max-h-80 overflow-y-auto">
                     {/* Default option */}
                     <button
                       onClick={() => { setSelectedOpenCodeModel(""); setShowModelPicker(false); }}
-                      className={`w-full text-left px-3 py-2 text-xs hover:bg-neutral-50 cursor-pointer ${!selectedOpenCodeModel ? "font-semibold" : ""}`}
+                      className={`w-full text-left px-3 py-2 text-xs hover:bg-neutral-100 cursor-pointer ${!selectedOpenCodeModel ? "font-semibold" : ""}`}
                     >
                       Default
                     </button>
@@ -598,7 +598,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
                             <button
                               key={val}
                               onClick={() => { setSelectedOpenCodeModel(val); setShowModelPicker(false); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-50 cursor-pointer flex items-center justify-between ${selectedOpenCodeModel === val ? "font-semibold" : ""}`}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 cursor-pointer flex items-center justify-between ${selectedOpenCodeModel === val ? "font-semibold" : ""}`}
                             >
                               <span>{model.name || model.id}</span>
                               {selectedOpenCodeModel === val && <span className="text-neutral-400">&#10003;</span>}
@@ -636,7 +636,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
             <select
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
-              className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black focus:border-black focus:outline-none cursor-pointer min-w-0 flex-1 md:flex-none md:w-full"
+              className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground focus:border-foreground focus:outline-none cursor-pointer min-w-0 flex-1 md:flex-none md:w-full"
             >
               {modelOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -647,7 +647,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
           ) : null}
           <button
             onClick={openFolderPicker}
-            className="text-[10px] text-neutral-500 truncate py-0.5 cursor-pointer hover:text-black transition-colors text-left hidden md:block"
+            className="text-[10px] text-neutral-500 truncate py-0.5 cursor-pointer hover:text-foreground transition-colors text-left hidden md:block"
             title={`Working directory: ${sessionCwd}`}
           >
             cwd: {sessionCwd.replace("/home/dev/", "~/")}
@@ -801,7 +801,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
                 onKeyDown={handleKeyDown}
                 placeholder={`Message ${agentLabel}...`}
                 rows={1}
-                className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none resize-none min-h-[28px] max-h-32"
+                className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none resize-none min-h-[28px] max-h-32"
               />
               <button
                 onClick={handleSend}
@@ -819,7 +819,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
                 <select
                   value={selectedAgent}
                   onChange={(e) => setSelectedAgent(e.target.value)}
-                  className="border-0 border-b border-neutral-200 bg-transparent px-0 py-0 text-[10px] text-neutral-500 focus:border-black focus:outline-none cursor-pointer"
+                  className="border-0 border-b border-neutral-200 bg-transparent px-0 py-0 text-[10px] text-neutral-500 focus:border-foreground focus:outline-none cursor-pointer"
                 >
                   <option value="">build</option>
                   <option value="plan">plan</option>
@@ -864,10 +864,10 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
       {/* Folder picker modal */}
       {showFolderPicker && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setShowFolderPicker(false)}>
-          <div className="bg-white border border-neutral-300 w-80 max-h-96 flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-surface border border-neutral-300 w-80 max-h-96 flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="px-3 py-2 border-b border-neutral-200 flex items-center justify-between">
               <span className="text-xs font-semibold">Select working directory</span>
-              <button onClick={() => setShowFolderPicker(false)} className="text-xs text-neutral-500 hover:text-black cursor-pointer">&times;</button>
+              <button onClick={() => setShowFolderPicker(false)} className="text-xs text-neutral-500 hover:text-foreground cursor-pointer">&times;</button>
             </div>
             <div className="px-3 py-2 border-b border-neutral-200">
               <p className="text-[10px] text-neutral-500 truncate">{folderPath}</p>
@@ -876,7 +876,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
               {folderPath !== "/" && (
                 <button
                   onClick={() => browseFolders(folderPath.split("/").slice(0, -1).join("/") || "/")}
-                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-50 cursor-pointer text-neutral-500"
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 cursor-pointer text-neutral-500"
                 >
                   ..
                 </button>
@@ -890,7 +890,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
                   <button
                     key={entry.name}
                     onClick={() => browseFolders(`${folderPath === "/" ? "" : folderPath}/${entry.name}`)}
-                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-50 cursor-pointer flex items-center gap-1.5"
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 cursor-pointer flex items-center gap-1.5"
                   >
                     <span className="text-neutral-400">/</span>
                     {entry.name}
@@ -901,7 +901,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
             <div className="px-3 py-2 border-t border-neutral-200 flex justify-end gap-2">
               <button
                 onClick={() => setShowFolderPicker(false)}
-                className="text-xs text-neutral-500 hover:text-black cursor-pointer"
+                className="text-xs text-neutral-500 hover:text-foreground cursor-pointer"
               >
                 Cancel
               </button>

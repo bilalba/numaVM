@@ -11,7 +11,7 @@ const columns: Column<AdminUser>[] = [
       <span className="font-medium">
         {row.email}
         {row.is_admin ? (
-          <span className="ml-1.5 px-1 py-0.5 bg-neutral-900 text-white text-[9px] rounded">
+          <span className="ml-1.5 px-1 py-0.5 bg-foreground text-background text-[9px] rounded">
             admin
           </span>
         ) : null}

@@ -80,7 +80,7 @@ export function Traffic() {
               onClick={() => setHours(h)}
               className={`px-2 py-1 text-[10px] rounded cursor-pointer transition-colors ${
                 hours === h
-                  ? "bg-neutral-900 text-white"
+                  ? "bg-foreground text-background"
                   : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
               }`}
             >
@@ -102,7 +102,7 @@ export function Traffic() {
             <div key={s.vm_id} className="border border-neutral-200 bg-panel-chat">
               <button
                 onClick={() => setExpanded(expanded === s.vm_id ? null : s.vm_id)}
-                className="w-full flex items-center justify-between px-4 py-3 text-xs cursor-pointer hover:bg-neutral-50 transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 text-xs cursor-pointer hover:bg-neutral-100 transition-colors"
               >
                 <span className="font-medium">{s.vm_id}</span>
                 <div className="flex items-center gap-4">

@@ -150,7 +150,7 @@ export function FilesTab({ vmId }: FilesTabProps) {
       </div>
 
       {/* Content viewer (right panel) — full width on mobile when viewing a file */}
-      <div className={`${!mobileShowFile ? "hidden" : "flex"} md:flex flex-1 bg-white border border-neutral-200 flex-col overflow-hidden`}>
+      <div className={`${!mobileShowFile ? "hidden" : "flex"} md:flex flex-1 bg-surface border border-neutral-200 flex-col overflow-hidden`}>
         {fileLoading ? (
           <div className="flex-1 flex items-center justify-center text-neutral-500 text-xs">
             Loading file...
@@ -190,7 +190,7 @@ export function FilesTab({ vmId }: FilesTabProps) {
                 <table className="w-full border-collapse">
                   <tbody>
                     {(selectedFile.content || "").split("\n").map((line, i) => (
-                      <tr key={i} className="hover:bg-[#faf7f2]">
+                      <tr key={i} className="hover:bg-panel-sidebar">
                         <td className="text-right pr-3 sm:pr-4 pl-2 sm:pl-4 text-neutral-400 select-none w-8 sm:w-12 align-top border-r border-neutral-100">
                           {i + 1}
                         </td>

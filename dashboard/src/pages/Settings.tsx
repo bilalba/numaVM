@@ -30,17 +30,17 @@ export function Settings() {
         </Link>
       </div>
 
-      <h1 className="text-lg font-medium text-neutral-900 mb-6">Settings</h1>
+      <h1 className="text-lg font-medium text-foreground mb-6">Settings</h1>
 
       {/* GitHub connection */}
       <section className="mb-8">
-        <h2 className="text-sm font-medium text-neutral-900 mb-3">GitHub</h2>
+        <h2 className="text-sm font-medium text-foreground mb-3">GitHub</h2>
         <div className="border border-neutral-200 rounded p-4">
           {githubStatus?.connected ? (
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-neutral-600">Connected as </span>
-                <span className="font-medium text-neutral-900">{githubStatus.username}</span>
+                <span className="font-medium text-foreground">{githubStatus.username}</span>
               </div>
               <button
                 onClick={handleDisconnectGithub}
@@ -54,7 +54,7 @@ export function Settings() {
               <span className="text-neutral-500">Not connected</span>
               <a
                 href={githubConnectUrl(window.location.href)}
-                className="px-3 py-1.5 bg-neutral-900 text-white rounded hover:bg-neutral-800"
+                className="px-3 py-1.5 bg-foreground text-background rounded hover:opacity-80"
               >
                 Connect GitHub
               </a>
@@ -65,7 +65,7 @@ export function Settings() {
 
       {/* SSH keys */}
       <section>
-        <h2 className="text-sm font-medium text-neutral-900 mb-3">SSH Keys</h2>
+        <h2 className="text-sm font-medium text-foreground mb-3">SSH Keys</h2>
         <SshKeysPanel />
       </section>
     </div>

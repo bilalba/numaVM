@@ -10,7 +10,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end mb-3">
-        <div className="max-w-[80%] bg-white border border-neutral-200 px-4 py-2.5 text-sm whitespace-pre-wrap">
+        <div className="max-w-[80%] bg-surface border border-neutral-200 px-4 py-2.5 text-sm whitespace-pre-wrap">
           {message.content}
         </div>
       </div>
@@ -24,7 +24,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <summary className="px-3 py-2 text-xs text-neutral-500 cursor-pointer transition-opacity hover:opacity-60">
             Tool: {metadata?.tool || "unknown"}
           </summary>
-          <pre className="px-3 py-2 text-xs text-neutral-600 overflow-x-auto whitespace-pre-wrap border-t border-neutral-100 max-h-48 bg-white">
+          <pre className="px-3 py-2 text-xs text-neutral-600 overflow-x-auto whitespace-pre-wrap border-t border-neutral-100 max-h-48 bg-surface">
             {message.content}
           </pre>
         </details>
@@ -39,7 +39,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <summary className="px-3 py-2 text-xs text-neutral-500 cursor-pointer transition-opacity hover:opacity-60">
             Thinking
           </summary>
-          <div className="px-3 py-2 text-xs text-neutral-600 whitespace-pre-wrap border-t border-neutral-100 max-h-64 overflow-y-auto bg-white">
+          <div className="px-3 py-2 text-xs text-neutral-600 whitespace-pre-wrap border-t border-neutral-100 max-h-64 overflow-y-auto bg-surface">
             {message.content}
           </div>
         </details>
@@ -58,7 +58,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
   // assistant
   return (
     <div className="flex justify-start mb-3">
-      <div className="max-w-[80%] border border-neutral-100 bg-[#faf7f2] px-4 py-2.5 text-sm whitespace-pre-wrap">
+      <div className="max-w-[80%] border border-neutral-100 bg-panel-sidebar px-4 py-2.5 text-sm whitespace-pre-wrap">
         <AssistantContent content={message.content} />
       </div>
     </div>
@@ -79,7 +79,7 @@ function AssistantContent({ content }: { content: string }) {
           return (
             <pre
               key={i}
-              className="bg-white border border-neutral-200 px-3 py-2 my-2 text-xs overflow-x-auto"
+              className="bg-surface border border-neutral-200 px-3 py-2 my-2 text-xs overflow-x-auto"
             >
               {code}
             </pre>
@@ -87,7 +87,7 @@ function AssistantContent({ content }: { content: string }) {
         }
         if (part.startsWith("`") && part.endsWith("`")) {
           return (
-            <code key={i} className="bg-white border border-neutral-100 px-1.5 py-0.5 text-xs">
+            <code key={i} className="bg-surface border border-neutral-100 px-1.5 py-0.5 text-xs">
               {part.slice(1, -1)}
             </code>
           );
@@ -107,9 +107,9 @@ export function StreamingMessage({ text }: StreamingMessageProps) {
 
   return (
     <div className="flex justify-start mb-3">
-      <div className="max-w-[80%] border border-neutral-100 bg-[#faf7f2] px-4 py-2.5 text-sm whitespace-pre-wrap">
+      <div className="max-w-[80%] border border-neutral-100 bg-panel-sidebar px-4 py-2.5 text-sm whitespace-pre-wrap">
         {text}
-        <span className="inline-block w-1.5 h-3.5 bg-black ml-0.5 animate-[pulseDot_1s_ease-in-out_infinite]" />
+        <span className="inline-block w-1.5 h-3.5 bg-foreground ml-0.5 animate-[pulseDot_1s_ease-in-out_infinite]" />
       </div>
     </div>
   );
@@ -125,7 +125,7 @@ export function StreamingReasoning({ text }: StreamingMessageProps) {
           Thinking
           <span className="inline-block w-1 h-2.5 bg-neutral-400 ml-1 animate-[pulseDot_1s_ease-in-out_infinite]" />
         </summary>
-        <div className="px-3 py-2 text-xs text-neutral-600 whitespace-pre-wrap border-t border-neutral-100 max-h-48 overflow-y-auto bg-white">
+        <div className="px-3 py-2 text-xs text-neutral-600 whitespace-pre-wrap border-t border-neutral-100 max-h-48 overflow-y-auto bg-surface">
           {text}
         </div>
       </details>

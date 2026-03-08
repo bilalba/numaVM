@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useUser } from "./UserProvider";
+import { ThemeToggle } from "./ThemeToggle";
 
 function getLogoutUrl(): string {
   const apiUrl = import.meta.env.VITE_API_URL || "//api.localhost";
@@ -46,10 +47,12 @@ export function Header() {
   }, [open]);
 
   return (
-    <header className="flex items-center justify-between px-4 py-2 border-b border-neutral-200 text-xs">
-      <Link to="/" className="text-neutral-900 hover:underline font-medium">
+    <header className="flex items-center justify-between px-4 py-2 border-b border-neutral-200 text-xs bg-background">
+      <Link to="/" className="text-foreground hover:underline font-medium">
         numavm
       </Link>
+      <div className="flex items-center gap-2">
+        <ThemeToggle />
       {!loading && user && (
         <div ref={ref} className="relative">
           <button
@@ -60,26 +63,26 @@ export function Header() {
             <Avatar user={user} />
           </button>
           {open && (
-            <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-neutral-200 rounded shadow-sm py-1 z-50">
+            <div className="absolute right-0 top-full mt-1 w-48 bg-surface border border-neutral-200 rounded shadow-sm py-1 z-50">
               <div className="px-3 py-1.5 text-neutral-400 truncate border-b border-neutral-100 mb-1">
                 {user.name || user.email}
               </div>
               <button
                 onClick={() => { navigate("/plan"); setOpen(false); }}
-                className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 text-neutral-700 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 text-neutral-700 cursor-pointer"
               >
                 Plan
               </button>
               <button
                 onClick={() => { navigate("/settings"); setOpen(false); }}
-                className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 text-neutral-700 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 text-neutral-700 cursor-pointer"
               >
                 Settings
               </button>
               <div className="border-t border-neutral-100 mt-1 pt-1">
                 <a
                   href={getLogoutUrl()}
-                  className="block px-3 py-1.5 hover:bg-neutral-50 text-neutral-400 hover:text-neutral-600"
+                  className="block px-3 py-1.5 hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600"
                 >
                   Log out
                 </a>
@@ -88,6 +91,7 @@ export function Header() {
           )}
         </div>
       )}
+      </div>
     </header>
   );
 }

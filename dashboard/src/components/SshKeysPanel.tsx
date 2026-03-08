@@ -142,7 +142,7 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
           }}
           placeholder="Paste your public key (e.g. ssh-ed25519 AAAA... user@host)"
           rows={4}
-          className="w-full border border-neutral-200 bg-white px-3 py-2 text-xs font-mono placeholder:text-neutral-400 focus:border-black focus:outline-none resize-y"
+          className="w-full border border-neutral-200 bg-surface px-3 py-2 text-xs font-mono placeholder:text-neutral-400 focus:border-foreground focus:outline-none resize-y"
         />
         <p className="text-[10px] text-neutral-500 mt-1 mb-3">
           One key per line. Find yours with{" "}

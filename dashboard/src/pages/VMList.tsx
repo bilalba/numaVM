@@ -60,7 +60,7 @@ function VMCardMenu({
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-6 z-50 min-w-[160px] bg-white border border-neutral-200 shadow-sm py-1">
+        <div className="absolute right-0 top-6 z-50 min-w-[160px] bg-surface border border-neutral-200 shadow-sm py-1">
           <a
             href={vm.url}
             target="_blank"
@@ -378,7 +378,7 @@ export function VMList() {
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder="VM name"
                 maxLength={64}
-                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none"
+                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none"
                 autoFocus
               />
               <p className="text-[10px] text-neutral-500 mt-1">A unique slug will be auto-generated for your subdomain.</p>
@@ -424,7 +424,7 @@ export function VMList() {
                     title={notInPlan ? `Requires Base plan` : exceedsQuota ? "Exceeds quota" : undefined}
                     className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
                       memSizeMib === size
-                        ? "border-black bg-white font-medium"
+                        ? "border-foreground bg-surface font-medium"
                         : "border-neutral-200 bg-neutral-50 hover:border-neutral-300"
                     }`}
                   >
@@ -452,7 +452,7 @@ export function VMList() {
                         setRepoSearch("");
                         setNewRepoName("");
                       }}
-                      className="accent-black w-3 h-3"
+                      className="accent-foreground w-3 h-3"
                     />
                     <span className="text-neutral-700">
                       {mode === "none" ? "No repo" : mode === "existing" ? "Existing repo" : "Create new repo"}
@@ -468,7 +468,7 @@ export function VMList() {
                     value={repoSearch}
                     onChange={(e) => setRepoSearch(e.target.value)}
                     placeholder="Search repositories..."
-                    className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none mb-2"
+                    className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none mb-2"
                   />
                   <div className="max-h-48 overflow-y-auto">
                     {reposLoading && repos.length === 0 ? (
@@ -483,7 +483,7 @@ export function VMList() {
                           onClick={() => setSelectedRepo(repo.fullName)}
                           className={`w-full text-left px-3 py-2 text-xs border transition-colors cursor-pointer mb-1 ${
                             selectedRepo === repo.fullName
-                              ? "border-black bg-white"
+                              ? "border-foreground bg-surface"
                               : "border-neutral-200 bg-neutral-50 hover:border-neutral-300"
                           }`}
                         >
@@ -515,7 +515,7 @@ export function VMList() {
                       onChange={(e) => setNewRepoName(e.target.value)}
                       placeholder="Repository name"
                       maxLength={100}
-                      className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none"
+                      className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none"
                     />
                   </div>
                   <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer shrink-0 pb-1">
@@ -523,7 +523,7 @@ export function VMList() {
                       type="checkbox"
                       checked={newRepoPrivate}
                       onChange={(e) => setNewRepoPrivate(e.target.checked)}
-                      className="accent-black w-3 h-3"
+                      className="accent-foreground w-3 h-3"
                     />
                     Private
                   </label>

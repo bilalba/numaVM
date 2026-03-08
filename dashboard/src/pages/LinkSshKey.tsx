@@ -84,7 +84,7 @@ export function LinkSshKey() {
         {done && (
           <div className="text-center py-4">
             <div className="text-green-600 text-2xl mb-3">&#10003;</div>
-            <div className="text-sm font-medium text-neutral-900 mb-2">SSH Key Linked</div>
+            <div className="text-sm font-medium text-foreground mb-2">SSH Key Linked</div>
             <div className="text-neutral-500 mb-6">{doneMessage}</div>
             <div className="text-neutral-400">
               You can close this page and return to your terminal.
@@ -94,7 +94,7 @@ export function LinkSshKey() {
 
         {!loading && !error && !done && fingerprint && (
           <>
-            <h1 className="text-sm font-medium text-neutral-900 mb-4">
+            <h1 className="text-sm font-medium text-foreground mb-4">
               Link SSH Key to Your Account
             </h1>
 
@@ -106,7 +106,7 @@ export function LinkSshKey() {
             <div className="space-y-3 mb-6">
               <div className="flex justify-between items-start">
                 <span className="text-neutral-400 w-24 shrink-0">Email</span>
-                <span className="text-neutral-900 font-mono text-[11px]">{email}</span>
+                <span className="text-foreground font-mono text-[11px]">{email}</span>
               </div>
               <div className="flex justify-between items-start">
                 <span className="text-neutral-400 w-24 shrink-0">Fingerprint</span>
@@ -118,13 +118,13 @@ export function LinkSshKey() {
               <button
                 onClick={handleConfirm}
                 disabled={confirming}
-                className="flex-1 px-4 py-2 bg-neutral-900 text-white rounded hover:bg-neutral-800 disabled:opacity-50 cursor-pointer"
+                className="flex-1 px-4 py-2 bg-foreground text-white rounded hover:opacity-80 disabled:opacity-50 cursor-pointer"
               >
                 {confirming ? "Linking..." : "Confirm"}
               </button>
               <Link
                 to="/"
-                className="flex-1 px-4 py-2 text-center border border-neutral-200 rounded text-neutral-600 hover:bg-neutral-50"
+                className="flex-1 px-4 py-2 text-center border border-neutral-200 rounded text-neutral-600 hover:bg-neutral-100"
               >
                 Deny
               </Link>

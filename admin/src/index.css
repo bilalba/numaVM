@@ -1,8 +1,52 @@
 @import "tailwindcss";
 
+:root {
+  --background: #f8f4ee;
+  --foreground: #000000;
+  --muted: #8a8a8a;
+  --panel-chat: #fcfaf7;
+  --panel-sidebar: #faf7f2;
+  --white: #ffffff;
+  --neutral-100: #f0ece6;
+  --neutral-200: #e0dcd6;
+  --neutral-300: #d0ccc6;
+  --neutral-400: #b0acaa;
+  --neutral-500: #8a8a8a;
+  --neutral-600: #6a6a6a;
+  --accent: #5ec4b6;
+  --highlight-bg: #e8e0d4;
+}
+
+[data-theme="dark"] {
+  --background: #1a1a1a;
+  --foreground: #e0e0e0;
+  --muted: #888888;
+  --panel-chat: #222222;
+  --panel-sidebar: #1e1e1e;
+  --white: #2a2a2a;
+  --neutral-100: #2a2a2a;
+  --neutral-200: #333333;
+  --neutral-300: #444444;
+  --neutral-400: #666666;
+  --neutral-500: #888888;
+  --neutral-600: #aaaaaa;
+  --highlight-bg: #333333;
+}
+
 @theme {
   --font-sans: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   --font-mono: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-  --color-panel-chat: #fcfaf7;
-  --color-panel-sidebar: #faf7f2;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-panel-chat: var(--panel-chat);
+  --color-panel-sidebar: var(--panel-sidebar);
+  --color-surface: var(--white);
+  --color-neutral-100: var(--neutral-100);
+  --color-neutral-200: var(--neutral-200);
+  --color-neutral-300: var(--neutral-300);
+  --color-neutral-400: var(--neutral-400);
+  --color-neutral-500: var(--neutral-500);
+  --color-neutral-600: var(--neutral-600);
+  --color-highlight-bg: var(--highlight-bg);
 }

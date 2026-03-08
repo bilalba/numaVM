@@ -86,13 +86,13 @@ export function AccessPanel({ vmId, currentUserRole, sshCommand }: AccessPanelPr
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Email address"
-                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none"
+                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none"
               />
             </div>
             <select
               value={role}
               onChange={(e) => setRole(e.target.value)}
-              className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-black focus:border-black focus:outline-none cursor-pointer"
+              className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground focus:border-foreground focus:outline-none cursor-pointer"
             >
               <option value="editor">Editor</option>
               <option value="viewer">Viewer</option>
@@ -139,7 +139,7 @@ export function AccessPanel({ vmId, currentUserRole, sshCommand }: AccessPanelPr
                       <select
                         value={entry.role}
                         onChange={(e) => handleRoleChange(entry, e.target.value)}
-                        className="border-0 bg-transparent px-0 py-0 text-xs text-black focus:outline-none cursor-pointer"
+                        className="border-0 bg-transparent px-0 py-0 text-xs text-foreground focus:outline-none cursor-pointer"
                       >
                         <option value="editor">Editor</option>
                         <option value="viewer">Viewer</option>

@@ -163,7 +163,7 @@ export function Deploy() {
         </Link>
       </div>
 
-      <h1 className="text-lg font-medium text-neutral-900 mb-6">Deploy a repository</h1>
+      <h1 className="text-lg font-medium text-foreground mb-6">Deploy a repository</h1>
 
       {/* Repo input */}
       <form onSubmit={handleRepoSubmit} className="mb-6">
@@ -174,7 +174,7 @@ export function Deploy() {
             value={repoInput}
             onChange={(e) => setRepoInput(e.target.value)}
             placeholder="owner/repo or https://github.com/owner/repo"
-            className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-400 focus:border-black focus:outline-none"
+            className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-400 focus:border-foreground focus:outline-none"
             autoFocus={!initialRepo}
           />
           <button
@@ -208,7 +208,7 @@ export function Deploy() {
                 href={`https://github.com/${repoInfo.full_name}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-sm font-medium text-neutral-900 hover:underline"
+                className="text-sm font-medium text-foreground hover:underline"
               >
                 {repoInfo.full_name}
               </a>
@@ -231,7 +231,7 @@ export function Deploy() {
               onChange={(e) => setVMName(e.target.value)}
               maxLength={64}
               disabled={deploying}
-              className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-black placeholder:text-neutral-500 focus:border-black focus:outline-none disabled:opacity-50"
+              className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none disabled:opacity-50"
             />
           </div>
 
@@ -239,7 +239,7 @@ export function Deploy() {
             <button
               onClick={handleDeploy}
               disabled={deploying || !vmName.trim()}
-              className="w-full py-2 bg-neutral-900 text-white rounded hover:bg-neutral-800 disabled:opacity-50 cursor-pointer text-xs"
+              className="w-full py-2 bg-foreground text-white rounded hover:opacity-80 disabled:opacity-50 cursor-pointer text-xs"
             >
               {deploying ? "Launching..." : "Launch VM"}
             </button>
@@ -252,7 +252,7 @@ export function Deploy() {
                 const isLatest = i === deployLogs.length - 1;
                 const isDone = msg === "Ready";
                 return (
-                  <div key={i} className={`flex items-center gap-2 ${isDone ? "text-green-600" : isLatest && deploying ? "text-neutral-900" : "text-neutral-400"}`}>
+                  <div key={i} className={`flex items-center gap-2 ${isDone ? "text-green-600" : isLatest && deploying ? "text-foreground" : "text-neutral-400"}`}>
                     <span className="w-3 text-center shrink-0">
                       {isDone ? "\u2713" : isLatest && deploying ? <span className="inline-block animate-pulse">{"\u25CF"}</span> : "\u2713"}
                     </span>
@@ -275,7 +275,7 @@ export function Deploy() {
             <div className="mt-5 border-t border-neutral-200 pt-4 space-y-2">
               <Link
                 to={`/vm/${vmId}`}
-                className="flex items-center justify-between w-full text-xs py-2 px-3 rounded bg-neutral-100 hover:bg-neutral-200 transition-colors text-neutral-900"
+                className="flex items-center justify-between w-full text-xs py-2 px-3 rounded bg-neutral-100 hover:bg-neutral-200 transition-colors text-foreground"
               >
                 <span>Open VM</span>
                 <span className="text-neutral-400">&rarr;</span>
@@ -285,7 +285,7 @@ export function Deploy() {
                   href={appUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-between w-full text-xs py-2 px-3 rounded bg-neutral-100 hover:bg-neutral-200 transition-colors text-neutral-900"
+                  className="flex items-center justify-between w-full text-xs py-2 px-3 rounded bg-neutral-100 hover:bg-neutral-200 transition-colors text-foreground"
                 >
                   <span>View app</span>
                   <span className="font-mono text-neutral-400 text-[10px]">{appUrl.replace(/^https?:\/\//, '')}</span>

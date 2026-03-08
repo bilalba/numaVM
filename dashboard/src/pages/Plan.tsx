@@ -71,13 +71,13 @@ export function Plan() {
         </Link>
       </div>
 
-      <h1 className="text-lg font-medium text-neutral-900 mb-6">Plan</h1>
+      <h1 className="text-lg font-medium text-foreground mb-6">Plan</h1>
 
       {/* Current plan banner */}
       <div className="border border-neutral-200 rounded p-4 mb-8">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-neutral-900 font-medium">
+            <div className="text-foreground font-medium">
               {sub?.plan_label || "Free"} plan
             </div>
             {isTrial && sub?.trial_expires_at && (
@@ -95,7 +95,7 @@ export function Plan() {
             <button
               onClick={handleManageBilling}
               disabled={actionLoading}
-              className="px-3 py-1.5 border border-neutral-200 rounded hover:bg-neutral-50 text-neutral-600 disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 border border-neutral-200 rounded hover:bg-neutral-100 text-neutral-600 disabled:opacity-50 cursor-pointer"
             >
               {actionLoading ? "..." : "Manage billing"}
             </button>
@@ -106,8 +106,8 @@ export function Plan() {
       {/* Plan comparison */}
       <div className="grid grid-cols-2 gap-4">
         {/* Free */}
-        <div className={`border rounded p-4 ${!isBase ? "border-neutral-900" : "border-neutral-200"}`}>
-          <div className="font-medium text-neutral-900 mb-1">Free</div>
+        <div className={`border rounded p-4 ${!isBase ? "border-foreground" : "border-neutral-200"}`}>
+          <div className="font-medium text-foreground mb-1">Free</div>
           <div className="text-neutral-400 mb-4">$0 / month</div>
           <ul className="space-y-2 text-neutral-600">
             <li>512 MB max RAM</li>
@@ -120,8 +120,8 @@ export function Plan() {
         </div>
 
         {/* Base */}
-        <div className={`border rounded p-4 ${isBase ? "border-neutral-900" : "border-neutral-200"}`}>
-          <div className="font-medium text-neutral-900 mb-1">Base</div>
+        <div className={`border rounded p-4 ${isBase ? "border-foreground" : "border-neutral-200"}`}>
+          <div className="font-medium text-foreground mb-1">Base</div>
           <div className="text-neutral-400 mb-4">$8 / month</div>
           <ul className="space-y-2 text-neutral-600">
             <li>1536 MB max RAM</li>
@@ -134,7 +134,7 @@ export function Plan() {
             <button
               onClick={handleUpgrade}
               disabled={actionLoading}
-              className="mt-4 w-full py-1.5 bg-neutral-900 text-white rounded hover:bg-neutral-800 disabled:opacity-50 cursor-pointer"
+              className="mt-4 w-full py-1.5 bg-foreground text-white rounded hover:opacity-80 disabled:opacity-50 cursor-pointer"
             >
               {actionLoading ? "..." : isTrial ? "Subscribe" : "Upgrade"}
             </button>
