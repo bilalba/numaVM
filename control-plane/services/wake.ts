@@ -17,6 +17,38 @@ export class QuotaExceededError extends Error {
   }
 }
 
+export class DiskQuotaExceededError extends Error {
+  used_gib: number;
+  vm_gib: number;
+  max_gib: number;
+  plan: string;
+
+  constructor(used: number, vmGib: number, max: number, plan: string) {
+    super(`Disk quota exceeded: ${used} GiB in use + ${vmGib} GiB needed > ${max} GiB limit (${plan} plan)`);
+    this.name = "DiskQuotaExceededError";
+    this.used_gib = used;
+    this.vm_gib = vmGib;
+    this.max_gib = max;
+    this.plan = plan;
+  }
+}
+
+export class DataQuotaExceededError extends Error {
+  used_bytes: number;
+  max_bytes: number;
+  plan: string;
+
+  constructor(usedBytes: number, maxBytes: number, plan: string) {
+    const usedGB = (usedBytes / 1024 ** 3).toFixed(1);
+    const maxGB = (maxBytes / 1024 ** 3).toFixed(0);
+    super(`Monthly data transfer limit reached: ${usedGB} GB used of ${maxGB} GB (${plan} plan)`);
+    this.name = "DataQuotaExceededError";
+    this.used_bytes = usedBytes;
+    this.max_bytes = maxBytes;
+    this.plan = plan;
+  }
+}
+
 /**
  * Wake-on-Request Service
  *
@@ -75,6 +107,18 @@ export async function ensureVMRunning(vmId: string): Promise<void> {
   const currentRam = db.getUserProvisionedRam(vm.owner_id);
   if (currentRam + vm.mem_size_mib > userPlan.max_ram_mib) {
     throw new QuotaExceededError(currentRam, vm.mem_size_mib, userPlan.max_ram_mib, userPlan.plan);
+  }
+
+  // Check disk quota before waking
+  const currentDisk = db.getUserProvisionedDisk(vm.owner_id);
+  if (currentDisk > userPlan.max_disk_gib) {
+    throw new DiskQuotaExceededError(currentDisk, vm.disk_size_gib, userPlan.max_disk_gib, userPlan.plan);
+  }
+
+  // Check monthly data transfer quota before waking
+  const dataUsage = db.getUserMonthlyDataUsage(vm.owner_id);
+  if (dataUsage >= userPlan.max_data_bytes) {
+    throw new DataQuotaExceededError(dataUsage, userPlan.max_data_bytes, userPlan.plan);
   }
 
   // Coalesce concurrent wake requests

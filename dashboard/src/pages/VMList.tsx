@@ -5,6 +5,13 @@ import { useToast } from "../components/Toast";
 import { SshKeysPanel } from "../components/SshKeysPanel";
 import { relativeTime } from "../lib/time";
 
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
 const statusColors: Record<string, string> = {
   running: "bg-green-500",
   creating: "bg-yellow-500",
@@ -51,7 +58,7 @@ function VMCardMenu({
           setOpen(!open);
           setConfirming(false);
         }}
-        className="p-1 -m-1 text-neutral-400 hover:text-neutral-700 transition-colors cursor-pointer"
+        className="p-1 -m-1 text-neutral-400 hover:text-foreground transition-colors cursor-pointer"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           <circle cx="8" cy="3" r="1.5" />
@@ -66,7 +73,7 @@ function VMCardMenu({
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="block px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-100 transition-colors"
+            className="block px-3 py-1.5 text-xs text-foreground hover:bg-neutral-100 transition-colors"
           >
             Visit Page
           </a>
@@ -77,7 +84,7 @@ function VMCardMenu({
               setOpen(false);
               onClone();
             }}
-            className="block w-full text-left px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-100 transition-colors cursor-pointer"
+            className="block w-full text-left px-3 py-1.5 text-xs text-foreground hover:bg-neutral-100 transition-colors cursor-pointer"
           >
             Clone VM
           </button>
@@ -89,7 +96,7 @@ function VMCardMenu({
                 setOpen(false);
                 onPause();
               }}
-              className="block w-full text-left px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-100 transition-colors cursor-pointer"
+              className="block w-full text-left px-3 py-1.5 text-xs text-foreground hover:bg-neutral-100 transition-colors cursor-pointer"
             >
               Pause VM
             </button>
@@ -149,6 +156,8 @@ export function VMList() {
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [memSizeMib, setMemSizeMib] = useState(512);
+  const [diskSizeGib, setDiskSizeGib] = useState(5);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [ramQuota, setRamQuota] = useState<RamQuota | null>(null);
   const [pausingIds, setPausingIds] = useState<Set<string>>(new Set());
   const [githubBannerDismissed, setGithubBannerDismissed] = useState(() => {
@@ -224,6 +233,8 @@ export function VMList() {
     setNewRepoName("");
     setNewRepoPrivate(true);
     setMemSizeMib(512);
+    setDiskSizeGib(5);
+    setShowAdvanced(false);
   };
 
   const handleDelete = async (vm: VMSummary) => {
@@ -291,7 +302,7 @@ export function VMList() {
         const created = await api.createGithubRepo(newRepoName.trim(), newRepoPrivate);
         ghRepo = created.fullName;
       }
-      await api.createVM({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib });
+      await api.createVM({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib });
       setNewName("");
       setShowCreate(false);
       resetRepoState();
@@ -392,47 +403,90 @@ export function VMList() {
             </button>
           </div>
 
-          {/* RAM selector */}
+          {/* Advanced options (RAM + Disk) */}
           <div className="mt-4 pt-4 border-t border-neutral-200">
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs text-neutral-600">Memory</label>
-              {ramQuota && (
-                <span className="text-[10px] text-neutral-400">
-                  <span className={ramQuota.plan === "free" ? "text-amber-600" : "text-neutral-400"}>
-                    {ramQuota.plan_label}
-                    {ramQuota.trial_active && ramQuota.trial_expires_at && (
-                      <> &middot; trial ends {relativeTime(ramQuota.trial_expires_at)}</>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="text-neutral-400 hover:text-neutral-600 text-[11px] cursor-pointer"
+            >
+              {showAdvanced ? "\u25BE" : "\u25B8"} Advanced
+              {!showAdvanced && <span className="ml-2 text-neutral-500">{memSizeMib >= 1024 ? `${(memSizeMib / 1024).toFixed(memSizeMib % 1024 ? 2 : 0)} GB` : `${memSizeMib} MB`} RAM, {diskSizeGib} GB disk</span>}
+            </button>
+            {showAdvanced && (
+              <div className="mt-3 space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs text-neutral-600">Memory</label>
+                    {ramQuota && (
+                      <span className="text-[10px] text-neutral-400">
+                        <span className={ramQuota.plan === "free" ? "text-amber-600" : "text-neutral-400"}>
+                          {ramQuota.plan_label}
+                          {ramQuota.trial_active && ramQuota.trial_expires_at && (
+                            <> &middot; trial ends {relativeTime(ramQuota.trial_expires_at)}</>
+                          )}
+                        </span>
+                        {" \u00B7 "}
+                        {ramQuota.used_mib} / {ramQuota.max_mib} MB used
+                      </span>
                     )}
-                  </span>
-                  {" \u00B7 "}
-                  {ramQuota.used_mib} / {ramQuota.max_mib} MB used
-                </span>
-              )}
-            </div>
-            <div className="flex gap-1.5">
-              {[256, 512, 768, 1024, 1280, 1536].map((size) => {
-                const notInPlan = ramQuota ? !ramQuota.valid_mem_sizes.includes(size) : false;
-                const exceedsQuota = ramQuota ? ramQuota.used_mib + size > ramQuota.max_mib : false;
-                const disabled = notInPlan || exceedsQuota;
-                const label = size >= 1024 ? `${(size / 1024).toFixed(size % 1024 ? 2 : 0)} GB` : `${size} MB`;
-                return (
-                  <button
-                    key={size}
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => setMemSizeMib(size)}
-                    title={notInPlan ? `Requires Base plan` : exceedsQuota ? "Exceeds quota" : undefined}
-                    className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
-                      memSizeMib === size
-                        ? "border-foreground bg-surface font-medium"
-                        : "border-neutral-200 bg-neutral-50 hover:border-neutral-300"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
+                  </div>
+                  <div className="flex gap-1.5">
+                    {(ramQuota?.valid_mem_sizes || [256, 512]).map((size) => {
+                      const exceedsQuota = ramQuota ? ramQuota.used_mib + size > ramQuota.max_mib : false;
+                      const label = size >= 1024 ? `${(size / 1024).toFixed(size % 1024 ? 2 : 0)} GB` : `${size} MB`;
+                      return (
+                        <button
+                          key={size}
+                          type="button"
+                          disabled={exceedsQuota}
+                          onClick={() => setMemSizeMib(size)}
+                          title={exceedsQuota ? "Exceeds quota" : undefined}
+                          className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                            memSizeMib === size
+                              ? "border-foreground bg-surface font-medium"
+                              : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs text-neutral-600">Disk</label>
+                    {ramQuota && (
+                      <span className="text-[10px] text-neutral-400">
+                        {ramQuota.disk_used_gib} / {ramQuota.disk_max_gib} GB used
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-1.5">
+                    {(ramQuota?.valid_disk_sizes || [1, 2, 5]).map((size) => {
+                      const exceedsQuota = ramQuota ? ramQuota.disk_used_gib + size > ramQuota.disk_max_gib : false;
+                      return (
+                        <button
+                          key={size}
+                          type="button"
+                          disabled={exceedsQuota}
+                          onClick={() => setDiskSizeGib(size)}
+                          title={exceedsQuota ? "Exceeds disk quota" : undefined}
+                          className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                            diskSizeGib === size
+                              ? "border-foreground bg-surface font-medium"
+                              : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
+                          }`}
+                        >
+                          {size} GB
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Repo picker — only when GitHub is connected */}
@@ -454,7 +508,7 @@ export function VMList() {
                       }}
                       className="accent-foreground w-3 h-3"
                     />
-                    <span className="text-neutral-700">
+                    <span className="text-foreground">
                       {mode === "none" ? "No repo" : mode === "existing" ? "Existing repo" : "Create new repo"}
                     </span>
                   </label>
@@ -484,7 +538,7 @@ export function VMList() {
                           className={`w-full text-left px-3 py-2 text-xs border transition-colors cursor-pointer mb-1 ${
                             selectedRepo === repo.fullName
                               ? "border-foreground bg-surface"
-                              : "border-neutral-200 bg-neutral-50 hover:border-neutral-300"
+                              : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
                           }`}
                         >
                           <span className="font-medium">{repo.fullName}</span>
@@ -497,7 +551,7 @@ export function VMList() {
                         type="button"
                         onClick={() => loadRepos(repoSearch, reposPage + 1)}
                         disabled={reposLoading}
-                        className="text-xs underline underline-offset-4 text-neutral-500 hover:text-neutral-700 transition-colors cursor-pointer py-1 disabled:opacity-30"
+                        className="text-xs underline underline-offset-4 text-neutral-500 hover:text-foreground transition-colors cursor-pointer py-1 disabled:opacity-30"
                       >
                         {reposLoading ? "Loading..." : "Load more"}
                       </button>
@@ -607,6 +661,22 @@ export function VMList() {
             );
           })}
         </div>
+
+      )}
+
+      {/* Data transfer — subtle inline, only prominent when near/over limit */}
+      {ramQuota && vms.length > 0 && ramQuota.data_max_bytes > 0 && (
+        ramQuota.data_used_pct >= 80 ? (
+          <div className={`mt-4 px-4 py-2.5 border text-[11px] ${ramQuota.data_used_pct >= 100 ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+            {ramQuota.data_used_pct >= 100
+              ? `Monthly data limit reached (${formatBytes(ramQuota.data_used_bytes)} / ${formatBytes(ramQuota.data_max_bytes)}). VMs paused until next month.`
+              : `${formatBytes(ramQuota.data_used_bytes)} / ${formatBytes(ramQuota.data_max_bytes)} data transfer used this month.`}
+          </div>
+        ) : (
+          <p className="mt-4 text-[10px] text-neutral-400 text-right">
+            Data: {formatBytes(ramQuota.data_used_bytes)} / {formatBytes(ramQuota.data_max_bytes)}
+          </p>
+        )
       )}
     </div>
   );

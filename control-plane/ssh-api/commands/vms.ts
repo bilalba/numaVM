@@ -1,4 +1,6 @@
 import { customAlphabet } from "nanoid";
+import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { CommandContext } from "../dispatcher.js";
 import { writeJson, writeError } from "../dispatcher.js";
 import { getDatabase, getVMEngine, getReverseProxy } from "../../adapters/providers.js";
@@ -100,13 +102,14 @@ async function showVM(vmId: string, ctx: CommandContext): Promise<void> {
 }
 
 const DEFAULT_MEM_SIZE = 512;
+const DEFAULT_DISK_SIZE = 5;
 
 async function createVM(ctx: CommandContext): Promise<void> {
   const { flags, user, channel } = ctx;
 
   const name = typeof flags.name === "string" ? flags.name : null;
   if (!name || name.length < 1 || name.length > 64) {
-    writeError(channel, "--name is required (1-64 chars). Usage: vms create --name <name> [--repo owner/repo] [--mem 512]");
+    writeError(channel, "--name is required (1-64 chars). Usage: vms create --name <name> [--repo owner/repo] [--mem 512] [--disk 5]");
     channel.exit(1);
     channel.close();
     return;
@@ -114,6 +117,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
 
   const repoFullName = typeof flags.repo === "string" ? flags.repo : null;
   const memSizeMib = typeof flags.mem === "string" ? parseInt(flags.mem, 10) : DEFAULT_MEM_SIZE;
+  const diskSizeGib = typeof flags.disk === "string" ? parseInt(flags.disk, 10) : DEFAULT_DISK_SIZE;
 
   // Validate plan + quota
   const userPlan = getDatabase().getUserPlan(user.userId);
@@ -123,10 +127,24 @@ async function createVM(ctx: CommandContext): Promise<void> {
     channel.close();
     return;
   }
+  if (!userPlan.valid_disk_sizes.includes(diskSizeGib)) {
+    writeError(channel, `Invalid disk size. Valid options: ${userPlan.valid_disk_sizes.join(", ")} GiB`);
+    channel.exit(1);
+    channel.close();
+    return;
+  }
 
   const currentRam = getDatabase().getUserProvisionedRam(user.userId);
   if (currentRam + memSizeMib > userPlan.max_ram_mib) {
     writeError(channel, `RAM quota exceeded (${currentRam}/${userPlan.max_ram_mib} MiB used). Stop a VM or upgrade your plan.`);
+    channel.exit(1);
+    channel.close();
+    return;
+  }
+
+  const currentDisk = getDatabase().getUserProvisionedDisk(user.userId);
+  if (currentDisk + diskSizeGib > userPlan.max_disk_gib) {
+    writeError(channel, `Disk quota exceeded (${currentDisk}/${userPlan.max_disk_gib} GiB used). Delete a VM or upgrade your plan.`);
     channel.exit(1);
     channel.close();
     return;
@@ -178,10 +196,11 @@ async function createVM(ctx: CommandContext): Promise<void> {
     status: "creating",
     status_detail: null,
     mem_size_mib: memSizeMib,
+    disk_size_gib: diskSizeGib,
   });
   getDatabase().grantAccess(slug, user.userId, "owner");
 
-  channel.write(`Creating VM "${name}" (${memSizeMib} MiB)...\r\n`);
+  channel.write(`Creating VM "${name}" (${memSizeMib} MiB RAM, ${diskSizeGib} GiB disk)...\r\n`);
 
   // Create VM
   try {
@@ -267,6 +286,11 @@ async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
 
   getDatabase().revokeAllAccess(vmId);
   getDatabase().deleteVM(vmId);
+
+  // Cleanup data directory
+  const dataDir = process.env.DATA_DIR || "/data/envs";
+  try { rmSync(join(dataDir, vmId), { recursive: true, force: true }); } catch { /* best-effort */ }
+
   getDatabase().emitAdminEvent("vm.deleted", vmId, ctx.user.userId);
 
   writeJson(ctx.channel, { ok: true, message: `VM ${vmId} destroyed` });

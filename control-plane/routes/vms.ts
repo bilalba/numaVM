@@ -4,17 +4,18 @@ import { join } from "node:path";
 import { customAlphabet } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
 import { fetchSshKeys } from "../services/github.js";
-import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
+import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
 
 const DEFAULT_MEM_SIZE = 512;
+const DEFAULT_DISK_SIZE = 5;
 
 export function registerVMRoutes(app: FastifyInstance) {
   // Create VM
   app.post("/vms", async (request, reply) => {
-    const body = request.body as { name?: string; gh_repo?: string; private?: boolean; mem_size_mib?: number };
+    const body = request.body as { name?: string; gh_repo?: string; private?: boolean; mem_size_mib?: number; disk_size_gib?: number };
 
     if (!body.name || typeof body.name !== "string" || body.name.length < 1 || body.name.length > 64) {
       return reply.status(400).send({ error: "name is required (1-64 chars)" });
@@ -26,6 +27,11 @@ export function registerVMRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: `mem_size_mib must be one of: ${userPlan.valid_mem_sizes.join(", ")}` });
     }
 
+    const diskSizeGib = body.disk_size_gib ?? DEFAULT_DISK_SIZE;
+    if (!userPlan.valid_disk_sizes.includes(diskSizeGib)) {
+      return reply.status(400).send({ error: `disk_size_gib must be one of: ${userPlan.valid_disk_sizes.join(", ")}` });
+    }
+
     // Check RAM quota (only running/creating VMs count)
     const currentRam = getDatabase().getUserProvisionedRam(request.userId);
     if (currentRam + memSizeMib > userPlan.max_ram_mib) {
@@ -34,6 +40,29 @@ export function registerVMRoutes(app: FastifyInstance) {
         current_ram_mib: currentRam,
         requested_ram_mib: memSizeMib,
         max_ram_mib: userPlan.max_ram_mib,
+        plan: userPlan.plan,
+      });
+    }
+
+    // Check disk quota (all non-error VMs count — disk persists even when snapshotted)
+    const currentDisk = getDatabase().getUserProvisionedDisk(request.userId);
+    if (currentDisk + diskSizeGib > userPlan.max_disk_gib) {
+      return reply.status(400).send({
+        error: "Disk quota exceeded",
+        current_disk_gib: currentDisk,
+        requested_disk_gib: diskSizeGib,
+        max_disk_gib: userPlan.max_disk_gib,
+        plan: userPlan.plan,
+      });
+    }
+
+    // Check monthly data transfer quota
+    const dataUsage = getDatabase().getUserMonthlyDataUsage(request.userId);
+    if (dataUsage >= userPlan.max_data_bytes) {
+      return reply.status(400).send({
+        error: "Monthly data transfer limit reached",
+        data_used_bytes: dataUsage,
+        data_max_bytes: userPlan.max_data_bytes,
         plan: userPlan.plan,
       });
     }
@@ -83,6 +112,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       status: "creating",
       status_detail: null,
       mem_size_mib: memSizeMib,
+      disk_size_gib: diskSizeGib,
     });
 
     // Grant owner access (used by auth verify for subdomain gating)
@@ -120,6 +150,7 @@ export function registerVMRoutes(app: FastifyInstance) {
           vsockCid,
           vmIp,
           memSizeMib: memSizeMib,
+          diskSizeGib: diskSizeGib,
           onProgress: (detail: string) => {
             getDatabase().updateVMStatusDetail(slug, detail);
           },
@@ -171,7 +202,7 @@ export function registerVMRoutes(app: FastifyInstance) {
           console.error(`[vm] Failed to register Caddy route for ${slug}:`, err);
         }
 
-        getDatabase().emitAdminEvent("vm.created", slug, userId, { name: body.name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}) });
+        getDatabase().emitAdminEvent("vm.created", slug, userId, { name: body.name, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib, ...(repoFullName ? { repo: repoFullName } : {}) });
       } catch (err: any) {
         console.error(`[vm] Background VM creation failed for ${slug}:`, err);
         getDatabase().updateVMStatusDetail(slug, `Error: ${err.message}`);
@@ -198,18 +229,28 @@ export function registerVMRoutes(app: FastifyInstance) {
         ...(e.gh_repo ? { repo_url: `https://github.com/${e.gh_repo}` } : {}),
         created_at: e.created_at,
         mem_size_mib: e.mem_size_mib,
+        disk_size_gib: e.disk_size_gib,
       })),
     };
   });
 
-  // Get user's RAM quota usage
+  // Get user's quota usage (RAM + data transfer)
   app.get("/vms/quota", async (request) => {
     const userPlan = getDatabase().getUserPlan(request.userId);
     const currentRam = getDatabase().getUserProvisionedRam(request.userId);
+    const currentDisk = getDatabase().getUserProvisionedDisk(request.userId);
+    const dataUsage = getDatabase().getUserMonthlyDataUsage(request.userId);
     return {
       used_mib: currentRam,
       max_mib: userPlan.max_ram_mib,
       available_mib: userPlan.max_ram_mib - currentRam,
+      disk_used_gib: currentDisk,
+      disk_max_gib: userPlan.max_disk_gib,
+      disk_available_gib: userPlan.max_disk_gib - currentDisk,
+      valid_disk_sizes: userPlan.valid_disk_sizes,
+      data_used_bytes: dataUsage,
+      data_max_bytes: userPlan.max_data_bytes,
+      data_used_pct: Math.round((dataUsage / userPlan.max_data_bytes) * 100),
       plan: userPlan.plan,
       plan_label: userPlan.label,
       valid_mem_sizes: userPlan.valid_mem_sizes,
@@ -233,12 +274,18 @@ export function registerVMRoutes(app: FastifyInstance) {
 
     // Auto-wake snapshotted VMs when detail page is loaded
     let quotaError: { message: string; current_ram_mib: number; vm_ram_mib: number; max_ram_mib: number; plan: string } | undefined;
+    let dataQuotaError: { message: string; data_used_bytes: number; data_max_bytes: number; plan: string } | undefined;
+    let diskQuotaError: { message: string; used_gib: number; vm_gib: number; max_gib: number; plan: string } | undefined;
     if (vm.status === "snapshotted" || vm.status === "paused") {
       try {
         await ensureVMRunning(vm.id);
       } catch (err: any) {
         if (err instanceof QuotaExceededError) {
           quotaError = { message: err.message, current_ram_mib: err.current_ram_mib, vm_ram_mib: err.vm_ram_mib, max_ram_mib: err.max_ram_mib, plan: err.plan };
+        } else if (err instanceof DiskQuotaExceededError) {
+          diskQuotaError = { message: err.message, used_gib: err.used_gib, vm_gib: err.vm_gib, max_gib: err.max_gib, plan: err.plan };
+        } else if (err instanceof DataQuotaExceededError) {
+          dataQuotaError = { message: err.message, data_used_bytes: err.used_bytes, data_max_bytes: err.max_bytes, plan: err.plan };
         } else {
           console.error(`[wake] Background wake failed for ${id}:`, err);
           request.log.error({ err, vmId: id }, "Background wake failed");
@@ -269,7 +316,10 @@ export function registerVMRoutes(app: FastifyInstance) {
       role,
       created_at: vm.created_at,
       mem_size_mib: vm.mem_size_mib,
+      disk_size_gib: vm.disk_size_gib,
       ...(quotaError ? { quota_error: quotaError } : {}),
+      ...(diskQuotaError ? { disk_quota_error: diskQuotaError } : {}),
+      ...(dataQuotaError ? { data_quota_error: dataQuotaError } : {}),
     };
   });
 
@@ -371,6 +421,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     const cloneMemSize = sourceVM.mem_size_mib;
+    const cloneDiskSize = sourceVM.disk_size_gib;
     const userPlan = getDatabase().getUserPlan(request.userId);
     const currentRam = getDatabase().getUserProvisionedRam(request.userId);
     if (currentRam + cloneMemSize > userPlan.max_ram_mib) {
@@ -379,6 +430,29 @@ export function registerVMRoutes(app: FastifyInstance) {
         current_ram_mib: currentRam,
         requested_ram_mib: cloneMemSize,
         max_ram_mib: userPlan.max_ram_mib,
+        plan: userPlan.plan,
+      });
+    }
+
+    // Check disk quota
+    const currentDisk = getDatabase().getUserProvisionedDisk(request.userId);
+    if (currentDisk + cloneDiskSize > userPlan.max_disk_gib) {
+      return reply.status(400).send({
+        error: "Disk quota exceeded",
+        current_disk_gib: currentDisk,
+        requested_disk_gib: cloneDiskSize,
+        max_disk_gib: userPlan.max_disk_gib,
+        plan: userPlan.plan,
+      });
+    }
+
+    // Check monthly data transfer quota
+    const dataUsage = getDatabase().getUserMonthlyDataUsage(request.userId);
+    if (dataUsage >= userPlan.max_data_bytes) {
+      return reply.status(400).send({
+        error: "Monthly data transfer limit reached",
+        data_used_bytes: dataUsage,
+        data_max_bytes: userPlan.max_data_bytes,
         plan: userPlan.plan,
       });
     }
@@ -429,6 +503,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       status: "creating",
       status_detail: null,
       mem_size_mib: cloneMemSize,
+      disk_size_gib: cloneDiskSize,
     });
     getDatabase().grantAccess(slug, request.userId, "owner");
 
@@ -543,6 +618,12 @@ export function registerVMRoutes(app: FastifyInstance) {
         if (err instanceof QuotaExceededError) {
           isQuotaError = true;
           statusMessage = "over your plan's RAM limit";
+        } else if (err instanceof DiskQuotaExceededError) {
+          isQuotaError = true;
+          statusMessage = "over your plan's disk limit";
+        } else if (err instanceof DataQuotaExceededError) {
+          isQuotaError = true;
+          statusMessage = "over your plan's monthly data transfer limit";
         } else {
           request.log.error({ err, id }, "Failed to wake VM from status page");
         }

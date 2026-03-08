@@ -37,6 +37,8 @@ export interface IUserStore {
   clearUserGithubToken(userId: string): void;
   getUserPlan(userId: string): UserPlan;
   getUserProvisionedRam(userId: string): number;
+  getUserProvisionedDisk(userId: string): number;
+  getUserMonthlyDataUsage(userId: string): number;
   setStripeCustomerId(userId: string, customerId: string): void;
   updateUserPlan(userId: string, plan: "free" | "base"): void;
   findUserByStripeCustomerId(customerId: string): User | undefined;
@@ -57,7 +59,7 @@ export interface IAgentStore {
 export interface IInfraStore {
   getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[];
   getUsedCids(): number[];
-  insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number): void;
+  insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number, ownerId?: string): void;
   getTrafficHistory(vmId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[];
   getTrafficSummary(hours: number): { vm_id: string; total_rx: number; total_tx: number; samples: number }[];
   pruneOldTraffic(days?: number): number;

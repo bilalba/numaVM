@@ -134,7 +134,7 @@ export function Plan() {
             <button
               onClick={handleUpgrade}
               disabled={actionLoading}
-              className="mt-4 w-full py-1.5 bg-foreground text-white rounded hover:opacity-80 disabled:opacity-50 cursor-pointer"
+              className="mt-4 w-full py-1.5 bg-foreground text-background rounded hover:opacity-80 disabled:opacity-50 cursor-pointer"
             >
               {actionLoading ? "..." : isTrial ? "Subscribe" : "Upgrade"}
             </button>

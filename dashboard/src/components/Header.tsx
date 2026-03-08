@@ -57,7 +57,7 @@ export function Header() {
         <div ref={ref} className="relative">
           <button
             onClick={() => setOpen(!open)}
-            className="flex items-center gap-2 text-neutral-500 hover:text-neutral-700 cursor-pointer"
+            className="flex items-center gap-2 text-neutral-500 hover:text-foreground cursor-pointer"
           >
             <span>{user.email}</span>
             <Avatar user={user} />
@@ -69,13 +69,19 @@ export function Header() {
               </div>
               <button
                 onClick={() => { navigate("/plan"); setOpen(false); }}
-                className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 text-neutral-700 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 text-foreground cursor-pointer"
               >
                 Plan
               </button>
               <button
+                onClick={() => { navigate("/usage"); setOpen(false); }}
+                className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 text-foreground cursor-pointer"
+              >
+                Usage
+              </button>
+              <button
                 onClick={() => { navigate("/settings"); setOpen(false); }}
-                className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 text-neutral-700 cursor-pointer"
+                className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 text-foreground cursor-pointer"
               >
                 Settings
               </button>

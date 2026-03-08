@@ -55,7 +55,7 @@ export function DataTable<T extends Record<string, any>>({
               <th
                 key={col.key}
                 className={`text-left py-2 px-3 font-medium text-neutral-500 ${
-                  col.sortable !== false ? "cursor-pointer select-none hover:text-neutral-700" : ""
+                  col.sortable !== false ? "cursor-pointer select-none hover:text-foreground" : ""
                 }`}
                 onClick={() => col.sortable !== false && toggleSort(col.key)}
               >

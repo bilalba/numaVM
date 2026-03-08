@@ -19,6 +19,7 @@ export interface VM {
   status_detail: string | null;
   created_at: string;
   mem_size_mib: number;
+  disk_size_gib: number;
 }
 
 export interface VMWithRole extends VM {
@@ -46,7 +47,10 @@ export interface UserPlan {
   plan: "free" | "base";
   label: string;
   max_ram_mib: number;
+  max_data_bytes: number;
   valid_mem_sizes: number[];
+  max_disk_gib: number;
+  valid_disk_sizes: number[];
   trial_active: boolean;
   trial_expires_at: string | null;
 }

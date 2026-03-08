@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, type Quota } from "../lib/api";
 import { useToast } from "../components/Toast";
 
 interface RepoInfo {
@@ -47,7 +47,25 @@ export function Deploy() {
   const [vmId, setVMId] = useState<string | null>(null);
   const [vmReady, setVMReady] = useState(false);
   const [appUrl, setAppUrl] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [quota, setQuota] = useState<Quota | null>(null);
+  const [memSizeMib, setMemSizeMib] = useState<number>(512);
+  const [diskSizeGib, setDiskSizeGib] = useState<number>(5);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Fetch quota on mount
+  useEffect(() => {
+    api.getRamQuota().then((q) => {
+      setQuota(q);
+      // Set defaults to first valid size
+      if (q.valid_mem_sizes.length > 0 && !q.valid_mem_sizes.includes(512)) {
+        setMemSizeMib(q.valid_mem_sizes[0]);
+      }
+      if (q.valid_disk_sizes.length > 0 && !q.valid_disk_sizes.includes(5)) {
+        setDiskSizeGib(q.valid_disk_sizes[0]);
+      }
+    }).catch(() => {});
+  }, []);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -107,7 +125,7 @@ export function Deploy() {
     setAppUrl(null);
 
     try {
-      const result = await api.createVM({ name: vmName.trim(), gh_repo: parsed });
+      const result = await api.createVM({ name: vmName.trim(), gh_repo: parsed, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib });
       setVMId(result.id);
       if (result.url) setAppUrl(result.url);
 
@@ -235,11 +253,60 @@ export function Deploy() {
             />
           </div>
 
+          {/* Advanced options */}
+          {!vmId && (
+            <div className="mb-6">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="text-neutral-400 hover:text-neutral-600 text-[11px] cursor-pointer"
+              >
+                {showAdvanced ? "\u25BE" : "\u25B8"} Advanced
+              </button>
+              {showAdvanced && quota && (
+                <div className="mt-3 space-y-3 pl-3 border-l border-neutral-200">
+                  <div>
+                    <label className="text-neutral-500 text-[11px] block mb-1">RAM</label>
+                    <select
+                      value={memSizeMib}
+                      onChange={(e) => setMemSizeMib(Number(e.target.value))}
+                      disabled={deploying}
+                      className="border border-neutral-300 rounded px-2 py-1 text-xs bg-transparent text-foreground w-full"
+                    >
+                      {quota.valid_mem_sizes.map((s) => (
+                        <option key={s} value={s}>{s >= 1024 ? `${(s / 1024).toFixed(1)} GiB` : `${s} MiB`}</option>
+                      ))}
+                    </select>
+                    <p className="text-neutral-400 text-[10px] mt-1">
+                      {quota.available_mib} MiB available of {quota.max_mib} MiB
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-neutral-500 text-[11px] block mb-1">Disk</label>
+                    <select
+                      value={diskSizeGib}
+                      onChange={(e) => setDiskSizeGib(Number(e.target.value))}
+                      disabled={deploying}
+                      className="border border-neutral-300 rounded px-2 py-1 text-xs bg-transparent text-foreground w-full"
+                    >
+                      {quota.valid_disk_sizes.map((s) => (
+                        <option key={s} value={s}>{s} GiB</option>
+                      ))}
+                    </select>
+                    <p className="text-neutral-400 text-[10px] mt-1">
+                      {quota.disk_available_gib} GiB available of {quota.disk_max_gib} GiB
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {!vmId && (
             <button
               onClick={handleDeploy}
               disabled={deploying || !vmName.trim()}
-              className="w-full py-2 bg-foreground text-white rounded hover:opacity-80 disabled:opacity-50 cursor-pointer text-xs"
+              className="w-full py-2 bg-foreground text-background rounded hover:opacity-80 disabled:opacity-50 cursor-pointer text-xs"
             >
               {deploying ? "Launching..." : "Launch VM"}
             </button>

@@ -25,6 +25,7 @@ export interface CreateVMParams {
   vmIp: string;
   vcpuCount?: number;
   memSizeMib?: number;
+  diskSizeGib?: number;
   onProgress?: (detail: string) => void;
 }
 

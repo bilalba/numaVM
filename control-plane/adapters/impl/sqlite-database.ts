@@ -27,6 +27,8 @@ import {
   clearUserGithubToken as _clearUserGithubToken,
   getUserPlan as _getUserPlan,
   getUserProvisionedRam as _getUserProvisionedRam,
+  getUserProvisionedDisk as _getUserProvisionedDisk,
+  getUserMonthlyDataUsage as _getUserMonthlyDataUsage,
   setStripeCustomerId as _setStripeCustomerId,
   updateUserPlan as _updateUserPlan,
   findUserByStripeCustomerId as _findUserByStripeCustomerId,
@@ -83,6 +85,8 @@ export class SqliteDatabase implements IDatabase {
   clearUserGithubToken(userId: string): void { _clearUserGithubToken(userId); }
   getUserPlan(userId: string): UserPlan { return _getUserPlan(userId); }
   getUserProvisionedRam(userId: string): number { return _getUserProvisionedRam(userId); }
+  getUserProvisionedDisk(userId: string): number { return _getUserProvisionedDisk(userId); }
+  getUserMonthlyDataUsage(userId: string): number { return _getUserMonthlyDataUsage(userId); }
   setStripeCustomerId(userId: string, customerId: string): void { _setStripeCustomerId(userId, customerId); }
   updateUserPlan(userId: string, plan: "free" | "base"): void { _updateUserPlan(userId, plan); }
   findUserByStripeCustomerId(customerId: string): User | undefined { return _findUserByStripeCustomerId(customerId); }
@@ -101,7 +105,7 @@ export class SqliteDatabase implements IDatabase {
   // --- IInfraStore ---
   getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[] { return _getUsedPorts(); }
   getUsedCids(): number[] { return _getUsedCids(); }
-  insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number): void { _insertTrafficRecord(vmId, rxBytes, txBytes); }
+  insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number, ownerId?: string): void { _insertTrafficRecord(vmId, rxBytes, txBytes, ownerId); }
   getTrafficHistory(vmId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[] { return _getTrafficHistory(vmId, hours); }
   getTrafficSummary(hours: number): { vm_id: string; total_rx: number; total_tx: number; samples: number }[] { return _getTrafficSummary(hours); }
   pruneOldTraffic(days?: number): number { return _pruneOldTraffic(days); }

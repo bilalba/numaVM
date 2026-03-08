@@ -48,9 +48,9 @@ async function pollOnce(): Promise<void> {
   const engine = getVMEngine();
   const proxy = getReverseProxy();
 
-  // Get all running VMs
-  const runningVMs = db.raw<{ id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; vm_ip: string }>(
-    "SELECT id, vsock_cid, app_port, ssh_port, opencode_port, vm_ip FROM vms WHERE status = 'running'"
+  // Get all running VMs (with owner for data quota checks)
+  const runningVMs = db.raw<{ id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; vm_ip: string; owner_id: string }>(
+    "SELECT v.id, v.vsock_cid, v.app_port, v.ssh_port, v.opencode_port, v.vm_ip, va.user_id as owner_id FROM vms v INNER JOIN vm_access va ON va.vm_id = v.id AND va.role = 'owner' WHERE v.status = 'running'"
   );
 
   const now = Date.now();
@@ -141,7 +141,7 @@ async function pollOnce(): Promise<void> {
         const deltaRx = Math.max(0, rx - prev.rx);
         const deltaTx = Math.max(0, tx - prev.tx);
         if (deltaRx > 0 || deltaTx > 0) {
-          db.insertTrafficRecord(vm.id, deltaRx, deltaTx);
+          db.insertTrafficRecord(vm.id, deltaRx, deltaTx, vm.owner_id);
         }
       }
       lastRecordedBytes.set(vm.id, { rx, tx });
@@ -154,6 +154,40 @@ async function pollOnce(): Promise<void> {
       const pruned = db.pruneOldTraffic(7);
       if (pruned > 0) {
         console.log(`[idle-monitor] Pruned ${pruned} old traffic records`);
+      }
+    }
+  }
+
+  // Check monthly data transfer limits per user
+  // Group running VMs by owner, check if any owner has exceeded their limit
+  const ownerVMs = new Map<string, string[]>();
+  for (const vm of runningVMs) {
+    const list = ownerVMs.get(vm.owner_id) || [];
+    list.push(vm.id);
+    ownerVMs.set(vm.owner_id, list);
+  }
+  for (const [userId, vmIds] of ownerVMs) {
+    const usage = db.getUserMonthlyDataUsage(userId);
+    const plan = db.getUserPlan(userId);
+    if (usage >= plan.max_data_bytes) {
+      console.log(`[idle-monitor] User ${userId} exceeded monthly data limit (${(usage / 1024 ** 3).toFixed(1)} GB / ${(plan.max_data_bytes / 1024 ** 3).toFixed(0)} GB), pausing ${vmIds.length} VM(s)...`);
+      for (const vmId of vmIds) {
+        if (snapshottingSet.has(vmId)) continue;
+        snapshottingSet.add(vmId);
+        try {
+          await engine.snapshotVM(vmId);
+          const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${vmId}/snapshot`;
+          db.updateVMSnapshotPath(vmId, snapshotPath);
+          db.updateVMStatus(vmId, "snapshotted");
+          try { await proxy.removeRoute(vmId); } catch { /* ok */ }
+          trafficMap.delete(vmId);
+          db.emitAdminEvent("vm.data_limit_paused", vmId, userId, { usedBytes: usage, maxBytes: plan.max_data_bytes });
+          console.log(`[idle-monitor] VM ${vmId} paused (data limit)`);
+        } catch (err: any) {
+          console.error(`[idle-monitor] Failed to pause VM ${vmId} for data limit: ${err.message}`);
+        } finally {
+          snapshottingSet.delete(vmId);
+        }
       }
     }
   }

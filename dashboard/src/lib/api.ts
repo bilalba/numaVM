@@ -30,18 +30,29 @@ export interface VMSummary {
   repo_url?: string;
   created_at: string;
   mem_size_mib: number;
+  disk_size_gib: number;
 }
 
-export interface RamQuota {
+export interface Quota {
   used_mib: number;
   max_mib: number;
   available_mib: number;
+  disk_used_gib: number;
+  disk_max_gib: number;
+  disk_available_gib: number;
+  valid_disk_sizes: number[];
+  data_used_bytes: number;
+  data_max_bytes: number;
+  data_used_pct: number;
   plan: "free" | "base";
   plan_label: string;
   valid_mem_sizes: number[];
   trial_active: boolean;
   trial_expires_at: string | null;
 }
+
+/** @deprecated Use Quota instead */
+export type RamQuota = Quota;
 
 export interface VMDetail {
   id: string;
@@ -210,13 +221,13 @@ export const api = {
 
   getVM: (id: string) => apiFetch<VMDetail>(`/vms/${id}`),
 
-  createVM: (body: { name: string; gh_repo?: string; mem_size_mib?: number }) =>
+  createVM: (body: { name: string; gh_repo?: string; mem_size_mib?: number; disk_size_gib?: number }) =>
     apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
       "/vms",
       { method: "POST", body: JSON.stringify(body) }
     ),
 
-  getRamQuota: () => apiFetch<RamQuota>("/vms/quota"),
+  getRamQuota: () => apiFetch<Quota>("/vms/quota"),
 
   deleteVM: (id: string) =>
     apiFetch<{ ok: boolean }>(`/vms/${id}`, { method: "DELETE" }),

@@ -122,6 +122,24 @@ if (!vmCols3.some((c) => c.name === "status_detail")) {
   db.exec("ALTER TABLE vms ADD COLUMN status_detail TEXT");
 }
 
+// Migrate: add disk_size_gib column to vms
+const vmCols4 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols4.some((c) => c.name === "disk_size_gib")) {
+  db.exec("ALTER TABLE vms ADD COLUMN disk_size_gib INTEGER NOT NULL DEFAULT 5");
+}
+
+// Migrate: add owner_id to vm_traffic so data usage survives VM deletion
+const trafficCols = db.pragma("table_info(vm_traffic)") as { name: string }[];
+if (!trafficCols.some((c) => c.name === "owner_id")) {
+  db.exec("ALTER TABLE vm_traffic ADD COLUMN owner_id TEXT");
+  // Backfill from vm_access for existing records
+  db.exec(`
+    UPDATE vm_traffic SET owner_id = (
+      SELECT va.user_id FROM vm_access va WHERE va.vm_id = vm_traffic.vm_id AND va.role = 'owner' LIMIT 1
+    ) WHERE owner_id IS NULL
+  `);
+}
+
 // Migrate: add plan columns to users
 try { db.exec("ALTER TABLE users ADD COLUMN plan TEXT DEFAULT 'base'"); } catch { /* already exists */ }
 try { db.exec("ALTER TABLE users ADD COLUMN trial_started_at DATETIME"); } catch { /* already exists */ }
@@ -160,6 +178,7 @@ export interface VM {
   status_detail: string | null;
   created_at: string;
   mem_size_mib: number;
+  disk_size_gib: number;
 }
 
 export interface VMWithRole extends VM {
@@ -200,15 +219,15 @@ export function clearUserGithubToken(userId: string): void {
 // --- VM CRUD ---
 
 const insertVMStmt = db.prepare(`
-  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib, disk_size_gib)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 export function insertVM(vm: Omit<VM, "created_at">): void {
   insertVMStmt.run(
     vm.id, vm.name, vm.owner_id, vm.gh_repo, vm.gh_token,
     vm.container_id, vm.vm_ip, vm.vsock_cid, vm.vm_pid, vm.snapshot_path,
     vm.app_port, vm.ssh_port, vm.opencode_port,
-    vm.opencode_password, vm.status, vm.mem_size_mib
+    vm.opencode_password, vm.status, vm.mem_size_mib, vm.disk_size_gib
   );
 }
 
@@ -268,20 +287,45 @@ export function getUserProvisionedRam(userId: string): number {
   return row.total_ram;
 }
 
+// --- Disk quota ---
+
+const getUserProvisionedDiskStmt = db.prepare(`
+  SELECT COALESCE(SUM(v.disk_size_gib), 0) as total_disk
+  FROM vms v
+  INNER JOIN vm_access va ON va.vm_id = v.id
+  WHERE va.user_id = ? AND va.role = 'owner'
+  AND v.status NOT IN ('error')
+`);
+export function getUserProvisionedDisk(userId: string): number {
+  const row = getUserProvisionedDiskStmt.get(userId) as { total_disk: number };
+  return row.total_disk;
+}
+
 // --- Plan resolution ---
 
 const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 
+// Data limits configurable via env (in GB), defaults: free=5GB, base=50GB
+const FREE_DATA_LIMIT_GB = parseFloat(process.env.FREE_DATA_LIMIT_GB || "5");
+const BASE_DATA_LIMIT_GB = parseFloat(process.env.BASE_DATA_LIMIT_GB || "50");
+
+// Disk limits configurable via env (in GiB), defaults: free=5GiB, base=50GiB
+const FREE_DISK_LIMIT_GIB = parseInt(process.env.FREE_DISK_LIMIT_GIB || "5", 10);
+const BASE_DISK_LIMIT_GIB = parseInt(process.env.BASE_DISK_LIMIT_GIB || "50", 10);
+
 const PLAN_LIMITS = {
-  free: { max_ram_mib: 512, valid_mem_sizes: [256, 512] as number[], label: "Free" },
-  base: { max_ram_mib: 1536, valid_mem_sizes: [256, 512, 768, 1024, 1280, 1536] as number[], label: "Base" },
+  free: { max_ram_mib: 512, max_data_bytes: FREE_DATA_LIMIT_GB * 1024 ** 3, valid_mem_sizes: [256, 512] as number[], max_disk_gib: FREE_DISK_LIMIT_GIB, valid_disk_sizes: [1, 2, 5] as number[], label: "Free" },
+  base: { max_ram_mib: 1536, max_data_bytes: BASE_DATA_LIMIT_GB * 1024 ** 3, valid_mem_sizes: [256, 512, 768, 1024, 1280, 1536] as number[], max_disk_gib: BASE_DISK_LIMIT_GIB, valid_disk_sizes: [1, 2, 5, 10, 20, 50] as number[], label: "Base" },
 } as const;
 
 export interface UserPlan {
   plan: "free" | "base";
   label: string;
   max_ram_mib: number;
+  max_data_bytes: number;
   valid_mem_sizes: number[];
+  max_disk_gib: number;
+  valid_disk_sizes: number[];
   trial_active: boolean;
   trial_expires_at: string | null;
 }
@@ -429,13 +473,26 @@ export function appendUserSshKey(userId: string, key: string): void {
   appendUserSshKeyStmt.run(key, key, userId);
 }
 
+// --- Monthly data usage ---
+
+const getUserMonthlyDataUsageStmt = db.prepare(`
+  SELECT COALESCE(SUM(rx_bytes + tx_bytes), 0) as total_bytes
+  FROM vm_traffic
+  WHERE owner_id = ?
+  AND recorded_at >= date('now', 'start of month')
+`);
+export function getUserMonthlyDataUsage(userId: string): number {
+  const row = getUserMonthlyDataUsageStmt.get(userId) as { total_bytes: number };
+  return row.total_bytes;
+}
+
 // --- VM Traffic ---
 
 const insertTrafficStmt = db.prepare(
-  "INSERT INTO vm_traffic (vm_id, rx_bytes, tx_bytes) VALUES (?, ?, ?)"
+  "INSERT INTO vm_traffic (vm_id, owner_id, rx_bytes, tx_bytes) VALUES (?, ?, ?, ?)"
 );
-export function insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number): void {
-  insertTrafficStmt.run(vmId, rxBytes, txBytes);
+export function insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number, ownerId?: string): void {
+  insertTrafficStmt.run(vmId, ownerId ?? null, rxBytes, txBytes);
 }
 
 export function getTrafficHistory(vmId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[] {

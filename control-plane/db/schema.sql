@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS vms (
                     CHECK(status IN ('creating', 'running', 'stopped', 'paused', 'snapshotted', 'error')),
   created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
   pages_port        INTEGER UNIQUE,
-  mem_size_mib      INTEGER NOT NULL DEFAULT 512
+  mem_size_mib      INTEGER NOT NULL DEFAULT 512,
+  disk_size_gib     INTEGER NOT NULL DEFAULT 10
 );
 
 CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);
@@ -55,6 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_
 CREATE TABLE IF NOT EXISTS vm_traffic (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   vm_id       TEXT NOT NULL,
+  owner_id    TEXT,
   rx_bytes    INTEGER NOT NULL,
   tx_bytes    INTEGER NOT NULL,
   recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP

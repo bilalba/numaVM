@@ -32,6 +32,7 @@ export interface CreateVMParams {
   vmIp: string;
   vcpuCount?: number;
   memSizeMib?: number;
+  diskSizeGib?: number;
   onProgress?: (detail: string) => void;
 }
 
@@ -196,6 +197,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     vsockCid, vmIp,
     vcpuCount = getDefaultVcpu(),
     memSizeMib = getDefaultMem(),
+    diskSizeGib = 5,
     onProgress,
   } = params;
 
@@ -328,8 +330,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   // 4. Data volume (persistent storage)
   const dataVolume = join(dataDir, "data.ext4");
   if (!existsSync(dataVolume)) {
-    // Create a 10GB sparse data volume
-    execSync(`dd if=/dev/zero of="${dataVolume}" bs=1 count=0 seek=10G 2>/dev/null`, { stdio: "pipe" });
+    // Create a sparse data volume sized per disk_size_gib
+    execSync(`dd if=/dev/zero of="${dataVolume}" bs=1 count=0 seek=${diskSizeGib}G 2>/dev/null`, { stdio: "pipe" });
     execSync(`mkfs.ext4 -F -q "${dataVolume}"`, { stdio: "pipe" });
   }
   await fcApi(socketPath, "PUT", "/drives/data", {

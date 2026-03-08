@@ -123,7 +123,7 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
               .split("\n")
               .filter((l) => l.trim())
               .map((key, i) => (
-                <div key={i} className="truncate bg-neutral-50 border border-neutral-100 px-2 py-1">
+                <div key={i} className="truncate bg-neutral-100 border border-neutral-100 px-2 py-1">
                   {key}
                 </div>
               ))}

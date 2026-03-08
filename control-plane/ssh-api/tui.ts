@@ -6,6 +6,7 @@ import { fetchSshKeys } from "../services/github.js";
 import { registerPendingKey } from "../routes/user.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
+const DEFAULT_DISK_SIZE = 5;
 
 // ANSI escape codes
 const ESC = "\x1b";
@@ -410,29 +411,72 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     return showAuthenticatedTui(channel, user, false);
   }
 
-  // Step 2: Memory size
+  // Step 2: Advanced options (optional)
+  const currentDisk = getDatabase().getUserProvisionedDisk(user.userId);
   const availableMem = userPlan.valid_mem_sizes.filter(
     (m: number) => currentRam + m <= userPlan.max_ram_mib,
   );
-  let memSizeMib = 512;
-  if (availableMem.length === 1) {
-    memSizeMib = availableMem[0];
-  } else if (availableMem.length > 1) {
-    const memItems: MenuItem[] = availableMem.map((m: number) => ({
-      label: `${m} MiB`,
-      description: m === 512 ? "default" : "",
-      action: () => { memSizeMib = m; },
-    }));
-    await showMenu(channel, `New VM: ${name}\n  Select memory size`, memItems, () => { memSizeMib = 0; });
-    if (memSizeMib === 0) {
-      return showAuthenticatedTui(channel, user, false);
+  const availableDisk = userPlan.valid_disk_sizes.filter(
+    (d: number) => currentDisk + d <= userPlan.max_disk_gib,
+  );
+  const defaultMem = availableMem.includes(512) ? 512 : availableMem[0] || 512;
+  const defaultDisk = availableDisk.includes(DEFAULT_DISK_SIZE) ? DEFAULT_DISK_SIZE : availableDisk[0] || DEFAULT_DISK_SIZE;
+  let memSizeMib = defaultMem;
+  let diskSizeGib = defaultDisk;
+
+  // Ask if user wants to configure resources
+  let configureResources = false;
+  const configItems: MenuItem[] = [
+    {
+      label: `Use defaults (${defaultMem} MiB RAM, ${defaultDisk} GiB disk)`,
+      description: "",
+      action: () => { configureResources = false; },
+    },
+    {
+      label: "Configure RAM & disk",
+      description: "",
+      action: () => { configureResources = true; },
+    },
+  ];
+  await showMenu(channel, `New VM: ${name}\n  Resources`, configItems, () => { memSizeMib = 0; });
+  if (memSizeMib === 0) {
+    return showAuthenticatedTui(channel, user, false);
+  }
+
+  if (configureResources) {
+    // RAM selection
+    if (availableMem.length > 1) {
+      let memSelected = false;
+      const memItems: MenuItem[] = availableMem.map((m: number) => ({
+        label: `${m} MiB`,
+        description: m === defaultMem ? "default" : "",
+        action: () => { memSizeMib = m; memSelected = true; },
+      }));
+      await showMenu(channel, `New VM: ${name}\n  Select RAM`, memItems, () => { memSelected = false; });
+      if (!memSelected) {
+        return showAuthenticatedTui(channel, user, false);
+      }
+    }
+
+    // Disk selection
+    if (availableDisk.length > 1) {
+      let diskSelected = false;
+      const diskItems: MenuItem[] = availableDisk.map((d: number) => ({
+        label: `${d} GiB`,
+        description: d === defaultDisk ? "default" : "",
+        action: () => { diskSizeGib = d; diskSelected = true; },
+      }));
+      await showMenu(channel, `New VM: ${name}\n  Select disk size`, diskItems, () => { diskSelected = false; });
+      if (!diskSelected) {
+        return showAuthenticatedTui(channel, user, false);
+      }
     }
   }
 
   // Step 3: GitHub repo (optional)
   channel.write(HOME + clearBelow());
   channel.write(`\r\n  ${BOLD}${CYAN}New VM: ${name}${RESET}\r\n`);
-  channel.write(`  ${DIM}Memory: ${memSizeMib} MiB${RESET}\r\n\r\n`);
+  channel.write(`  ${DIM}Memory: ${memSizeMib} MiB | Disk: ${diskSizeGib} GiB${RESET}\r\n\r\n`);
   channel.write(`  GitHub repo ${DIM}(owner/repo, Enter to skip)${RESET}: `);
   channel.write(SHOW_CURSOR);
   const repoInput = await readLine(channel);
@@ -461,6 +505,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     "",
     `  Name:    ${name}`,
     `  Memory:  ${memSizeMib} MiB`,
+    `  Disk:    ${diskSizeGib} GiB`,
     ...(repoFullName ? [`  Repo:    ${repoFullName}`] : []),
     "",
     `  ${DIM}Starting VM, this may take 30-60 seconds...${RESET}`,
@@ -502,6 +547,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     status: "creating",
     status_detail: null,
     mem_size_mib: memSizeMib,
+    disk_size_gib: diskSizeGib,
   });
   getDatabase().grantAccess(slug, user.userId, "owner");
 
