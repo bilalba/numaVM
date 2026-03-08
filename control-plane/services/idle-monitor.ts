@@ -1,7 +1,5 @@
 import { readFileSync } from "node:fs";
-import { db, findVMById, updateVMStatus, updateVMSnapshotPath, emitAdminEvent, insertTrafficRecord, pruneOldTraffic } from "../db/client.js";
-import { snapshotVM } from "./firecracker.js";
-import { removeRoute } from "./caddy.js";
+import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
 
 /**
  * Network Idle Monitor
@@ -46,10 +44,14 @@ function readTapBytes(tapDev: string): number {
 }
 
 async function pollOnce(): Promise<void> {
+  const db = getDatabase();
+  const engine = getVMEngine();
+  const proxy = getReverseProxy();
+
   // Get all running VMs
-  const runningVMs = db.prepare(
+  const runningVMs = db.raw<{ id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; vm_ip: string }>(
     "SELECT id, vsock_cid, app_port, ssh_port, opencode_port, vm_ip FROM vms WHERE status = 'running'"
-  ).all() as { id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; vm_ip: string }[];
+  );
 
   const now = Date.now();
 
@@ -95,22 +97,22 @@ async function pollOnce(): Promise<void> {
       snapshottingSet.add(vm.id);
       try {
         // Snapshot the VM
-        await snapshotVM(vm.id);
+        await engine.snapshotVM(vm.id);
 
         // Update DB
         const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${vm.id}/snapshot`;
-        updateVMSnapshotPath(vm.id, snapshotPath);
-        updateVMStatus(vm.id, "snapshotted");
+        db.updateVMSnapshotPath(vm.id, snapshotPath);
+        db.updateVMStatus(vm.id, "snapshotted");
 
         // Remove Caddy route (requests will hit status page / trigger wake)
         try {
-          await removeRoute(vm.id);
+          await proxy.removeRoute(vm.id);
         } catch { /* ok */ }
 
         // Clean up traffic tracking
         trafficMap.delete(vm.id);
 
-        emitAdminEvent("vm.idle_snapshotted", vm.id, null, { idleBytes: bytesInWindow, windowMs: windowDuration });
+        db.emitAdminEvent("vm.idle_snapshotted", vm.id, null, { idleBytes: bytesInWindow, windowMs: windowDuration });
         console.log(`[idle-monitor] VM ${vm.id} snapshotted successfully`);
       } catch (err: any) {
         console.error(`[idle-monitor] Failed to snapshot VM ${vm.id}: ${err.message}`);
@@ -139,7 +141,7 @@ async function pollOnce(): Promise<void> {
         const deltaRx = Math.max(0, rx - prev.rx);
         const deltaTx = Math.max(0, tx - prev.tx);
         if (deltaRx > 0 || deltaTx > 0) {
-          insertTrafficRecord(vm.id, deltaRx, deltaTx);
+          db.insertTrafficRecord(vm.id, deltaRx, deltaTx);
         }
       }
       lastRecordedBytes.set(vm.id, { rx, tx });
@@ -149,7 +151,7 @@ async function pollOnce(): Promise<void> {
     const now = Date.now();
     if (now - lastPruneTime > 86400000) {
       lastPruneTime = now;
-      const pruned = pruneOldTraffic(7);
+      const pruned = db.pruneOldTraffic(7);
       if (pruned > 0) {
         console.log(`[idle-monitor] Pruned ${pruned} old traffic records`);
       }

@@ -1,23 +1,9 @@
 import type { ServerChannel } from "ssh2";
 import type { SshUser } from "../services/ssh-key-lookup.js";
 import { customAlphabet, nanoid } from "nanoid";
-import {
-  findVMsByUser,
-  findUserById,
-  insertVM,
-  updateVMStatus,
-  updateVMInfo,
-  grantAccess,
-  revokeAllAccess,
-  deleteVM,
-  emitAdminEvent,
-  getUserPlan,
-  getUserProvisionedRam,
-} from "../db/client.js";
+import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
 import { allocatePorts, allocateCid, cidToVmIp } from "../services/port-allocator.js";
-import { createAndStartVM } from "../services/firecracker.js";
 import { fetchSshKeys } from "../services/github.js";
-import { addRoute } from "../services/caddy.js";
 import { registerPendingKey } from "../routes/user.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
@@ -355,7 +341,7 @@ async function showMenu(
 }
 
 async function showVMList(channel: ServerChannel, user: SshUser): Promise<void> {
-  const vms = findVMsByUser(user.userId);
+  const vms = getDatabase().findVMsByUser(user.userId);
 
   const items: MenuItem[] = [
     { label: "+ New VM", description: "Create a new VM", action: () => showCreateVM(channel, user) },
@@ -390,10 +376,10 @@ async function showVMList(channel: ServerChannel, user: SshUser): Promise<void> 
 
 async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void> {
   const baseDomain = getBaseDomain();
-  const userPlan = getUserPlan(user.userId);
+  const userPlan = getDatabase().getUserPlan(user.userId);
 
   // Check quota before prompting
-  const currentRam = getUserProvisionedRam(user.userId);
+  const currentRam = getDatabase().getUserProvisionedRam(user.userId);
   const minMem = Math.min(...userPlan.valid_mem_sizes);
   if (currentRam + minMem > userPlan.max_ram_mib) {
     const lines = [
@@ -455,7 +441,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
   const repoFullName = repoInput && repoInput.includes("/") ? repoInput : null;
 
   // GitHub token check
-  const dbUser = findUserById(user.userId);
+  const dbUser = getDatabase().findUserById(user.userId);
   const ghToken = dbUser?.github_token || process.env.GH_PAT || null;
   if (repoFullName && !ghToken) {
     const lines = [
@@ -501,7 +487,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
 
   const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
 
-  insertVM({
+  getDatabase().insertVM({
     id: slug,
     name,
     owner_id: user.userId,
@@ -519,10 +505,10 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     status: "creating",
     mem_size_mib: memSizeMib,
   });
-  grantAccess(slug, user.userId, "owner");
+  getDatabase().grantAccess(slug, user.userId, "owner");
 
   try {
-    const vmId = await createAndStartVM({
+    const vmId = await getVMEngine().createAndStartVM({
       slug,
       name,
       appPort,
@@ -539,10 +525,10 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
       vmIp,
       memSizeMib,
     });
-    updateVMInfo(slug, vmId, vmIp, vsockCid, null);
+    getDatabase().updateVMInfo(slug, vmId, vmIp, vsockCid, null);
   } catch (err: any) {
-    revokeAllAccess(slug);
-    deleteVM(slug);
+    getDatabase().revokeAllAccess(slug);
+    getDatabase().deleteVM(slug);
     const errLines = [
       "",
       `  ${BOLD}New VM${RESET}`,
@@ -556,10 +542,10 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     return showAuthenticatedTui(channel, user, false);
   }
 
-  updateVMStatus(slug, "running");
+  getDatabase().updateVMStatus(slug, "running");
 
-  try { await addRoute(slug, appPort); } catch { /* non-fatal */ }
-  emitAdminEvent("vm.created", slug, user.userId, { name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}), source: "ssh-tui" });
+  try { await getReverseProxy().addRoute(slug, appPort); } catch { /* non-fatal */ }
+  getDatabase().emitAdminEvent("vm.created", slug, user.userId, { name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}), source: "ssh-tui" });
 
   // Success screen
   const successItems: MenuItem[] = [

@@ -22,9 +22,6 @@ export interface AdminStats {
   vmsByStatus: Record<string, number>;
   totalVMs: number;
   userCount: number;
-  sessionCounts: Record<string, number>;
-  totalSessions: number;
-  messageCount: number;
   recentVMs: Array<{
     id: string;
     name: string;
@@ -62,18 +59,6 @@ export interface AdminVM {
   owner_name: string | null;
 }
 
-export interface AdminSession {
-  id: string;
-  vm_id: string;
-  agent_type: string;
-  title: string | null;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  vm_name: string;
-  message_count: number;
-}
-
 export interface AdminEvent {
   id: number;
   type: string;
@@ -100,7 +85,6 @@ export const adminApi = {
   getStats: () => apiFetch<AdminStats>("/admin/stats"),
   getUsers: () => apiFetch<{ users: AdminUser[] }>("/admin/users"),
   getVMs: () => apiFetch<{ vms: AdminVM[] }>("/admin/vms"),
-  getSessions: (limit = 200) => apiFetch<{ sessions: AdminSession[] }>(`/admin/sessions?limit=${limit}`),
   getEvents: (limit = 100, type?: string) =>
     apiFetch<{ events: AdminEvent[] }>(`/admin/events?limit=${limit}${type ? `&type=${type}` : ""}`),
   getTraffic: () => apiFetch<{ traffic: Array<{ vmId: string; vmIp: string; rxBytes: number; txBytes: number; totalBytes: number }> }>("/admin/traffic"),

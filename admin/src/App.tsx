@@ -4,7 +4,6 @@ import { Sidebar } from "./components/Sidebar";
 import { Overview } from "./pages/Overview";
 import { Users } from "./pages/Users";
 import { VMs } from "./pages/VMs";
-import { Sessions } from "./pages/Sessions";
 import { Events } from "./pages/Events";
 import { Traffic } from "./pages/Traffic";
 
@@ -19,7 +18,6 @@ export function App() {
             <Route path="/" element={<Overview />} />
             <Route path="/users" element={<Users />} />
             <Route path="/vms" element={<VMs />} />
-            <Route path="/sessions" element={<Sessions />} />
             <Route path="/events" element={<Events />} />
             <Route path="/traffic" element={<Traffic />} />
             <Route path="*" element={<Navigate to="/" replace />} />

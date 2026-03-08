@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { findUserById, updateUserSshKeys, appendUserSshKey, clearUserGithubToken } from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
 import { fetchSshKeys, listRepos, createRepo } from "../services/github.js";
 import { invalidateKeyCache } from "../services/ssh-key-lookup.js";
 
@@ -47,7 +47,7 @@ export function deletePendingKey(token: string): void {
 export function registerUserRoutes(app: FastifyInstance) {
   // Get current user's SSH keys
   app.get("/me/ssh-keys", async (request) => {
-    const user = findUserById(request.userId);
+    const user = getDatabase().findUserById(request.userId);
     const keys = user?.ssh_public_keys || "";
 
     // Also fetch GitHub keys for display
@@ -65,7 +65,7 @@ export function registerUserRoutes(app: FastifyInstance) {
     const rawKeys = (body.keys ?? "").trim();
 
     if (!rawKeys) {
-      updateUserSshKeys(request.userId, null);
+      getDatabase().updateUserSshKeys(request.userId, null);
       return { ok: true };
     }
 
@@ -83,13 +83,13 @@ export function registerUserRoutes(app: FastifyInstance) {
       }
     }
 
-    updateUserSshKeys(request.userId, lines.join("\n"));
+    getDatabase().updateUserSshKeys(request.userId, lines.join("\n"));
     return { ok: true };
   });
 
   // GitHub repo access status
   app.get("/me/github", async (request) => {
-    const user = findUserById(request.userId);
+    const user = getDatabase().findUserById(request.userId);
     return {
       connected: !!user?.github_token,
       username: user?.github_username || null,
@@ -98,13 +98,13 @@ export function registerUserRoutes(app: FastifyInstance) {
 
   // Disconnect GitHub repo access (clear token)
   app.delete("/me/github", async (request) => {
-    clearUserGithubToken(request.userId);
+    getDatabase().clearUserGithubToken(request.userId);
     return { ok: true };
   });
 
   // List user's GitHub repos
   app.get("/me/repos", async (request, reply) => {
-    const user = findUserById(request.userId);
+    const user = getDatabase().findUserById(request.userId);
     if (!user?.github_token) {
       return reply.status(400).send({ error: "GitHub not connected" });
     }
@@ -118,7 +118,7 @@ export function registerUserRoutes(app: FastifyInstance) {
 
   // Create a new GitHub repo
   app.post("/me/repos", async (request, reply) => {
-    const user = findUserById(request.userId);
+    const user = getDatabase().findUserById(request.userId);
     if (!user?.github_token) {
       return reply.status(400).send({ error: "GitHub not connected" });
     }
@@ -165,7 +165,7 @@ export function registerUserRoutes(app: FastifyInstance) {
     }
 
     // Check if this key is already in the user's keys
-    const user = findUserById(request.userId);
+    const user = getDatabase().findUserById(request.userId);
     const existingKeys = user?.ssh_public_keys || "";
     if (existingKeys.includes(pending.publicKey.trim())) {
       pending.confirmed = true;
@@ -173,7 +173,7 @@ export function registerUserRoutes(app: FastifyInstance) {
     }
 
     // Append the key
-    appendUserSshKey(request.userId, pending.publicKey.trim());
+    getDatabase().appendUserSshKey(request.userId, pending.publicKey.trim());
     invalidateKeyCache();
     pending.confirmed = true;
     // Don't delete yet — the TUI needs to poll and see confirmed=true

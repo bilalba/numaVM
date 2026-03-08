@@ -1,7 +1,7 @@
 import * as arctic from "arctic";
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
-import { upsertUserFromGithub, updateUserGithubToken, findUserByGithubId, findUserByEmail } from "../db/client.js";
+import { getAuthDatabase } from "../adapters/providers.js";
 import {
   createSessionJWT,
   setSessionCookie,
@@ -143,22 +143,24 @@ export function registerGithubRoutes(app: FastifyInstance) {
       return reply.redirect(loginUrl);
     }
 
+    const db = getAuthDatabase();
+
     if (flow === "repo") {
       // Repo-scope flow: save the token to the currently logged-in user
       // Try session cookie first (most reliable), then GitHub ID, then email
       const session = await getSessionFromRequest(request);
       const existingUser = session
         ? { id: session.sub }
-        : findUserByGithubId(String(ghUser.id)) ?? (email ? findUserByEmail(email) : null);
+        : (await db.findUserByGithubId(String(ghUser.id))) ?? (email ? await db.findUserByEmail(email) : null);
       if (existingUser) {
-        updateUserGithubToken(existingUser.id, accessToken);
+        await db.updateUserGithubToken(existingUser.id, accessToken);
       }
       // Redirect back to dashboard (user is already logged in)
       return reply.redirect(redirect);
     }
 
     // Normal login flow
-    const user = upsertUserFromGithub({
+    const user = await db.upsertUserFromGithub({
       id: nanoid(),
       email,
       name: ghUser.name || ghUser.login,

@@ -28,7 +28,7 @@ import { registerBillingRoutes } from "./routes/billing.js";
 import { destroyAllTerminals } from "./terminal/pty-handler.js";
 import { agentManager } from "./agents/manager.js";
 import { getHealthStats } from "./services/health.js";
-import { destroyAllVMs, reconcileRunningVMs } from "./services/firecracker.js";
+import { initProviders, getVMEngine, getReverseProxy, getDatabase } from "./adapters/providers.js";
 import { startIdleMonitor, stopIdleMonitor } from "./services/idle-monitor.js";
 import { startSshProxy, stopSshProxy } from "./services/ssh-proxy.js";
 
@@ -74,6 +74,15 @@ await app.register(cors, {
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 });
+
+// Initialize providers (OSS defaults, or enterprise overrides via DEPLOYMAGI_PROVIDERS env var)
+const providerPkg = process.env.DEPLOYMAGI_PROVIDERS;
+if (providerPkg) {
+  const { register } = await import(providerPkg);
+  await register();
+} else {
+  await initProviders();
+}
 
 // JWT verification for CLI Bearer tokens
 const JWT_SECRET = new TextEncoder().encode(
@@ -125,10 +134,7 @@ app.addHook("preHandler", async (request, reply) => {
   // Dev mode: fake auth when no Caddy is running
   if (baseDomain === "localhost" || process.env.DEV_MODE === "true") {
     // Ensure dev user exists in shared DB
-    const { db } = await import("./db/client.js");
-    db.prepare(
-      `INSERT OR IGNORE INTO users (id, email, name) VALUES ('dev-user', 'dev@localhost', 'Dev User')`
-    ).run();
+    getDatabase().raw(`INSERT OR IGNORE INTO users (id, email, name) VALUES ('dev-user', 'dev@localhost', 'Dev User')`);
     request.userId = "dev-user";
     request.userEmail = "dev@localhost";
     return;
@@ -145,15 +151,16 @@ app.get("/health", async () => {
 
 // Current user (for CLI `numavm auth whoami`)
 app.get("/me", async (request) => {
-  const { db, getUserPlan } = await import("./db/client.js");
-  const user = db
-    .prepare("SELECT id, email, name, avatar_url, github_username, github_token FROM users WHERE id = ?")
-    .get(request.userId) as { id: string; email: string; name: string; avatar_url: string; github_username: string | null; github_token: string | null } | undefined;
+  const db = getDatabase();
+  const user = db.rawGet<{ id: string; email: string; name: string; avatar_url: string; github_username: string | null; github_token: string | null }>(
+    "SELECT id, email, name, avatar_url, github_username, github_token FROM users WHERE id = ?",
+    request.userId,
+  );
   if (!user) {
     return { id: request.userId, email: request.userEmail, has_github_token: false };
   }
   const { github_token, ...rest } = user;
-  const plan = getUserPlan(request.userId);
+  const plan = db.getUserPlan(request.userId);
   return { ...rest, has_github_token: !!github_token, plan: plan.plan, plan_label: plan.label, trial_active: plan.trial_active, trial_expires_at: plan.trial_expires_at };
 });
 
@@ -196,7 +203,7 @@ process.on("SIGTERM", shutdown);
 
 // Start
 // Reconcile in-memory VM state with any surviving Firecracker processes
-await reconcileRunningVMs();
+await getVMEngine().reconcileRunningVMs();
 
 // Start SSH proxy (auth + wake-on-connect for all VMs)
 await startSshProxy();
@@ -208,10 +215,8 @@ if (baseDomain !== "localhost") {
 
 // Load Caddy config on startup (non-fatal — Caddy may not be running yet)
 if (baseDomain !== "localhost") {
-  import("./services/caddy.js").then(({ reloadCaddyConfig }) => {
-    reloadCaddyConfig().catch((err) => {
-      console.warn(`[caddy] Failed to load initial config: ${err.message}`);
-    });
+  getReverseProxy().reloadConfig().catch((err: any) => {
+    console.warn(`[caddy] Failed to load initial config: ${err.message}`);
   });
 }
 

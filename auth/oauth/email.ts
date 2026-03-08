@@ -1,7 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
-import { upsertUserFromEmail } from "../db/client.js";
+import { getAuthDatabase } from "../adapters/providers.js";
 import {
   createSessionJWT,
   setSessionCookie,
@@ -110,7 +110,7 @@ export function registerEmailRoutes(app: FastifyInstance) {
       return reply.status(400).send("Invalid or expired token");
     }
 
-    const user = upsertUserFromEmail({
+    const user = await getAuthDatabase().upsertUserFromEmail({
       id: nanoid(),
       email: result.email,
     });

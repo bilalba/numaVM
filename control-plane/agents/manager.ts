@@ -3,20 +3,8 @@ import type { AgentBridge, AgentEvent, AgentType, ApprovalDecision, ApprovalPoli
 import { CodexBridge } from "./codex-bridge.js";
 import { OpenCodeBridge } from "./opencode-bridge.js";
 import { wsHub } from "./ws-hub.js";
-import {
-  findVMById,
-  insertAgentSession,
-  findAgentSession,
-  findAgentSessionsByVM,
-  updateAgentSessionStatus,
-  updateAgentSessionTitle,
-  updateAgentSessionThreadId,
-  insertAgentMessage,
-  findMessagesBySession,
-  deleteAgentSession as dbDeleteAgentSession,
-  type AgentSession,
-  type AgentMessage,
-} from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
+import type { AgentSession, AgentMessage } from "../adapters/types.js";
 
 interface ActiveSession {
   bridge: AgentBridge;
@@ -33,7 +21,7 @@ class AgentManager {
     const existing = this.authBridges.get(vmId);
     if (existing) return existing;
 
-    const vm = findVMById(vmId);
+    const vm = getDatabase().findVMById(vmId);
     if (!vm) throw new Error("VM not found");
     if (!vm.vm_ip) throw new Error("VM has no IP address");
 
@@ -70,7 +58,7 @@ class AgentManager {
   }
 
   async createSession(vmId: string, agentType: AgentType, options?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<AgentSession> {
-    const vm = findVMById(vmId);
+    const vm = getDatabase().findVMById(vmId);
     if (!vm) throw new Error("VM not found");
     if (vm.status !== "running") throw new Error("VM is not running");
     if (!vm.vm_ip) throw new Error("VM has no IP address");
@@ -86,7 +74,7 @@ class AgentManager {
     }
 
     // Insert DB record early
-    insertAgentSession({
+    getDatabase().insertAgentSession({
       id: sessionId,
       vm_id: vmId,
       agent_type: agentType,
@@ -110,22 +98,22 @@ class AgentManager {
       const startArg = agentType === "codex" ? vm.vm_ip! : vm.id;
       const threadId = await bridge.start(startArg, options);
       if (threadId) {
-        updateAgentSessionThreadId(sessionId, threadId);
+        getDatabase().updateAgentSessionThreadId(sessionId, threadId);
       }
     } catch (err: any) {
-      updateAgentSessionStatus(sessionId, "error");
+      getDatabase().updateAgentSessionStatus(sessionId, "error");
       this.activeSessions.delete(sessionId);
       throw new Error(`Failed to start ${agentType}: ${err.message}`);
     }
 
-    return findAgentSession(sessionId)!;
+    return getDatabase().findAgentSession(sessionId)!;
   }
 
   async sendMessage(sessionId: string, text: string, options?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<void> {
     const active = this.activeSessions.get(sessionId);
     if (!active) {
       // Try to reconnect if session exists in DB but bridge is gone
-      const session = findAgentSession(sessionId);
+      const session = getDatabase().findAgentSession(sessionId);
       if (!session || session.status === "archived") {
         throw new Error("Session not found or archived");
       }
@@ -133,7 +121,7 @@ class AgentManager {
     }
 
     // Persist user message
-    insertAgentMessage({
+    getDatabase().insertAgentMessage({
       id: nanoid(),
       session_id: sessionId,
       role: "user",
@@ -141,7 +129,7 @@ class AgentManager {
       metadata: null,
     });
 
-    updateAgentSessionStatus(sessionId, "busy");
+    getDatabase().updateAgentSessionStatus(sessionId, "busy");
     active.pendingText = "";
 
     // Broadcast the user message to connected dashboards
@@ -158,7 +146,7 @@ class AgentManager {
     const active = this.activeSessions.get(sessionId);
     if (!active) throw new Error("Session not active");
     await active.bridge.interrupt();
-    updateAgentSessionStatus(sessionId, "idle");
+    getDatabase().updateAgentSessionStatus(sessionId, "idle");
   }
 
   async archiveSession(sessionId: string): Promise<void> {
@@ -167,7 +155,7 @@ class AgentManager {
       await active.bridge.destroy();
       this.activeSessions.delete(sessionId);
     }
-    updateAgentSessionStatus(sessionId, "archived");
+    getDatabase().updateAgentSessionStatus(sessionId, "archived");
   }
 
   async respondToApproval(sessionId: string, approvalId: string, decision: ApprovalDecision): Promise<void> {
@@ -197,13 +185,13 @@ class AgentManager {
   }
 
   listSessions(vmId: string, agentType: AgentType): AgentSession[] {
-    return findAgentSessionsByVM(vmId, agentType);
+    return getDatabase().findAgentSessionsByVM(vmId, agentType);
   }
 
   getSessionWithHistory(sessionId: string): { session: AgentSession; messages: AgentMessage[] } | null {
-    const session = findAgentSession(sessionId);
+    const session = getDatabase().findAgentSession(sessionId);
     if (!session) return null;
-    const messages = findMessagesBySession(sessionId);
+    const messages = getDatabase().findMessagesBySession(sessionId);
     return { session, messages };
   }
 
@@ -213,7 +201,7 @@ class AgentManager {
       active.bridge.destroy().catch(() => {});
       this.activeSessions.delete(sessionId);
     }
-    dbDeleteAgentSession(sessionId);
+    getDatabase().deleteAgentSession(sessionId);
   }
 
   isActive(sessionId: string): boolean {
@@ -238,7 +226,7 @@ class AgentManager {
         break;
 
       case "message.completed":
-        insertAgentMessage({
+        getDatabase().insertAgentMessage({
           id: nanoid(),
           session_id: sessionId,
           role: event.role,
@@ -251,7 +239,7 @@ class AgentManager {
         break;
 
       case "tool.completed":
-        insertAgentMessage({
+        getDatabase().insertAgentMessage({
           id: nanoid(),
           session_id: sessionId,
           role: "tool",
@@ -263,7 +251,7 @@ class AgentManager {
       case "turn.completed": {
         // If we have accumulated delta text without a message.completed, persist it
         if (active.pendingText) {
-          insertAgentMessage({
+          getDatabase().insertAgentMessage({
             id: nanoid(),
             session_id: sessionId,
             role: "assistant",
@@ -273,22 +261,22 @@ class AgentManager {
           this.maybeSetTitle(sessionId, active.pendingText);
           active.pendingText = "";
         }
-        updateAgentSessionStatus(sessionId, "idle");
+        getDatabase().updateAgentSessionStatus(sessionId, "idle");
         break;
       }
 
       case "error":
-        updateAgentSessionStatus(sessionId, "error");
+        getDatabase().updateAgentSessionStatus(sessionId, "error");
         break;
     }
   }
 
   private maybeSetTitle(sessionId: string, text: string): void {
-    const session = findAgentSession(sessionId);
+    const session = getDatabase().findAgentSession(sessionId);
     if (session && !session.title && text.length > 0) {
       // Use first 80 chars of first assistant message as title
       const title = text.slice(0, 80).replace(/\n/g, " ").trim();
-      if (title) updateAgentSessionTitle(sessionId, title);
+      if (title) getDatabase().updateAgentSessionTitle(sessionId, title);
     }
   }
 }

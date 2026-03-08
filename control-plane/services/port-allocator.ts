@@ -1,4 +1,4 @@
-import { getUsedPorts, getUsedCids } from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
 
 const APP_PORT_BASE = 10001;
 const SSH_PORT_BASE = 20001;
@@ -21,7 +21,7 @@ function nextAvailable(used: Set<number>, base: number): number {
 }
 
 export function allocatePorts(): { appPort: number; sshPort: number; opencodePort: number } {
-  const rows = getUsedPorts();
+  const rows = getDatabase().getUsedPorts();
 
   const usedApp = new Set(rows.map((r) => r.app_port));
   const usedSsh = new Set(rows.map((r) => r.ssh_port));
@@ -38,7 +38,7 @@ export function allocatePorts(): { appPort: number; sshPort: number; opencodePor
  * Allocate a vsock CID for a new VM.
  */
 export function allocateCid(): number {
-  const usedCids = new Set(getUsedCids());
+  const usedCids = new Set(getDatabase().getUsedCids());
   for (let cid = VSOCK_CID_START; cid <= VSOCK_CID_MAX; cid++) {
     if (!usedCids.has(cid)) return cid;
   }

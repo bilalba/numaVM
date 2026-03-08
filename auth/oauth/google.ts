@@ -1,7 +1,7 @@
 import * as arctic from "arctic";
 import type { FastifyInstance } from "fastify";
 import { nanoid } from "nanoid";
-import { upsertUserFromGoogle } from "../db/client.js";
+import { getAuthDatabase } from "../adapters/providers.js";
 import {
   createSessionJWT,
   setSessionCookie,
@@ -97,7 +97,7 @@ export function registerGoogleRoutes(app: FastifyInstance) {
       return reply.redirect(loginUrl);
     }
 
-    const user = upsertUserFromGoogle({
+    const user = await getAuthDatabase().upsertUserFromGoogle({
       id: nanoid(),
       email: claims.email,
       name: claims.name || null,

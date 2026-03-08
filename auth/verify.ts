@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { getSessionFromRequest } from "./session.js";
-import { checkVMAccess, findUserById } from "./db/client.js";
+import { getAuthDatabase } from "./adapters/providers.js";
 
 export function registerVerifyRoute(app: FastifyInstance) {
   app.get("/verify", async (request, reply) => {
@@ -9,7 +9,8 @@ export function registerVerifyRoute(app: FastifyInstance) {
       return reply.status(401).send("Unauthorized");
     }
 
-    const user = findUserById(session.sub);
+    const db = getAuthDatabase();
+    const user = await db.findUserById(session.sub);
     if (!user) {
       return reply.status(401).send("Unauthorized");
     }
@@ -24,7 +25,7 @@ export function registerVerifyRoute(app: FastifyInstance) {
     const vmMatch = forwardedHost.match(/^(vm-[a-z0-9]+)\./)
     if (vmMatch) {
       const vmId = vmMatch[1];
-      const role = checkVMAccess(vmId, user.id);
+      const role = await db.checkVMAccess(vmId, user.id);
       if (!role) {
         return reply.status(403).send("No access to this VM");
       }

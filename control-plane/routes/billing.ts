@@ -1,12 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import Stripe from "stripe";
-import {
-  findUserById,
-  findUserByStripeCustomerId,
-  setStripeCustomerId,
-  updateUserPlan,
-  getUserPlan,
-} from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
 
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -21,13 +15,13 @@ function getDashboardUrl(): string {
 }
 
 async function getOrCreateCustomer(stripe: Stripe, userId: string, email: string): Promise<string> {
-  const user = findUserById(userId);
+  const user = getDatabase().findUserById(userId);
   if (user?.stripe_customer_id) return user.stripe_customer_id;
 
   // Check if customer already exists in Stripe by email
   const existing = await stripe.customers.list({ email, limit: 1 });
   if (existing.data.length > 0) {
-    setStripeCustomerId(userId, existing.data[0].id);
+    getDatabase().setStripeCustomerId(userId, existing.data[0].id);
     return existing.data[0].id;
   }
 
@@ -35,7 +29,7 @@ async function getOrCreateCustomer(stripe: Stripe, userId: string, email: string
     email,
     metadata: { userId },
   });
-  setStripeCustomerId(userId, customer.id);
+  getDatabase().setStripeCustomerId(userId, customer.id);
   return customer.id;
 }
 
@@ -74,7 +68,7 @@ export function registerBillingRoutes(app: FastifyInstance) {
   // Create Stripe Customer Portal session
   app.post("/billing/portal", async (request, reply) => {
     const stripe = getStripe();
-    const user = findUserById(request.userId);
+    const user = getDatabase().findUserById(request.userId);
     if (!user?.stripe_customer_id) {
       return reply.status(400).send({ error: "No billing account found" });
     }
@@ -89,8 +83,8 @@ export function registerBillingRoutes(app: FastifyInstance) {
 
   // Get subscription status
   app.get("/billing/subscription", async (request) => {
-    const plan = getUserPlan(request.userId);
-    const user = findUserById(request.userId);
+    const plan = getDatabase().getUserPlan(request.userId);
+    const user = getDatabase().findUserById(request.userId);
 
     let stripeSubscriptionId: string | null = null;
     let stripeStatus: string | null = null;
@@ -166,9 +160,9 @@ export function registerBillingRoutes(app: FastifyInstance) {
           const customerId = typeof session.customer === "string"
             ? session.customer
             : session.customer.id;
-          const user = findUserByStripeCustomerId(customerId);
+          const user = getDatabase().findUserByStripeCustomerId(customerId);
           if (user) {
-            updateUserPlan(user.id, "base");
+            getDatabase().updateUserPlan(user.id, "base");
             request.log.info(`[billing] Upgraded user ${user.id} to base plan`);
           }
         }
@@ -179,7 +173,7 @@ export function registerBillingRoutes(app: FastifyInstance) {
         const customerId = typeof sub.customer === "string"
           ? sub.customer
           : sub.customer.id;
-        const user = findUserByStripeCustomerId(customerId);
+        const user = getDatabase().findUserByStripeCustomerId(customerId);
         if (user) {
           // Only downgrade if no other active subscriptions remain
           const remaining = await stripe.subscriptions.list({
@@ -188,7 +182,7 @@ export function registerBillingRoutes(app: FastifyInstance) {
             limit: 1,
           });
           if (remaining.data.length === 0) {
-            updateUserPlan(user.id, "free");
+            getDatabase().updateUserPlan(user.id, "free");
             request.log.info(`[billing] Downgraded user ${user.id} to free plan`);
           } else {
             request.log.info(`[billing] Sub deleted for user ${user.id} but ${remaining.data.length} active sub(s) remain — not downgrading`);

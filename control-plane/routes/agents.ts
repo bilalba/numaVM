@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { checkAccess, findAgentSession, findVMById, emitAdminEvent } from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
 import { agentManager } from "../agents/manager.js";
 import { wsHub } from "../agents/ws-hub.js";
 import type { AgentCommand, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort } from "../agents/types.js";
@@ -18,7 +18,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Invalid agent type. Must be 'codex' or 'opencode'" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
@@ -45,7 +45,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
     try {
       const session = await agentManager.createSession(id, type as AgentType, { model, providerID, modelID, cwd, effort, approvalPolicy, sandboxPolicy });
-      emitAdminEvent("agent.session_created", id, request.userId, { agentType: type, sessionId: session.id });
+      getDatabase().emitAdminEvent("agent.session_created", id, request.userId, { agentType: type, sessionId: session.id });
       return reply.status(201).send(session);
     } catch (err: any) {
       request.log.error({ err, vmId: id, agentType: type }, "Failed to create agent session");
@@ -61,7 +61,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Invalid agent type" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
@@ -74,7 +74,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.get("/vms/:id/sessions/:sid", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
@@ -101,12 +101,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
     const agent = body.agent?.trim() || undefined;
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
 
-    const session = findAgentSession(sid);
+    const session = getDatabase().findAgentSession(sid);
     if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
@@ -140,12 +140,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.post("/vms/:id/sessions/:sid/stop", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
 
-    const session = findAgentSession(sid);
+    const session = getDatabase().findAgentSession(sid);
     if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
@@ -162,12 +162,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.delete("/vms/:id/sessions/:sid", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
 
-    const session = findAgentSession(sid);
+    const session = getDatabase().findAgentSession(sid);
     if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
@@ -186,7 +186,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "approvalId and decision (accept/acceptForSession/always/decline) are required" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
@@ -204,12 +204,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const { id, sid } = request.params as { id: string; sid: string };
     const body = request.body as { messageId?: string } | undefined;
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
 
-    const session = findAgentSession(sid);
+    const session = getDatabase().findAgentSession(sid);
     if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
@@ -226,12 +226,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.post("/vms/:id/sessions/:sid/unrevert", async (request, reply) => {
     const { id, sid } = request.params as { id: string; sid: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
 
-    const session = findAgentSession(sid);
+    const session = getDatabase().findAgentSession(sid);
     if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
     }
@@ -248,12 +248,12 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.get("/vms/:id/opencode/providers", async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm) return reply.status(404).send({ error: "VM not found" });
     if (!vm.vm_ip) return reply.status(503).send({ error: "VM not available" });
 
@@ -294,7 +294,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.get("/vms/:id/codex/models", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { includeHidden?: string };
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
 
     try {
@@ -310,7 +310,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.get("/vms/:id/codex/threads", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { cursor?: string; limit?: string };
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
 
     try {
@@ -328,7 +328,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.get("/vms/:id/codex/auth/status", async (request, reply) => {
     const { id } = request.params as { id: string };
     const query = request.query as { refresh?: string };
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
 
     try {
@@ -354,7 +354,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
   app.post("/vms/:id/codex/auth/login", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { mode?: string; apiKey?: string };
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") return reply.status(403).send({ error: "Editor or owner access required" });
 
     try {
@@ -366,7 +366,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       }
 
       // ChatGPT login via device code (CLI-based, since app-server OAuth needs localhost redirect)
-      const vm = findVMById(id);
+      const vm = getDatabase().findVMById(id);
       if (!vm?.vm_ip) return reply.status(500).send({ error: "VM not available" });
 
       return new Promise<void>((resolve) => {
@@ -417,7 +417,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
   // POST /vms/:id/codex/auth/logout — Logout via app-server
   app.post("/vms/:id/codex/auth/logout", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") return reply.status(403).send({ error: "Editor or owner access required" });
 
     try {
@@ -436,7 +436,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
     async (socket, request) => {
       const { id } = request.params as { id: string };
 
-      const role = checkAccess(id, request.userId);
+      const role = getDatabase().checkAccess(id, request.userId);
       if (!role) {
         socket.close(4003, "No access to this VM");
         return;

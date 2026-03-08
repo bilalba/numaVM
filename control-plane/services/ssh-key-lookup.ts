@@ -1,6 +1,6 @@
 import ssh2 from "ssh2";
 import { createHash } from "node:crypto";
-import { findAllUsersWithSshKeys } from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
 
 const { utils } = ssh2;
 
@@ -22,7 +22,7 @@ let cacheTime = 0;
 const CACHE_TTL_MS = 30_000; // 30 seconds
 
 function buildCache(): KeyEntry[] {
-  const users = findAllUsersWithSshKeys();
+  const users = getDatabase().findAllUsersWithSshKeys();
   const entries: KeyEntry[] = [];
 
   for (const user of users) {

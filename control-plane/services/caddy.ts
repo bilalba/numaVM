@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
 
 const caddyAdmin = process.env.CADDY_ADMIN_URL || "http://localhost:2019";
 
@@ -25,9 +25,7 @@ interface VMRoute {
 }
 
 function getAllVMs(): VMRoute[] {
-  return db
-    .prepare("SELECT id, app_port, status FROM vms WHERE status NOT IN ('error')")
-    .all() as VMRoute[];
+  return getDatabase().raw<VMRoute>("SELECT id, app_port, status FROM vms WHERE status NOT IN ('error')");
 }
 
 function generateCaddyfile(vms: VMRoute[]): string {

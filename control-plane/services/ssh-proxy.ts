@@ -12,9 +12,8 @@ const { Server, Client, utils } = ssh2;
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
-import { findVMById, getAuthorizedUsersForVM } from "../db/client.js";
+import { getDatabase, getVMEngine } from "../adapters/providers.js";
 import { ensureVMRunning, QuotaExceededError } from "./wake.js";
-import { getInternalSshKeyPath, isVmRunning } from "./firecracker.js";
 import { findUserByPublicKey, computeKeyFingerprint, type SshUser } from "./ssh-key-lookup.js";
 import { dispatchSshCommand } from "../ssh-api/dispatcher.js";
 import { showAuthenticatedTui, showUnauthenticatedTui } from "../ssh-api/tui.js";
@@ -55,7 +54,7 @@ let sshServer: InstanceType<typeof Server> | null = null;
  * Returns parsed ssh2 keys ready for comparison.
  */
 function getAuthorizedKeys(vmId: string): ParsedKey[] {
-  const users = getAuthorizedUsersForVM(vmId);
+  const users = getDatabase().getAuthorizedUsersForVM(vmId);
   const keys: ParsedKey[] = [];
 
   for (const user of users) {
@@ -120,7 +119,7 @@ function handleConnection(client: Connection, _info: ClientInfo) {
     // Determine mode: VM slug (starts with "vm-") → VM proxy, anything else → API mode
     if (username.startsWith("vm-")) {
       // --- VM proxy mode ---
-      vm = findVMById(username);
+      vm = getDatabase().findVMById(username);
       if (!vm) {
         console.warn(`[ssh-proxy] No VM found for slug "${username}"`);
         return ctx.reject(["publickey"]);
@@ -307,7 +306,7 @@ function handleConnection(client: Connection, _info: ClientInfo) {
         let retriedAfterSnapshot = false;
 
         // Wake VM if needed — write status to stderr so it doesn't interfere with pipes/scp
-        const needsWake = !isVmRunning(vm.id);
+        const needsWake = !getVMEngine().isVmRunning(vm.id);
         const wakePromise = needsWake
           ? (() => {
               clientChan.stderr.write("Waking VM... ");
@@ -319,7 +318,7 @@ function handleConnection(client: Connection, _info: ClientInfo) {
 
         wakePromise
           .then(() => {
-            const internalKeyPath = getInternalSshKeyPath();
+            const internalKeyPath = getVMEngine().getInternalSshKeyPath();
             const internalKey = readFileSync(internalKeyPath);
 
             const upstream = new Client();

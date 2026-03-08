@@ -39,24 +39,17 @@ export function Overview() {
     fill: STATUS_COLORS[status] || "#a3a3a3",
   }));
 
-  const activeSessions = (stats.sessionCounts["idle"] || 0) + (stats.sessionCounts["busy"] || 0);
-
   return (
     <div className="space-y-6">
       <h1 className="text-sm font-semibold">Overview</h1>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         <StatsCard label="Total Users" value={stats.userCount} />
         <StatsCard label="Total VMs" value={stats.totalVMs} />
         <StatsCard
           label="Running VMs"
           value={stats.vmsByStatus["running"] || 0}
           dot="bg-green-500"
-        />
-        <StatsCard
-          label="Active Agent Sessions"
-          value={activeSessions}
-          subtitle={`${stats.messageCount} total messages`}
         />
       </div>
 

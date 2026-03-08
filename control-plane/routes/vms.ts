@@ -3,37 +3,10 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { customAlphabet } from "nanoid";
-import {
-  insertVM,
-  findVMById,
-  findVMsByUser,
-  updateVMStatus,
-  updateVMStatusDetail,
-  updateVMInfo,
-  updateVMSnapshotPath,
-  deleteVM,
-  grantAccess,
-  revokeAllAccess,
-  checkAccess,
-  findUserById,
-  emitAdminEvent,
-  getUserProvisionedRam,
-  getUserPlan,
-} from "../db/client.js";
+import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
 import { allocatePorts, allocateCid, cidToVmIp } from "../services/port-allocator.js";
-import {
-  createAndStartVM,
-  stopVM,
-  snapshotVM,
-  pauseVM,
-  resumeVM,
-  removeVMFull,
-  inspectVM,
-  getInternalSshPubKey,
-} from "../services/firecracker.js";
 import { fetchSshKeys } from "../services/github.js";
 import { execInVM } from "../services/vsock-ssh.js";
-import { addRoute, removeRoute } from "../services/caddy.js";
 import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
@@ -50,14 +23,14 @@ export function registerVMRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "name is required (1-64 chars)" });
     }
 
-    const userPlan = getUserPlan(request.userId);
+    const userPlan = getDatabase().getUserPlan(request.userId);
     const memSizeMib = body.mem_size_mib ?? DEFAULT_MEM_SIZE;
     if (!userPlan.valid_mem_sizes.includes(memSizeMib)) {
       return reply.status(400).send({ error: `mem_size_mib must be one of: ${userPlan.valid_mem_sizes.join(", ")}` });
     }
 
     // Check RAM quota (only running/creating VMs count)
-    const currentRam = getUserProvisionedRam(request.userId);
+    const currentRam = getDatabase().getUserProvisionedRam(request.userId);
     if (currentRam + memSizeMib > userPlan.max_ram_mib) {
       return reply.status(400).send({
         error: "RAM quota exceeded",
@@ -77,7 +50,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     const repoFullName = body.gh_repo || null;
 
     // Fetch user's SSH keys (GitHub + custom)
-    const user = findUserById(request.userId);
+    const user = getDatabase().findUserById(request.userId);
     const keyParts: string[] = [];
     if (user?.github_username) {
       const ghKeys = await fetchSshKeys(user.github_username);
@@ -97,7 +70,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     // git push won't work without a token, but the repo will still be cloned.
 
     // Insert VM record early (reserves ports + CID)
-    insertVM({
+    getDatabase().insertVM({
       id: slug,
       name: body.name,
       owner_id: request.userId,
@@ -117,7 +90,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     });
 
     // Grant owner access (used by auth verify for subdomain gating)
-    grantAccess(slug, request.userId, "owner");
+    getDatabase().grantAccess(slug, request.userId, "owner");
 
     // Return immediately — VM creation happens in the background.
     // Dashboard polls GET /vms/:id for status + status_detail.
@@ -135,7 +108,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     const userId = request.userId;
     (async () => {
       try {
-        const vmId = await createAndStartVM({
+        const vmId = await getVMEngine().createAndStartVM({
           slug,
           name: body.name,
           appPort,
@@ -152,10 +125,10 @@ export function registerVMRoutes(app: FastifyInstance) {
           vmIp,
           memSizeMib: memSizeMib,
           onProgress: (detail: string) => {
-            updateVMStatusDetail(slug, detail);
+            getDatabase().updateVMStatusDetail(slug, detail);
           },
         });
-        updateVMInfo(slug, vmId, vmIp, vsockCid, null);
+        getDatabase().updateVMInfo(slug, vmId, vmIp, vsockCid, null);
 
         // Poll VM init progress (cloning → installing → building → starting → ready)
         const progressLabels: Record<string, string> = {
@@ -176,11 +149,11 @@ export function registerVMRoutes(app: FastifyInstance) {
             if (progress && progress !== lastProgress) {
               lastProgress = progress;
               if (progress.startsWith("error:")) {
-                updateVMStatusDetail(slug, `Error: ${progress.slice(6)}`);
+                getDatabase().updateVMStatusDetail(slug, `Error: ${progress.slice(6)}`);
                 // Don't fail the whole VM — it's still SSH-accessible
                 break;
               }
-              updateVMStatusDetail(slug, progressLabels[progress] || progress);
+              getDatabase().updateVMStatusDetail(slug, progressLabels[progress] || progress);
               if (progress === "ready") break;
             }
           } catch {
@@ -189,27 +162,27 @@ export function registerVMRoutes(app: FastifyInstance) {
           await new Promise((r) => setTimeout(r, 2000));
         }
 
-        updateVMStatus(slug, "running");
+        getDatabase().updateVMStatus(slug, "running");
         // Keep status_detail so the dashboard can show what happened
         if (lastProgress === "ready") {
-          updateVMStatusDetail(slug, null);
+          getDatabase().updateVMStatusDetail(slug, null);
         }
 
         // Register Caddy route AFTER status is "running" so it gets the proxy route
         try {
-          await addRoute(slug, appPort);
+          await getReverseProxy().addRoute(slug, appPort);
         } catch (err) {
           console.error(`[vm] Failed to register Caddy route for ${slug}:`, err);
         }
 
-        emitAdminEvent("vm.created", slug, userId, { name: body.name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}) });
+        getDatabase().emitAdminEvent("vm.created", slug, userId, { name: body.name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}) });
       } catch (err: any) {
         console.error(`[vm] Background VM creation failed for ${slug}:`, err);
-        updateVMStatusDetail(slug, `Error: ${err.message}`);
-        updateVMStatus(slug, "error");
+        getDatabase().updateVMStatusDetail(slug, `Error: ${err.message}`);
+        getDatabase().updateVMStatus(slug, "error");
         // Roll back DB records so ports/CIDs are freed for retry
-        revokeAllAccess(slug);
-        deleteVM(slug);
+        getDatabase().revokeAllAccess(slug);
+        getDatabase().deleteVM(slug);
         const dataDir = process.env.DATA_DIR || "/data/envs";
         try { rmSync(join(dataDir, slug), { recursive: true, force: true }); } catch { /* ok */ }
       }
@@ -218,7 +191,7 @@ export function registerVMRoutes(app: FastifyInstance) {
 
   // List VMs for authenticated user
   app.get("/vms", async (request) => {
-    const vms = findVMsByUser(request.userId);
+    const vms = getDatabase().findVMsByUser(request.userId);
     return {
       vms: vms.map((e) => ({
         id: e.id,
@@ -235,8 +208,8 @@ export function registerVMRoutes(app: FastifyInstance) {
 
   // Get user's RAM quota usage
   app.get("/vms/quota", async (request) => {
-    const userPlan = getUserPlan(request.userId);
-    const currentRam = getUserProvisionedRam(request.userId);
+    const userPlan = getDatabase().getUserPlan(request.userId);
+    const currentRam = getDatabase().getUserProvisionedRam(request.userId);
     return {
       used_mib: currentRam,
       max_mib: userPlan.max_ram_mib,
@@ -252,12 +225,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Get VM details
   app.get("/vms/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
@@ -280,7 +253,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     // Live VM status
     let vmStatus: { running: boolean; status: string; startedAt: string | null; vsockCid: number } | null = null;
     try {
-      vmStatus = await inspectVM(vm.id);
+      vmStatus = await getVMEngine().inspectVM(vm.id);
     } catch {
       // VM may have been removed externally
     }
@@ -307,19 +280,19 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Destroy VM (owner only)
   app.delete("/vms/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (role !== "owner") {
       return reply.status(403).send({ error: "Only the owner can delete a VM" });
     }
 
     // Cleanup VM (best-effort) — includes TAP, iptables DNAT
     try {
-      await removeVMFull(
+      await getVMEngine().removeVMFull(
         id,
         vm.vm_ip || cidToVmIp(vm.vsock_cid || 3),
         vm.app_port,
@@ -329,18 +302,18 @@ export function registerVMRoutes(app: FastifyInstance) {
     } catch { /* may already be stopped/removed */ }
 
     // Cleanup Caddy route (best-effort)
-    try { await removeRoute(id); } catch { /* may not exist */ }
+    try { await getReverseProxy().removeRoute(id); } catch { /* may not exist */ }
 
     // Cleanup DB
-    revokeAllAccess(id);
-    deleteVM(id);
+    getDatabase().revokeAllAccess(id);
+    getDatabase().deleteVM(id);
 
     // Cleanup data directory (rootfs, snapshots, overlay, etc.)
     const dataDir = process.env.DATA_DIR || "/data/envs";
     const vmDataPath = join(dataDir, id);
     try { rmSync(vmDataPath, { recursive: true, force: true }); } catch { /* best-effort */ }
 
-    emitAdminEvent("vm.deleted", id, request.userId);
+    getDatabase().emitAdminEvent("vm.deleted", id, request.userId);
 
     return { ok: true, message: `VM ${id} destroyed` };
   });
@@ -348,12 +321,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Pause (snapshot) VM
   app.post("/vms/:id/pause", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (role !== "owner") {
       return reply.status(403).send({ error: "Only the owner can pause a VM" });
     }
@@ -363,14 +336,14 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     try {
-      await snapshotVM(id);
+      await getVMEngine().snapshotVM(id);
       const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${id}/snapshot`;
-      updateVMSnapshotPath(id, snapshotPath);
-      updateVMStatus(id, "snapshotted");
+      getDatabase().updateVMSnapshotPath(id, snapshotPath);
+      getDatabase().updateVMStatus(id, "snapshotted");
 
-      try { await removeRoute(id); } catch { /* ok */ }
+      try { await getReverseProxy().removeRoute(id); } catch { /* ok */ }
 
-      emitAdminEvent("vm.paused", id, request.userId);
+      getDatabase().emitAdminEvent("vm.paused", id, request.userId);
 
       return { ok: true, message: `VM ${id} paused (snapshotted)` };
     } catch (err: any) {
@@ -383,12 +356,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   app.post("/vms/:id/clone", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { name?: string } || {};
-    const sourceVM = findVMById(id);
+    const sourceVM = getDatabase().findVMById(id);
     if (!sourceVM) {
       return reply.status(404).send({ error: "Source VM not found" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
@@ -407,8 +380,8 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     const cloneMemSize = sourceVM.mem_size_mib;
-    const userPlan = getUserPlan(request.userId);
-    const currentRam = getUserProvisionedRam(request.userId);
+    const userPlan = getDatabase().getUserPlan(request.userId);
+    const currentRam = getDatabase().getUserProvisionedRam(request.userId);
     if (currentRam + cloneMemSize > userPlan.max_ram_mib) {
       return reply.status(400).send({
         error: "RAM quota exceeded",
@@ -426,7 +399,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     const vmIp = cidToVmIp(vsockCid);
 
     // Fetch cloning user's SSH keys (not source's)
-    const user = findUserById(request.userId);
+    const user = getDatabase().findUserById(request.userId);
     const keyParts: string[] = [];
     if (user?.github_username) {
       const ghKeys = await fetchSshKeys(user.github_username);
@@ -448,7 +421,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     try {
       const isRunning = sourceVM.status === "running";
       if (isRunning) {
-        await pauseVM(id);
+        await getVMEngine().pauseVM(id);
       }
 
       try {
@@ -470,7 +443,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       } finally {
         // Always resume source if we paused it
         if (isRunning) {
-          await resumeVM(id);
+          await getVMEngine().resumeVM(id);
         }
       }
     } catch (err: any) {
@@ -481,7 +454,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     // Insert VM record (reserves ports/CID)
-    insertVM({
+    getDatabase().insertVM({
       id: slug,
       name: cloneName,
       owner_id: request.userId,
@@ -499,11 +472,11 @@ export function registerVMRoutes(app: FastifyInstance) {
       status: "creating",
       mem_size_mib: cloneMemSize,
     });
-    grantAccess(slug, request.userId, "owner");
+    getDatabase().grantAccess(slug, request.userId, "owner");
 
     // Boot new VM from copied disks (createAndStartVM skips rootfs/data creation if files exist)
     try {
-      const vmId = await createAndStartVM({
+      const vmId = await getVMEngine().createAndStartVM({
         slug,
         name: cloneName,
         appPort,
@@ -520,24 +493,24 @@ export function registerVMRoutes(app: FastifyInstance) {
         vmIp,
         memSizeMib: cloneMemSize,
       });
-      updateVMInfo(slug, vmId, vmIp, vsockCid, null);
+      getDatabase().updateVMInfo(slug, vmId, vmIp, vsockCid, null);
     } catch (err: any) {
-      revokeAllAccess(slug);
-      deleteVM(slug);
+      getDatabase().revokeAllAccess(slug);
+      getDatabase().deleteVM(slug);
       try { execSync(`rm -rf "${targetDir}"`, { stdio: "pipe" }); } catch { /* ok */ }
       request.log.error({ err, slug }, "Failed to create cloned VM");
       return reply.status(500).send({ error: "Failed to create cloned VM", details: err.message });
     }
 
-    updateVMStatus(slug, "running");
+    getDatabase().updateVMStatus(slug, "running");
 
     try {
-      await addRoute(slug, appPort);
+      await getReverseProxy().addRoute(slug, appPort);
     } catch (err) {
       request.log.warn({ err, slug }, "Failed to register Caddy route for clone");
     }
 
-    emitAdminEvent("vm.cloned", slug, request.userId, { source: id, name: cloneName });
+    getDatabase().emitAdminEvent("vm.cloned", slug, request.userId, { source: id, name: cloneName });
 
     return reply.status(201).send({
       id: slug,
@@ -553,7 +526,7 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Status page (Caddy fallback for 502/503)
   app.get("/vms/:id/status-page", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
 
     const status = vm?.status || "unknown";
     const name = vm?.name || id;
@@ -662,7 +635,7 @@ export function registerVMRoutes(app: FastifyInstance) {
 
   /** Gather all desired keys for a user (GitHub + custom + internal), deduped. */
   async function gatherUserKeys(userId: string): Promise<string> {
-    const user = findUserById(userId);
+    const user = getDatabase().findUserById(userId);
     const parts: string[] = [];
 
     if (user?.github_username) {
@@ -674,7 +647,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     // Always include the internal key
-    parts.push(getInternalSshPubKey());
+    parts.push(getVMEngine().getInternalSshPubKey());
 
     return dedupeKeys(parts.join("\n"));
   }
@@ -682,12 +655,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Check if SSH keys are already synced to the VM
   app.get("/vms/:id/ssh-keys-status", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
@@ -711,12 +684,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Sync SSH keys to a running VM
   app.post("/vms/:id/sync-ssh-keys", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }

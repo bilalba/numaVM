@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { findVMById, checkAccess } from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
 import { execInVM } from "../services/vsock-ssh.js";
 
 export interface FileEntry {
@@ -47,12 +47,12 @@ export function registerFileRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
     }
@@ -90,12 +90,12 @@ export function registerFileRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
     }
@@ -140,12 +140,12 @@ export function registerFileRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
     }
@@ -195,12 +195,12 @@ export function registerFileRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { limit?: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
     }

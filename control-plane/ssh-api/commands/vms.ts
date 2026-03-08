@@ -1,30 +1,10 @@
 import { customAlphabet } from "nanoid";
 import type { CommandContext } from "../dispatcher.js";
 import { writeJson, writeError } from "../dispatcher.js";
-import {
-  findVMsByUser,
-  findVMById,
-  findUserById,
-  checkAccess,
-  insertVM,
-  updateVMStatus,
-  updateVMInfo,
-  deleteVM,
-  grantAccess,
-  revokeAllAccess,
-  emitAdminEvent,
-  getUserPlan,
-  getUserProvisionedRam,
-} from "../../db/client.js";
-import {
-  createAndStartVM,
-  removeVMFull,
-  snapshotVM,
-} from "../../services/firecracker.js";
+import { getDatabase, getVMEngine, getReverseProxy } from "../../adapters/providers.js";
 import { allocatePorts, allocateCid, cidToVmIp } from "../../services/port-allocator.js";
 import { fetchSshKeys } from "../../services/github.js";
 import { ensureVMRunning, QuotaExceededError } from "../../services/wake.js";
-import { addRoute, removeRoute } from "../../services/caddy.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 
@@ -70,7 +50,7 @@ export async function handleVMsCommand(ctx: CommandContext): Promise<void> {
 }
 
 async function listVMs(ctx: CommandContext): Promise<void> {
-  const vms = findVMsByUser(ctx.user.userId);
+  const vms = getDatabase().findVMsByUser(ctx.user.userId);
   const result = vms.map((e) => ({
     id: e.id,
     name: e.name,
@@ -88,7 +68,7 @@ async function listVMs(ctx: CommandContext): Promise<void> {
 }
 
 async function showVM(vmId: string, ctx: CommandContext): Promise<void> {
-  const vm = findVMById(vmId);
+  const vm = getDatabase().findVMById(vmId);
   if (!vm) {
     writeError(ctx.channel, `VM not found: ${vmId}`);
     ctx.channel.exit(1);
@@ -96,7 +76,7 @@ async function showVM(vmId: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const role = checkAccess(vmId, ctx.user.userId);
+  const role = getDatabase().checkAccess(vmId, ctx.user.userId);
   if (!role) {
     writeError(ctx.channel, `No access to VM: ${vmId}`);
     ctx.channel.exit(1);
@@ -137,7 +117,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
   const memSizeMib = typeof flags.mem === "string" ? parseInt(flags.mem, 10) : DEFAULT_MEM_SIZE;
 
   // Validate plan + quota
-  const userPlan = getUserPlan(user.userId);
+  const userPlan = getDatabase().getUserPlan(user.userId);
   if (!userPlan.valid_mem_sizes.includes(memSizeMib)) {
     writeError(channel, `Invalid memory size. Valid options: ${userPlan.valid_mem_sizes.join(", ")} MiB`);
     channel.exit(1);
@@ -145,7 +125,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const currentRam = getUserProvisionedRam(user.userId);
+  const currentRam = getDatabase().getUserProvisionedRam(user.userId);
   if (currentRam + memSizeMib > userPlan.max_ram_mib) {
     writeError(channel, `RAM quota exceeded (${currentRam}/${userPlan.max_ram_mib} MiB used). Stop a VM or upgrade your plan.`);
     channel.exit(1);
@@ -160,7 +140,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
   const vmIp = cidToVmIp(vsockCid);
 
   // Fetch SSH keys
-  const dbUser = findUserById(user.userId);
+  const dbUser = getDatabase().findUserById(user.userId);
   const keyParts: string[] = [];
   if (dbUser?.github_username) {
     const ghKeys = await fetchSshKeys(dbUser.github_username);
@@ -183,7 +163,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
   const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
 
   // Insert VM record (reserves ports/CID)
-  insertVM({
+  getDatabase().insertVM({
     id: slug,
     name,
     owner_id: user.userId,
@@ -201,13 +181,13 @@ async function createVM(ctx: CommandContext): Promise<void> {
     status: "creating",
     mem_size_mib: memSizeMib,
   });
-  grantAccess(slug, user.userId, "owner");
+  getDatabase().grantAccess(slug, user.userId, "owner");
 
   channel.write(`Creating VM "${name}" (${memSizeMib} MiB)...\r\n`);
 
   // Create VM
   try {
-    const vmId = await createAndStartVM({
+    const vmId = await getVMEngine().createAndStartVM({
       slug,
       name,
       appPort,
@@ -224,24 +204,24 @@ async function createVM(ctx: CommandContext): Promise<void> {
       vmIp,
       memSizeMib,
     });
-    updateVMInfo(slug, vmId, vmIp, vsockCid, null);
+    getDatabase().updateVMInfo(slug, vmId, vmIp, vsockCid, null);
   } catch (err: any) {
-    revokeAllAccess(slug);
-    deleteVM(slug);
+    getDatabase().revokeAllAccess(slug);
+    getDatabase().deleteVM(slug);
     writeError(channel, `Failed to create VM: ${err.message}`);
     channel.exit(2);
     channel.close();
     return;
   }
 
-  updateVMStatus(slug, "running");
+  getDatabase().updateVMStatus(slug, "running");
 
   // Register Caddy route (non-fatal)
   try {
-    await addRoute(slug, appPort);
+    await getReverseProxy().addRoute(slug, appPort);
   } catch { /* non-fatal */ }
 
-  emitAdminEvent("vm.created", slug, user.userId, { name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}), source: "ssh" });
+  getDatabase().emitAdminEvent("vm.created", slug, user.userId, { name, mem_size_mib: memSizeMib, ...(repoFullName ? { repo: repoFullName } : {}), source: "ssh" });
 
   const baseDomain = getBaseDomain();
   channel.write(`Ready.\r\n`);
@@ -259,7 +239,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
 }
 
 async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
-  const vm = findVMById(vmId);
+  const vm = getDatabase().findVMById(vmId);
   if (!vm) {
     writeError(ctx.channel, `VM not found: ${vmId}`);
     ctx.channel.exit(1);
@@ -267,7 +247,7 @@ async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const role = checkAccess(vmId, ctx.user.userId);
+  const role = getDatabase().checkAccess(vmId, ctx.user.userId);
   if (role !== "owner") {
     writeError(ctx.channel, "Only the owner can delete a VM");
     ctx.channel.exit(1);
@@ -276,7 +256,7 @@ async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
   }
 
   try {
-    await removeVMFull(
+    await getVMEngine().removeVMFull(
       vmId,
       vm.vm_ip || cidToVmIp(vm.vsock_cid || 3),
       vm.app_port,
@@ -285,11 +265,11 @@ async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
     );
   } catch { /* may already be stopped */ }
 
-  try { await removeRoute(vmId); } catch { /* may not exist */ }
+  try { await getReverseProxy().removeRoute(vmId); } catch { /* may not exist */ }
 
-  revokeAllAccess(vmId);
-  deleteVM(vmId);
-  emitAdminEvent("vm.deleted", vmId, ctx.user.userId);
+  getDatabase().revokeAllAccess(vmId);
+  getDatabase().deleteVM(vmId);
+  getDatabase().emitAdminEvent("vm.deleted", vmId, ctx.user.userId);
 
   writeJson(ctx.channel, { ok: true, message: `VM ${vmId} destroyed` });
   ctx.channel.exit(0);
@@ -297,7 +277,7 @@ async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
 }
 
 async function startVM(vmId: string, ctx: CommandContext): Promise<void> {
-  const vm = findVMById(vmId);
+  const vm = getDatabase().findVMById(vmId);
   if (!vm) {
     writeError(ctx.channel, `VM not found: ${vmId}`);
     ctx.channel.exit(1);
@@ -305,7 +285,7 @@ async function startVM(vmId: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const role = checkAccess(vmId, ctx.user.userId);
+  const role = getDatabase().checkAccess(vmId, ctx.user.userId);
   if (!role) {
     writeError(ctx.channel, `No access to VM: ${vmId}`);
     ctx.channel.exit(1);
@@ -329,7 +309,7 @@ async function startVM(vmId: string, ctx: CommandContext): Promise<void> {
 }
 
 async function stopVM(vmId: string, ctx: CommandContext): Promise<void> {
-  const vm = findVMById(vmId);
+  const vm = getDatabase().findVMById(vmId);
   if (!vm) {
     writeError(ctx.channel, `VM not found: ${vmId}`);
     ctx.channel.exit(1);
@@ -337,7 +317,7 @@ async function stopVM(vmId: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const role = checkAccess(vmId, ctx.user.userId);
+  const role = getDatabase().checkAccess(vmId, ctx.user.userId);
   if (role !== "owner" && role !== "editor") {
     writeError(ctx.channel, "Only the owner or editors can stop a VM");
     ctx.channel.exit(1);
@@ -346,7 +326,7 @@ async function stopVM(vmId: string, ctx: CommandContext): Promise<void> {
   }
 
   try {
-    await snapshotVM(vmId);
+    await getVMEngine().snapshotVM(vmId);
     writeJson(ctx.channel, { ok: true, status: "snapshotted", message: `VM ${vmId} snapshotted` });
     ctx.channel.exit(0);
   } catch (err: any) {

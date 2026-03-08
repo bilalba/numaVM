@@ -1,14 +1,5 @@
-import {
-  findVMById,
-  updateVMStatus,
-  updateVMSnapshotPath,
-  updateVMInfo,
-  emitAdminEvent,
-  getUserPlan,
-  getUserProvisionedRam,
-} from "../db/client.js";
-import { restoreVM, createAndStartVM, isVmRunning, getInternalSshPubKey } from "./firecracker.js";
-import { addRoute } from "./caddy.js";
+import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
+import type { VM } from "../adapters/types.js";
 import { resetIdleTimer } from "./idle-monitor.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -48,22 +39,25 @@ const pendingWakes = new Map<string, Promise<void>>();
  * Coalesces concurrent wake requests for the same VM.
  */
 export async function ensureVMRunning(vmId: string): Promise<void> {
+  const db = getDatabase();
+  const engine = getVMEngine();
+
   console.log(`[wake] ensureVMRunning called for ${vmId}`);
 
   // Check if already running in memory
-  if (isVmRunning(vmId)) {
+  if (engine.isVmRunning(vmId)) {
     console.log(`[wake] ${vmId} already running in memory, skipping`);
     resetIdleTimer(vmId);
     return;
   }
 
-  const vm = findVMById(vmId);
+  const vm = db.findVMById(vmId);
   if (!vm) throw new Error("VM not found");
 
   console.log(`[wake] ${vmId} DB status=${vm.status}, vmIp=${vm.vm_ip}, vsockCid=${vm.vsock_cid}`);
 
   // Already running according to DB and memory
-  if (vm.status === "running" && isVmRunning(vmId)) {
+  if (vm.status === "running" && engine.isVmRunning(vmId)) {
     resetIdleTimer(vmId);
     return;
   }
@@ -80,8 +74,8 @@ export async function ensureVMRunning(vmId: string): Promise<void> {
   }
 
   // Check RAM quota before waking
-  const userPlan = getUserPlan(vm.owner_id);
-  const currentRam = getUserProvisionedRam(vm.owner_id);
+  const userPlan = db.getUserPlan(vm.owner_id);
+  const currentRam = db.getUserProvisionedRam(vm.owner_id);
   if (currentRam + vm.mem_size_mib > userPlan.max_ram_mib) {
     throw new QuotaExceededError(currentRam, vm.mem_size_mib, userPlan.max_ram_mib, userPlan.plan);
   }
@@ -104,7 +98,11 @@ export async function ensureVMRunning(vmId: string): Promise<void> {
   }
 }
 
-async function doWake(vmId: string, vm: ReturnType<typeof findVMById>): Promise<void> {
+async function doWake(vmId: string, vm: VM): Promise<void> {
+  const db = getDatabase();
+  const engine = getVMEngine();
+  const proxy = getReverseProxy();
+
   if (!vm) throw new Error("VM not found");
   if (!vm.vsock_cid) throw new Error("VM has no vsock CID");
   if (!vm.vm_ip) throw new Error("VM has no IP address");
@@ -114,12 +112,12 @@ async function doWake(vmId: string, vm: ReturnType<typeof findVMById>): Promise<
   const snapshotDir = join(dataDir, vmId, "snapshot");
   const hasSnapshot = existsSync(join(snapshotDir, "vmstate")) && existsSync(join(snapshotDir, "memory"));
 
-  updateVMStatus(vmId, "creating"); // Temporarily mark as creating
+  db.updateVMStatus(vmId, "creating"); // Temporarily mark as creating
 
   try {
     if (hasSnapshot) {
       console.log(`[wake] Restoring VM ${vmId} from snapshot...`);
-      await restoreVM(
+      await engine.restoreVM(
         vmId,
         vm.vsock_cid,
         vm.vm_ip,
@@ -136,22 +134,22 @@ async function doWake(vmId: string, vm: ReturnType<typeof findVMById>): Promise<
     }
 
     // Update DB state
-    updateVMStatus(vmId, "running");
-    updateVMSnapshotPath(vmId, null);
+    db.updateVMStatus(vmId, "running");
+    db.updateVMSnapshotPath(vmId, null);
 
     // Re-register Caddy route
     try {
-      await addRoute(vmId, vm.app_port);
+      await proxy.addRoute(vmId, vm.app_port);
     } catch (err) {
       console.warn(`[wake] Failed to re-register Caddy route for ${vmId}: ${err}`);
     }
 
-    emitAdminEvent("vm.woke", vmId, null, { hadSnapshot: hasSnapshot });
+    db.emitAdminEvent("vm.woke", vmId, null, { hadSnapshot: hasSnapshot });
 
     // Reset idle timer so it doesn't immediately re-snapshot
     resetIdleTimer(vmId);
   } catch (err: any) {
-    updateVMStatus(vmId, "error");
+    db.updateVMStatus(vmId, "error");
     console.error(`[wake] Failed to wake VM ${vmId}: ${err.message}`);
     throw err;
   }
@@ -163,9 +161,11 @@ async function doWake(vmId: string, vm: ReturnType<typeof findVMById>): Promise<
  */
 async function createFreshVM(
   vmId: string,
-  vm: NonNullable<ReturnType<typeof findVMById>>,
+  vm: VM,
   dataDir: string,
 ): Promise<void> {
+  const engine = getVMEngine();
+
   // Read VM config from the saved vm.json
   const vmConfigPath = join(dataDir, vmId, "env.json");
   let vmConfig: any = {};
@@ -175,7 +175,7 @@ async function createFreshVM(
     console.warn(`[wake] No env.json found for ${vmId}, using defaults`);
   }
 
-  await createAndStartVM({
+  await engine.createAndStartVM({
     slug: vmId,
     name: vm.name,
     appPort: vm.app_port,

@@ -1,12 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import {
-  findVMById,
-  checkAccess,
-  grantAccess,
-  revokeAccess,
-  getVMAccess,
-  findUserByEmail,
-} from "../db/client.js";
+import { getDatabase } from "../adapters/providers.js";
 
 export function registerAccessRoutes(app: FastifyInstance) {
   // Grant or revoke access
@@ -18,29 +11,29 @@ export function registerAccessRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "email is required" });
     }
 
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const callerRole = checkAccess(id, request.userId);
+    const callerRole = getDatabase().checkAccess(id, request.userId);
     if (callerRole !== "owner") {
       return reply.status(403).send({ error: "Only the owner can manage access" });
     }
 
-    const targetUser = findUserByEmail(body.email);
+    const targetUser = getDatabase().findUserByEmail(body.email);
     if (!targetUser) {
       return reply.status(404).send({ error: "User not found. They must sign up first." });
     }
 
     // Prevent revoking owner access
-    const targetRole = checkAccess(id, targetUser.id);
+    const targetRole = getDatabase().checkAccess(id, targetUser.id);
     if (targetRole === "owner" && (body.role === null || body.role === undefined)) {
       return reply.status(400).send({ error: "Cannot revoke owner access" });
     }
 
     if (body.role === null || body.role === undefined) {
-      revokeAccess(id, targetUser.id);
+      getDatabase().revokeAccess(id, targetUser.id);
       return { ok: true, message: `Access revoked for ${body.email}` };
     }
 
@@ -48,7 +41,7 @@ export function registerAccessRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "role must be 'editor' or 'viewer'" });
     }
 
-    grantAccess(id, targetUser.id, body.role);
+    getDatabase().grantAccess(id, targetUser.id, body.role);
     return { ok: true, message: `${body.role} access granted to ${body.email}` };
   });
 
@@ -56,17 +49,17 @@ export function registerAccessRoutes(app: FastifyInstance) {
   app.get("/vms/:id/access", async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const access = getVMAccess(id);
+    const access = getDatabase().getVMAccess(id);
     return { access };
   });
 }

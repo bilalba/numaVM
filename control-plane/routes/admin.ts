@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { db, getTrafficHistory, getTrafficSummary } from "../db/client.js";
-import { inspectVM } from "../services/firecracker.js";
+import { getDatabase, getVMEngine } from "../adapters/providers.js";
 import { getHealthStats } from "../services/health.js";
 import { readFileSync } from "node:fs";
 
@@ -13,7 +12,7 @@ export function registerAdminRoutes(app: FastifyInstance) {
     if (request.headers["x-user-admin"] === "true") return;
 
     // Fallback: check DB directly (dev mode / Bearer token auth)
-    const user = db.prepare("SELECT is_admin FROM users WHERE id = ?").get(request.userId) as { is_admin: number } | undefined;
+    const user = getDatabase().rawGet<{ is_admin: number }>("SELECT is_admin FROM users WHERE id = ?", request.userId);
     if (user?.is_admin) return;
 
     return reply.status(403).send({ error: "Admin access required" });
@@ -21,33 +20,26 @@ export function registerAdminRoutes(app: FastifyInstance) {
 
   // GET /admin/stats — Overview numbers
   app.get("/admin/stats", async () => {
-    const vmsByStatus = db.prepare(
+    const db = getDatabase();
+    const vmsByStatus = db.raw<{ status: string; count: number }>(
       "SELECT status, COUNT(*) as count FROM vms GROUP BY status"
-    ).all() as { status: string; count: number }[];
+    );
 
-    const userCount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }).count;
+    const userRow = db.rawGet<{ count: number }>("SELECT COUNT(*) as count FROM users");
+    const userCount = userRow?.count || 0;
 
-    const sessionCounts = db.prepare(
-      "SELECT status, COUNT(*) as count FROM agent_sessions GROUP BY status"
-    ).all() as { status: string; count: number }[];
-
-    const messageCount = (db.prepare("SELECT COUNT(*) as count FROM agent_messages").get() as { count: number }).count;
-
-    const recentVMs = db.prepare(
+    const recentVMs = db.raw(
       "SELECT v.id, v.name, v.status, v.created_at, u.email as owner_email FROM vms v LEFT JOIN users u ON u.id = v.owner_id ORDER BY v.created_at DESC LIMIT 10"
-    ).all();
+    );
 
-    const recentEvents = db.prepare(
+    const recentEvents = db.raw(
       "SELECT * FROM admin_events ORDER BY created_at DESC LIMIT 10"
-    ).all();
+    );
 
     return {
       vmsByStatus: Object.fromEntries(vmsByStatus.map(r => [r.status, r.count])),
       totalVMs: vmsByStatus.reduce((sum, r) => sum + r.count, 0),
       userCount,
-      sessionCounts: Object.fromEntries(sessionCounts.map(r => [r.status, r.count])),
-      totalSessions: sessionCounts.reduce((sum, r) => sum + r.count, 0),
-      messageCount,
       recentVMs,
       recentEvents,
     };
@@ -55,7 +47,7 @@ export function registerAdminRoutes(app: FastifyInstance) {
 
   // GET /admin/users — All users
   app.get("/admin/users", async () => {
-    const users = db.prepare(`
+    const users = getDatabase().raw(`
       SELECT u.id, u.email, u.name, u.github_username, u.avatar_url, u.is_admin, u.created_at,
         CASE WHEN u.github_id IS NOT NULL THEN 'github'
              WHEN u.google_id IS NOT NULL THEN 'google'
@@ -65,19 +57,19 @@ export function registerAdminRoutes(app: FastifyInstance) {
       LEFT JOIN vm_access va ON va.user_id = u.id
       GROUP BY u.id
       ORDER BY u.created_at DESC
-    `).all();
+    `);
 
     return { users };
   });
 
   // GET /admin/vms — All VMs
   app.get("/admin/vms", async () => {
-    const vms = db.prepare(`
+    const vms = getDatabase().raw(`
       SELECT v.*, u.email as owner_email, u.name as owner_name
       FROM vms v
       LEFT JOIN users u ON u.id = v.owner_id
       ORDER BY v.created_at DESC
-    `).all();
+    `);
 
     return { vms };
   });
@@ -85,44 +77,37 @@ export function registerAdminRoutes(app: FastifyInstance) {
   // GET /admin/vms/:id — Detailed VM info
   app.get("/admin/vms/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
+    const db = getDatabase();
 
-    const vm = db.prepare(`
+    const vm = db.rawGet(`
       SELECT v.*, u.email as owner_email, u.name as owner_name
       FROM vms v
       LEFT JOIN users u ON u.id = v.owner_id
       WHERE v.id = ?
-    `).get(id) as any;
+    `, id) as any;
 
     if (!vm) return reply.status(404).send({ error: "VM not found" });
 
-    const access = db.prepare(`
+    const access = db.raw(`
       SELECT va.user_id, va.role, u.email, u.name
       FROM vm_access va
       LEFT JOIN users u ON u.id = va.user_id
       WHERE va.vm_id = ?
-    `).all(id);
-
-    const sessions = db.prepare(
-      "SELECT * FROM agent_sessions WHERE vm_id = ? ORDER BY updated_at DESC"
-    ).all(id);
-
-    const messageCount = (db.prepare(
-      "SELECT COUNT(*) as count FROM agent_messages WHERE session_id IN (SELECT id FROM agent_sessions WHERE vm_id = ?)"
-    ).get(id) as { count: number }).count;
+    `, id);
 
     let vmStatus = null;
     try {
-      vmStatus = await inspectVM(id);
+      vmStatus = await getVMEngine().inspectVM(id);
     } catch { /* VM may not exist */ }
 
-    return { vm, access, sessions, messageCount, vmStatus };
+    return { vm, access, vmStatus };
   });
 
   // GET /admin/traffic — TAP traffic for running VMs
   app.get("/admin/traffic", async () => {
-    const runningVMs = db.prepare(
+    const runningVMs = getDatabase().raw<{ id: string; vm_ip: string }>(
       "SELECT id, vm_ip FROM vms WHERE status = 'running'"
-    ).all() as { id: string; vm_ip: string }[];
+    );
 
     const traffic = runningVMs.map(vm => {
       const tapDev = `tap-${vm.id}`;
@@ -141,7 +126,7 @@ export function registerAdminRoutes(app: FastifyInstance) {
   app.get("/admin/traffic/summary", async (request) => {
     const query = request.query as { hours?: string };
     const hours = Math.min(parseInt(query.hours || "24", 10), 168); // max 7 days
-    const summary = getTrafficSummary(hours);
+    const summary = getDatabase().getTrafficSummary(hours);
     return { summary, hours };
   });
 
@@ -150,25 +135,8 @@ export function registerAdminRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { hours?: string };
     const hours = Math.min(parseInt(query.hours || "24", 10), 168);
-    const history = getTrafficHistory(id, hours);
+    const history = getDatabase().getTrafficHistory(id, hours);
     return { vmId: id, history, hours };
-  });
-
-  // GET /admin/sessions — All agent sessions
-  app.get("/admin/sessions", async (request) => {
-    const query = request.query as { limit?: string };
-    const limit = Math.min(parseInt(query.limit || "200", 10), 500);
-
-    const sessions = db.prepare(`
-      SELECT s.*, v.name as vm_name,
-        (SELECT COUNT(*) FROM agent_messages WHERE session_id = s.id) as message_count
-      FROM agent_sessions s
-      LEFT JOIN vms v ON v.id = s.vm_id
-      ORDER BY s.updated_at DESC
-      LIMIT ?
-    `).all(limit);
-
-    return { sessions };
   });
 
   // GET /admin/events — Recent admin events
@@ -187,7 +155,7 @@ export function registerAdminRoutes(app: FastifyInstance) {
     sql += " ORDER BY created_at DESC LIMIT ?";
     params.push(limit);
 
-    const events = db.prepare(sql).all(...params);
+    const events = getDatabase().raw(sql, ...params);
     return { events };
   });
 
@@ -195,14 +163,14 @@ export function registerAdminRoutes(app: FastifyInstance) {
   app.get("/admin/health", async () => {
     const stats = await getHealthStats();
 
-    const portInfo = db.prepare(
+    const portInfo = getDatabase().rawGet<{ used: number }>(
       "SELECT COUNT(*) as used FROM vms WHERE status != 'error'"
-    ).get() as { used: number };
+    );
 
     return {
       ...stats,
       resources: {
-        portsUsed: portInfo.used,
+        portsUsed: portInfo?.used || 0,
         portRange: { app: "10001+", ssh: "20001+", opencode: "30001+" },
       },
     };

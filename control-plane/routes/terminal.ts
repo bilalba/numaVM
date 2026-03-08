@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { findVMById, checkAccess } from "../db/client.js";
-import { inspectVM } from "../services/firecracker.js";
+import { getDatabase, getVMEngine } from "../adapters/providers.js";
 import { execInVM } from "../services/vsock-ssh.js";
 import { createTerminal } from "../terminal/pty-handler.js";
 import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
@@ -20,13 +19,13 @@ export function registerTerminalRoutes(app: FastifyInstance) {
     async (socket, request) => {
       const { id } = request.params as { id: string };
 
-      const role = checkAccess(id, request.userId);
+      const role = getDatabase().checkAccess(id, request.userId);
       if (!role) {
         socket.close(4003, "No access to this VM");
         return;
       }
 
-      const vm = findVMById(id);
+      const vm = getDatabase().findVMById(id);
       if (!vm || !vm.vm_ip) {
         socket.close(4004, "VM not found");
         return;
@@ -46,7 +45,7 @@ export function registerTerminalRoutes(app: FastifyInstance) {
       }
 
       try {
-        const status = await inspectVM(vm.id);
+        const status = await getVMEngine().inspectVM(vm.id);
         if (!status.running) {
           socket.close(4005, "VM is not running");
           return;
@@ -80,12 +79,12 @@ export function registerTerminalRoutes(app: FastifyInstance) {
   app.get("/vms/:id/terminal/sessions", async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const role = checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const vm = findVMById(id);
+    const vm = getDatabase().findVMById(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
     }
@@ -122,14 +121,14 @@ export function registerTerminalRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id, name } = request.params as { id: string; name: string };
 
-      const role = checkAccess(id, request.userId);
+      const role = getDatabase().checkAccess(id, request.userId);
       if (!role) {
         return reply
           .status(403)
           .send({ error: "No access to this VM" });
       }
 
-      const vm = findVMById(id);
+      const vm = getDatabase().findVMById(id);
       if (!vm || !vm.vm_ip) {
         return reply.status(404).send({ error: "VM not found" });
       }

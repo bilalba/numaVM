@@ -14,7 +14,7 @@ import {
   getSessionFromRequest,
   clearSessionCookie,
 } from "./session.js";
-import { findUserById } from "./db/client.js";
+import { initAuthProviders, getAuthDatabase } from "./adapters/providers.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,6 +24,8 @@ try {
     readFileSync(join(__dirname, "..", "version.json"), "utf-8")
   );
 } catch {}
+
+await initAuthProviders();
 
 const app = Fastify({ logger: true });
 
@@ -82,7 +84,7 @@ app.get("/me", async (request, reply) => {
   if (!session) {
     return reply.status(401).send({ error: "Not authenticated" });
   }
-  const user = findUserById(session.sub);
+  const user = await getAuthDatabase().findUserById(session.sub);
   if (!user) {
     return reply.status(401).send({ error: "User not found" });
   }
