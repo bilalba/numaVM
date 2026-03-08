@@ -23,7 +23,7 @@ See `PLATFORM_PLAN.md` for the full architecture document.
 - **Auth**: `arctic` (OAuth), `jose` (JWT), `better-sqlite3`
 - **Isolation**: Firecracker microVMs with TCP SSH over bridge network for host↔guest exec
 - **GitHub**: `octokit` for repo creation and API access
-- **Billing**: Stripe Checkout + Customer Portal
+- **Billing**: Pluggable via `IBillingProvider` adapter (disabled by default)
 - **Dev**: `tsx` for TypeScript execution
 - **Database**: SQLite (`platform.db` at project root, shared between auth and control-plane)
 
@@ -48,7 +48,7 @@ numavm/
 │   │   ├── agents.ts    # Agent session CRUD, messaging, WebSocket hub
 │   │   ├── files.ts     # File browser + git log
 │   │   ├── user.ts      # /me endpoints, SSH keys, GitHub repos
-│   │   ├── billing.ts   # Stripe checkout, portal, webhooks
+│   │   ├── billing.ts   # Billing routes (delegates to IBillingProvider)
 │   │   └── admin.ts     # Admin API routes
 │   ├── agents/
 │   │   ├── types.ts     # AgentEvent, AgentCommand, AgentBridge interface
@@ -245,11 +245,11 @@ GET    /link-ssh/:token                  Get pending SSH key info
 GET    /link-ssh/:token/status           Poll confirmation status
 POST   /link-ssh/:token                  Confirm SSH key linking
 
-# Billing (Stripe)
-POST   /billing/checkout                 Create Stripe Checkout session
-POST   /billing/portal                   Create Stripe Customer Portal session
-GET    /billing/subscription             Get subscription status + plan
-POST   /billing/webhook                  Stripe webhook handler
+# Billing (delegated to IBillingProvider — disabled by default)
+GET    /billing/subscription             Get subscription status + plan (always registered)
+POST   /billing/checkout                 Create Checkout session (only when billing enabled)
+POST   /billing/portal                   Create Customer Portal session (only when billing enabled)
+POST   /billing/webhook                  Webhook handler (only when billing enabled)
 
 # Admin (require is_admin)
 GET    /admin/stats                      Overview numbers
@@ -279,12 +279,20 @@ GET    /admin/health                     Extended health + resources
 
 ## Plans + Quotas
 
-- **free**: max 256 MiB total RAM, 1 GiB disk, 1 GB data transfer, valid VM sizes: 256 MiB
-- **base**: max 1536 MiB total RAM, valid VM sizes: 256, 512, 768, 1024, 1280, 1536 MiB
-- New users get a 3-day **base trial** (`trial_started_at`). After expiry, lazy-downgraded to free.
+Plans and billing are pluggable via the provider/adapter pattern (`IPlanRegistry`, `IBillingProvider` in `control-plane/adapters/`).
+
+**OSS standalone** (default): Single "community" plan — 4096 MiB RAM, 100 GiB disk, 100 GB data, all VM sizes. No trials, no Stripe.
+
+**With billing enabled** (via custom `IPlanRegistry` + `IBillingProvider`):
+- Custom plan tiers with configurable RAM, disk, and data limits
+- Trial support with configurable duration and lazy downgrade on expiry
+- Stripe integration: `/billing/checkout` → `/billing/portal` → webhook updates `plan` in DB.
+
+**Shared behavior** (both modes):
 - Only `running` and `creating` VMs count against RAM quota. Snapshotted VMs are free.
 - `QuotaExceededError` thrown by `wake.ts` when restoring would exceed quota. Handled gracefully in all auto-wake routes.
-- Stripe integration: `/billing/checkout` → `/billing/portal` → webhook updates `plan` in DB.
+- Plan resolution: `getUserPlan()` delegates to `IPlanRegistry` for limits + trial config. Lazy-downgrades expired trials.
+- Billing routes: when `IBillingProvider.isEnabled()` is false, only `GET /billing/subscription` is registered (returns plan info). When true, checkout/portal/webhook routes are also registered.
 
 ## Agent Integration
 

@@ -303,23 +303,10 @@ export function getUserProvisionedDisk(userId: string): number {
 
 // --- Plan resolution ---
 
-const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
-
-// Data limits configurable via env (in GB), defaults: free=1GB, base=50GB
-const FREE_DATA_LIMIT_GB = parseFloat(process.env.FREE_DATA_LIMIT_GB || "1");
-const BASE_DATA_LIMIT_GB = parseFloat(process.env.BASE_DATA_LIMIT_GB || "50");
-
-// Disk limits configurable via env (in GiB), defaults: free=1GiB, base=50GiB
-const FREE_DISK_LIMIT_GIB = parseInt(process.env.FREE_DISK_LIMIT_GIB || "1", 10);
-const BASE_DISK_LIMIT_GIB = parseInt(process.env.BASE_DISK_LIMIT_GIB || "50", 10);
-
-const PLAN_LIMITS = {
-  free: { max_ram_mib: 256, max_data_bytes: FREE_DATA_LIMIT_GB * 1024 ** 3, valid_mem_sizes: [256] as number[], max_disk_gib: FREE_DISK_LIMIT_GIB, valid_disk_sizes: [1] as number[], label: "Free" },
-  base: { max_ram_mib: 1536, max_data_bytes: BASE_DATA_LIMIT_GB * 1024 ** 3, valid_mem_sizes: [256, 512, 768, 1024, 1280, 1536] as number[], max_disk_gib: BASE_DISK_LIMIT_GIB, valid_disk_sizes: [1, 2, 5, 10, 20, 50] as number[], label: "Base" },
-} as const;
+import type { IPlanRegistry } from "../adapters/plan-registry.js";
 
 export interface UserPlan {
-  plan: "free" | "base";
+  plan: string;
   label: string;
   max_ram_mib: number;
   max_data_bytes: number;
@@ -330,35 +317,42 @@ export interface UserPlan {
   trial_expires_at: string | null;
 }
 
-const downgradeToFreeStmt = db.prepare(
-  "UPDATE users SET plan = 'free' WHERE id = ?"
+const downgradeStmt = db.prepare(
+  "UPDATE users SET plan = ? WHERE id = ?"
 );
 
-export function getUserPlan(userId: string): UserPlan {
-  const user = findUserById(userId);
-  if (!user) {
-    return { plan: "free", ...PLAN_LIMITS.free, trial_active: false, trial_expires_at: null };
-  }
+export function getUserPlan(userId: string, registry: IPlanRegistry): UserPlan {
+  const defaultPlan = registry.getDefaultPlan();
+  const defaultLimits = registry.getPlanLimits(defaultPlan)!;
+  const fallback: UserPlan = { plan: defaultPlan, ...defaultLimits, trial_active: false, trial_expires_at: null };
 
-  if (user.plan === "base") {
-    // trial_started_at = NULL means permanent base (no expiry) — e.g. dev-user, admin grants
+  const user = findUserById(userId);
+  if (!user) return fallback;
+
+  const limits = registry.getPlanLimits(user.plan);
+  if (!limits) return fallback;
+
+  // If user is on a non-default plan, check trial logic
+  const trialConfig = registry.getTrialConfig();
+  if (user.plan !== defaultPlan && trialConfig) {
+    // trial_started_at = NULL means permanent grant (no expiry) — e.g. dev-user, admin grants
     if (!user.trial_started_at) {
-      return { plan: "base", ...PLAN_LIMITS.base, trial_active: false, trial_expires_at: null };
+      return { plan: user.plan, ...limits, trial_active: false, trial_expires_at: null };
     }
 
     const trialStart = new Date(user.trial_started_at).getTime();
-    const expiresAt = new Date(trialStart + TRIAL_DURATION_MS);
+    const expiresAt = new Date(trialStart + trialConfig.duration_ms);
 
     if (Date.now() < expiresAt.getTime()) {
-      return { plan: "base", ...PLAN_LIMITS.base, trial_active: true, trial_expires_at: expiresAt.toISOString() };
+      return { plan: user.plan, ...limits, trial_active: true, trial_expires_at: expiresAt.toISOString() };
     }
 
     // Trial expired — lazy downgrade
-    downgradeToFreeStmt.run(userId);
-    return { plan: "free", ...PLAN_LIMITS.free, trial_active: false, trial_expires_at: null };
+    downgradeStmt.run(defaultPlan, userId);
+    return fallback;
   }
 
-  return { plan: "free", ...PLAN_LIMITS.free, trial_active: false, trial_expires_at: null };
+  return { plan: user.plan, ...limits, trial_active: false, trial_expires_at: null };
 }
 
 // --- Vsock CID allocation ---
@@ -625,7 +619,7 @@ export function setStripeCustomerId(userId: string, customerId: string): void {
 const updateUserPlanStmt = db.prepare(
   "UPDATE users SET plan = ?, trial_started_at = NULL WHERE id = ?"
 );
-export function updateUserPlan(userId: string, plan: "free" | "base"): void {
+export function updateUserPlan(userId: string, plan: string): void {
   updateUserPlanStmt.run(plan, userId);
 }
 

@@ -58,11 +58,37 @@ export function Plan() {
     );
   }
 
+  const billingEnabled = (sub as any)?.billing_enabled !== false;
   const isBase = sub?.plan === "base";
   const hasStripe = !!sub?.stripe_subscription_id;
   const isPaidBase = isBase && !sub?.trial_active;
   const isTrial = isBase && sub?.trial_active;
 
+  // OSS community mode — no billing, just show current plan
+  if (!billingEnabled) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-8 text-xs">
+        <div className="mb-6">
+          <Link to="/" className="text-neutral-400 hover:text-neutral-600 hover:underline">
+            &larr; Back
+          </Link>
+        </div>
+
+        <h1 className="text-lg font-medium text-foreground mb-6">Plan</h1>
+
+        <div className="border border-neutral-200 rounded p-4">
+          <div className="text-foreground font-medium">
+            {sub?.plan_label || sub?.plan || "Community"} plan
+          </div>
+          <div className="text-neutral-400 mt-1">
+            Open-source deployment — all features included.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Billing enabled — full plan comparison + billing
   return (
     <div className="max-w-2xl mx-auto px-4 py-8 text-xs">
       <div className="mb-6">

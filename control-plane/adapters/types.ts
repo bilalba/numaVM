@@ -44,7 +44,7 @@ export interface User {
 }
 
 export interface UserPlan {
-  plan: "free" | "base";
+  plan: string;
   label: string;
   max_ram_mib: number;
   max_data_bytes: number;

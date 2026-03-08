@@ -1,5 +1,6 @@
 import type { IDatabase } from "../database.js";
 import type { VM, VMWithRole, User, UserPlan, AgentSession, AgentMessage } from "../types.js";
+import { getPlanRegistry } from "../providers.js";
 import {
   db,
   insertVM as _insertVM,
@@ -83,12 +84,12 @@ export class SqliteDatabase implements IDatabase {
   updateUserSshKeys(userId: string, keys: string | null): void { _updateUserSshKeys(userId, keys); }
   appendUserSshKey(userId: string, key: string): void { _appendUserSshKey(userId, key); }
   clearUserGithubToken(userId: string): void { _clearUserGithubToken(userId); }
-  getUserPlan(userId: string): UserPlan { return _getUserPlan(userId); }
+  getUserPlan(userId: string): UserPlan { return _getUserPlan(userId, getPlanRegistry()); }
   getUserProvisionedRam(userId: string): number { return _getUserProvisionedRam(userId); }
   getUserProvisionedDisk(userId: string): number { return _getUserProvisionedDisk(userId); }
   getUserMonthlyDataUsage(userId: string): number { return _getUserMonthlyDataUsage(userId); }
   setStripeCustomerId(userId: string, customerId: string): void { _setStripeCustomerId(userId, customerId); }
-  updateUserPlan(userId: string, plan: "free" | "base"): void { _updateUserPlan(userId, plan); }
+  updateUserPlan(userId: string, plan: string): void { _updateUserPlan(userId, plan); }
   findUserByStripeCustomerId(customerId: string): User | undefined { return _findUserByStripeCustomerId(customerId); }
 
   // --- IAgentStore ---

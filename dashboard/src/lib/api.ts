@@ -44,7 +44,7 @@ export interface Quota {
   data_used_bytes: number;
   data_max_bytes: number;
   data_used_pct: number;
-  plan: "free" | "base";
+  plan: string;
   plan_label: string;
   valid_mem_sizes: number[];
   trial_active: boolean;
@@ -189,14 +189,14 @@ export interface User {
   avatar_url?: string;
   github_username?: string;
   has_github_token?: boolean;
-  plan?: "free" | "base";
+  plan?: string;
   plan_label?: string;
   trial_active?: boolean;
   trial_expires_at?: string | null;
 }
 
 export interface Subscription {
-  plan: "free" | "base";
+  plan: string;
   plan_label: string;
   trial_active: boolean;
   trial_expires_at: string | null;

@@ -40,7 +40,7 @@ export interface IUserStore {
   getUserProvisionedDisk(userId: string): number;
   getUserMonthlyDataUsage(userId: string): number;
   setStripeCustomerId(userId: string, customerId: string): void;
-  updateUserPlan(userId: string, plan: "free" | "base"): void;
+  updateUserPlan(userId: string, plan: string): void;
   findUserByStripeCustomerId(customerId: string): User | undefined;
 }
 

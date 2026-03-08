@@ -3,6 +3,8 @@ import type { IVMEngine } from "./vm-engine.js";
 import type { IReverseProxy } from "./reverse-proxy.js";
 import type { IStateStore } from "./state-store.js";
 import type { IIdleMonitor } from "./idle-monitor.js";
+import type { IPlanRegistry } from "./plan-registry.js";
+import type { IBillingProvider } from "./billing-provider.js";
 
 export interface Providers {
   database: IDatabase;
@@ -10,6 +12,8 @@ export interface Providers {
   reverseProxy: IReverseProxy;
   stateStore: IStateStore;
   idleMonitor: IIdleMonitor;
+  planRegistry: IPlanRegistry;
+  billing: IBillingProvider;
 }
 
 let providers: Providers | null = null;
@@ -25,6 +29,8 @@ export function getVMEngine(): IVMEngine { return getProviders().vmEngine; }
 export function getReverseProxy(): IReverseProxy { return getProviders().reverseProxy; }
 export function getStateStore(): IStateStore { return getProviders().stateStore; }
 export function getIdleMonitor(): IIdleMonitor { return getProviders().idleMonitor; }
+export function getPlanRegistry(): IPlanRegistry { return getProviders().planRegistry; }
+export function getBilling(): IBillingProvider { return getProviders().billing; }
 
 /**
  * Initialize providers with OSS defaults, optionally overridden by enterprise implementations.
@@ -32,10 +38,10 @@ export function getIdleMonitor(): IIdleMonitor { return getProviders().idleMonit
  * Usage (OSS):
  *   await initProviders();
  *
- * Usage (enterprise plugin):
+ * Usage (with custom providers):
  *   await initProviders({
- *     database: new PostgresDatabase(process.env.PG_URL!),
- *     stateStore: new RedisStateStore(process.env.REDIS_URL!),
+ *     planRegistry: myPlanRegistry,
+ *     billing: myBillingProvider,
  *   });
  */
 export async function initProviders(overrides?: Partial<Providers>): Promise<Providers> {
@@ -44,6 +50,8 @@ export async function initProviders(overrides?: Partial<Providers>): Promise<Pro
   const { CaddyProxy } = await import("./impl/caddy-proxy.js");
   const { InMemoryStateStore } = await import("./impl/memory-state-store.js");
   const { LocalIdleMonitor } = await import("./impl/local-idle-monitor.js");
+  const { CommunityPlanRegistry } = await import("./impl/community-plan-registry.js");
+  const { NoBillingProvider } = await import("./impl/no-billing.js");
 
   providers = {
     database: overrides?.database ?? new SqliteDatabase(),
@@ -51,6 +59,8 @@ export async function initProviders(overrides?: Partial<Providers>): Promise<Pro
     reverseProxy: overrides?.reverseProxy ?? new CaddyProxy(),
     stateStore: overrides?.stateStore ?? new InMemoryStateStore(),
     idleMonitor: overrides?.idleMonitor ?? new LocalIdleMonitor(),
+    planRegistry: overrides?.planRegistry ?? new CommunityPlanRegistry(),
+    billing: overrides?.billing ?? new NoBillingProvider(),
   };
 
   return providers;
