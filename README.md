@@ -237,7 +237,6 @@ numavm/
 
 - **[CLAUDE.md](./CLAUDE.md)** — Full architecture reference: API endpoints, database schema, agent integration, conventions
 - **[DEPLOYMENT.md](./DEPLOYMENT.md)** — Production deployment guide (EC2, systemd, Caddy, deploy.sh)
-- **[PLATFORM_PLAN.md](./PLATFORM_PLAN.md)** — Design vision and architecture decisions
 - **[docs/admin-dashboard.md](./docs/admin-dashboard.md)** — Admin dashboard features and API
 
 ## Tech stack

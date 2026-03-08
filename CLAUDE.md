@@ -4,8 +4,6 @@ Remote Agent Workbench — a platform where each VM is a Firecracker microVM wit
 
 ## Architecture
 
-See `PLATFORM_PLAN.md` for the full architecture document.
-
 **Key components:**
 - **Auth Service** (`auth/`) — Port 4000. Fastify + GitHub/Google OAuth + email magic links + JWT sessions
 - **Control Plane** (`control-plane/`) — Port 4001. VM CRUD, Firecracker orchestration, Caddy route management, Stripe billing, agent bridges
