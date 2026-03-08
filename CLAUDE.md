@@ -279,7 +279,7 @@ GET    /admin/health                     Extended health + resources
 
 ## Plans + Quotas
 
-- **free**: max 512 MiB total RAM, valid VM sizes: 256, 512 MiB
+- **free**: max 256 MiB total RAM, 1 GiB disk, 1 GB data transfer, valid VM sizes: 256 MiB
 - **base**: max 1536 MiB total RAM, valid VM sizes: 256, 512, 768, 1024, 1280, 1536 MiB
 - New users get a 3-day **base trial** (`trial_started_at`). After expiry, lazy-downgraded to free.
 - Only `running` and `creating` VMs count against RAM quota. Snapshotted VMs are free.

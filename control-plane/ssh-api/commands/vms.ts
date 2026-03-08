@@ -101,8 +101,8 @@ async function showVM(vmId: string, ctx: CommandContext): Promise<void> {
   ctx.channel.close();
 }
 
-const DEFAULT_MEM_SIZE = 512;
-const DEFAULT_DISK_SIZE = 5;
+const DEFAULT_MEM_SIZE = 256;
+const DEFAULT_DISK_SIZE = 1;
 
 async function createVM(ctx: CommandContext): Promise<void> {
   const { flags, user, channel } = ctx;

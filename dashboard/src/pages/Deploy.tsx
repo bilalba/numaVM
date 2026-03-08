@@ -49,8 +49,8 @@ export function Deploy() {
   const [appUrl, setAppUrl] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [quota, setQuota] = useState<Quota | null>(null);
-  const [memSizeMib, setMemSizeMib] = useState<number>(512);
-  const [diskSizeGib, setDiskSizeGib] = useState<number>(5);
+  const [memSizeMib, setMemSizeMib] = useState<number>(256);
+  const [diskSizeGib, setDiskSizeGib] = useState<number>(1);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Fetch quota on mount
@@ -58,10 +58,10 @@ export function Deploy() {
     api.getRamQuota().then((q) => {
       setQuota(q);
       // Set defaults to first valid size
-      if (q.valid_mem_sizes.length > 0 && !q.valid_mem_sizes.includes(512)) {
+      if (q.valid_mem_sizes.length > 0 && !q.valid_mem_sizes.includes(256)) {
         setMemSizeMib(q.valid_mem_sizes[0]);
       }
-      if (q.valid_disk_sizes.length > 0 && !q.valid_disk_sizes.includes(5)) {
+      if (q.valid_disk_sizes.length > 0 && !q.valid_disk_sizes.includes(1)) {
         setDiskSizeGib(q.valid_disk_sizes[0]);
       }
     }).catch(() => {});

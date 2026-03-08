@@ -9,8 +9,8 @@ import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaE
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
 
-const DEFAULT_MEM_SIZE = 512;
-const DEFAULT_DISK_SIZE = 5;
+const DEFAULT_MEM_SIZE = 256;
+const DEFAULT_DISK_SIZE = 1;
 
 export function registerVMRoutes(app: FastifyInstance) {
   // Create VM

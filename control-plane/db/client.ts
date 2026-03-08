@@ -305,16 +305,16 @@ export function getUserProvisionedDisk(userId: string): number {
 
 const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 
-// Data limits configurable via env (in GB), defaults: free=5GB, base=50GB
-const FREE_DATA_LIMIT_GB = parseFloat(process.env.FREE_DATA_LIMIT_GB || "5");
+// Data limits configurable via env (in GB), defaults: free=1GB, base=50GB
+const FREE_DATA_LIMIT_GB = parseFloat(process.env.FREE_DATA_LIMIT_GB || "1");
 const BASE_DATA_LIMIT_GB = parseFloat(process.env.BASE_DATA_LIMIT_GB || "50");
 
-// Disk limits configurable via env (in GiB), defaults: free=5GiB, base=50GiB
-const FREE_DISK_LIMIT_GIB = parseInt(process.env.FREE_DISK_LIMIT_GIB || "5", 10);
+// Disk limits configurable via env (in GiB), defaults: free=1GiB, base=50GiB
+const FREE_DISK_LIMIT_GIB = parseInt(process.env.FREE_DISK_LIMIT_GIB || "1", 10);
 const BASE_DISK_LIMIT_GIB = parseInt(process.env.BASE_DISK_LIMIT_GIB || "50", 10);
 
 const PLAN_LIMITS = {
-  free: { max_ram_mib: 512, max_data_bytes: FREE_DATA_LIMIT_GB * 1024 ** 3, valid_mem_sizes: [256, 512] as number[], max_disk_gib: FREE_DISK_LIMIT_GIB, valid_disk_sizes: [1, 2, 5] as number[], label: "Free" },
+  free: { max_ram_mib: 256, max_data_bytes: FREE_DATA_LIMIT_GB * 1024 ** 3, valid_mem_sizes: [256] as number[], max_disk_gib: FREE_DISK_LIMIT_GIB, valid_disk_sizes: [1] as number[], label: "Free" },
   base: { max_ram_mib: 1536, max_data_bytes: BASE_DATA_LIMIT_GB * 1024 ** 3, valid_mem_sizes: [256, 512, 768, 1024, 1280, 1536] as number[], max_disk_gib: BASE_DISK_LIMIT_GIB, valid_disk_sizes: [1, 2, 5, 10, 20, 50] as number[], label: "Base" },
 } as const;
 

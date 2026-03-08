@@ -6,7 +6,7 @@ import { fetchSshKeys } from "../services/github.js";
 import { registerPendingKey } from "../routes/user.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
-const DEFAULT_DISK_SIZE = 5;
+const DEFAULT_DISK_SIZE = 1;
 
 // ANSI escape codes
 const ESC = "\x1b";
@@ -419,7 +419,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
   const availableDisk = userPlan.valid_disk_sizes.filter(
     (d: number) => currentDisk + d <= userPlan.max_disk_gib,
   );
-  const defaultMem = availableMem.includes(512) ? 512 : availableMem[0] || 512;
+  const defaultMem = availableMem.includes(256) ? 256 : availableMem[0] || 256;
   const defaultDisk = availableDisk.includes(DEFAULT_DISK_SIZE) ? DEFAULT_DISK_SIZE : availableDisk[0] || DEFAULT_DISK_SIZE;
   let memSizeMib = defaultMem;
   let diskSizeGib = defaultDisk;

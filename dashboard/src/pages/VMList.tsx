@@ -155,8 +155,8 @@ export function VMList() {
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
-  const [memSizeMib, setMemSizeMib] = useState(512);
-  const [diskSizeGib, setDiskSizeGib] = useState(5);
+  const [memSizeMib, setMemSizeMib] = useState(256);
+  const [diskSizeGib, setDiskSizeGib] = useState(1);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [ramQuota, setRamQuota] = useState<RamQuota | null>(null);
   const [pausingIds, setPausingIds] = useState<Set<string>>(new Set());
@@ -432,7 +432,7 @@ export function VMList() {
                     )}
                   </div>
                   <div className="flex gap-1.5">
-                    {(ramQuota?.valid_mem_sizes || [256, 512]).map((size) => {
+                    {(ramQuota?.valid_mem_sizes || [256]).map((size) => {
                       const exceedsQuota = ramQuota ? ramQuota.used_mib + size > ramQuota.max_mib : false;
                       const label = size >= 1024 ? `${(size / 1024).toFixed(size % 1024 ? 2 : 0)} GB` : `${size} MB`;
                       return (
@@ -464,7 +464,7 @@ export function VMList() {
                     )}
                   </div>
                   <div className="flex gap-1.5">
-                    {(ramQuota?.valid_disk_sizes || [1, 2, 5]).map((size) => {
+                    {(ramQuota?.valid_disk_sizes || [1]).map((size) => {
                       const exceedsQuota = ramQuota ? ramQuota.disk_used_gib + size > ramQuota.disk_max_gib : false;
                       return (
                         <button
