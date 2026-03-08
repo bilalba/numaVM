@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { getDatabase, getVMEngine } from "../adapters/providers.js";
 import { getHealthStats } from "../services/health.js";
-import { readFileSync } from "node:fs";
 
 export function registerAdminRoutes(app: FastifyInstance) {
   // Admin auth check — runs before all /admin/* routes
@@ -110,13 +109,8 @@ export function registerAdminRoutes(app: FastifyInstance) {
     );
 
     const traffic = runningVMs.map(vm => {
-      const tapDev = `tap-${vm.id}`;
-      let rx = 0, tx = 0;
-      try {
-        rx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/rx_bytes`, "utf-8").trim(), 10);
-        tx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/tx_bytes`, "utf-8").trim(), 10);
-      } catch { /* TAP device not found */ }
-      return { vmId: vm.id, vmIp: vm.vm_ip, rxBytes: rx, txBytes: tx, totalBytes: rx + tx };
+      const { rxBytes, txBytes } = getVMEngine().getLiveTraffic(vm.id);
+      return { vmId: vm.id, vmIp: vm.vm_ip, rxBytes, txBytes, totalBytes: rxBytes + txBytes };
     });
 
     return { traffic };

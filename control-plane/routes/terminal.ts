@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { getDatabase, getVMEngine } from "../adapters/providers.js";
-import { execInVM } from "../services/vsock-ssh.js";
 import { createTerminal } from "../terminal/pty-handler.js";
 import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 
@@ -65,7 +64,6 @@ export function registerTerminalRoutes(app: FastifyInstance) {
       const sessionName = query.session || "main";
 
       createTerminal({
-        vmIp: vm.vm_ip,
         ws: socket,
         vmId: vm.id,
         cols: isNaN(cols) ? 80 : cols,
@@ -90,7 +88,7 @@ export function registerTerminalRoutes(app: FastifyInstance) {
     }
 
     try {
-      const output = await execInVM(vm.vm_ip, [
+      const output = await getVMEngine().exec(vm.id, [
         "bash", "-c",
         "tmux list-sessions -F '#{session_name}:#{session_windows}:#{session_created}:#{session_attached}' 2>/dev/null || true",
       ]);
@@ -141,7 +139,7 @@ export function registerTerminalRoutes(app: FastifyInstance) {
       }
 
       try {
-        await execInVM(vm.vm_ip, [
+        await getVMEngine().exec(vm.id, [
           "bash", "-c",
           `tmux kill-session -t ${name} 2>/dev/null || true`,
         ]);

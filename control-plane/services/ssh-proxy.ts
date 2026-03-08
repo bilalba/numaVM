@@ -96,7 +96,7 @@ function isKeyAuthorized(clientKey: { algo: string; data: Buffer }, authorizedKe
 // --- Connection handler ---
 
 function handleConnection(client: Connection, _info: ClientInfo) {
-  let vm: ReturnType<typeof findVMById> = undefined;
+  let vm: ReturnType<ReturnType<typeof getDatabase>["findVMById"]> = undefined;
   let authenticatedUser: string | null = null;
   let apiMode = false;
   let apiUser: SshUser | null = null;
@@ -266,12 +266,12 @@ function handleConnection(client: Connection, _info: ClientInfo) {
 
       session.on("shell", (accept, reject) => {
         clientChannel = accept();
-        connectUpstream(vm, clientChannel, { ptyInfo, envVars, shell: true });
+        connectUpstream(vm!, clientChannel, { ptyInfo, envVars, shell: true });
       });
 
       session.on("exec", (accept, reject, info) => {
         clientChannel = accept();
-        connectUpstream(vm, clientChannel, { ptyInfo, envVars, exec: info.command });
+        connectUpstream(vm!, clientChannel, { ptyInfo, envVars, exec: info.command });
       });
 
       // Don't listen for "sftp" event — it returns an SFTPWrapper (not pipeable).
@@ -279,7 +279,7 @@ function handleConnection(client: Connection, _info: ClientInfo) {
       session.on("subsystem", (accept, reject, info) => {
         subsystemName = info.name;
         clientChannel = accept();
-        connectUpstream(vm, clientChannel, { ptyInfo, envVars, subsystem: subsystemName });
+        connectUpstream(vm!, clientChannel, { ptyInfo, envVars, subsystem: subsystemName });
       });
 
       /**

@@ -23,13 +23,11 @@ class AgentManager {
 
     const vm = getDatabase().findVMById(vmId);
     if (!vm) throw new Error("VM not found");
-    if (!vm.vm_ip) throw new Error("VM has no IP address");
-
     const bridge = new CodexBridge();
     this.authBridges.set(vmId, bridge);
 
     try {
-      await bridge.start(vm.vm_ip);
+      await bridge.start(vm.id);
     } catch (err: any) {
       this.authBridges.delete(vmId);
       throw new Error(`Failed to start Codex auth bridge: ${err.message}`);
@@ -61,7 +59,6 @@ class AgentManager {
     const vm = getDatabase().findVMById(vmId);
     if (!vm) throw new Error("VM not found");
     if (vm.status !== "running") throw new Error("VM is not running");
-    if (!vm.vm_ip) throw new Error("VM has no IP address");
 
     const sessionId = nanoid();
 
@@ -70,7 +67,7 @@ class AgentManager {
     if (agentType === "codex") {
       bridge = new CodexBridge();
     } else {
-      bridge = new OpenCodeBridge(vm.opencode_port, vm.opencode_password || "", vm.vm_ip!);
+      bridge = new OpenCodeBridge(vm.id, vm.opencode_port, vm.opencode_password || "");
     }
 
     // Insert DB record early
@@ -95,7 +92,7 @@ class AgentManager {
     // Start the bridge (spawns process / connects SSE)
     // Codex bridge needs VM IP, OpenCode bridge uses its own HTTP port
     try {
-      const startArg = agentType === "codex" ? vm.vm_ip! : vm.id;
+      const startArg = vm.id;
       const threadId = await bridge.start(startArg, options);
       if (threadId) {
         getDatabase().updateAgentSessionThreadId(sessionId, threadId);

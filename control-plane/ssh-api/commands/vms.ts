@@ -2,7 +2,6 @@ import { customAlphabet } from "nanoid";
 import type { CommandContext } from "../dispatcher.js";
 import { writeJson, writeError } from "../dispatcher.js";
 import { getDatabase, getVMEngine, getReverseProxy } from "../../adapters/providers.js";
-import { allocatePorts, allocateCid, cidToVmIp } from "../../services/port-allocator.js";
 import { fetchSshKeys } from "../../services/github.js";
 import { ensureVMRunning, QuotaExceededError } from "../../services/wake.js";
 
@@ -135,9 +134,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
 
   // Allocate resources
   const slug = `vm-${generateSlug()}`;
-  const { appPort, sshPort, opencodePort } = allocatePorts();
-  const vsockCid = allocateCid();
-  const vmIp = cidToVmIp(vsockCid);
+  const { appPort, sshPort, opencodePort, vsockCid, vmIp } = getVMEngine().allocateResources();
 
   // Fetch SSH keys
   const dbUser = getDatabase().findUserById(user.userId);
@@ -179,6 +176,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
     opencode_port: opencodePort,
     opencode_password: opencodePassword,
     status: "creating",
+    status_detail: null,
     mem_size_mib: memSizeMib,
   });
   getDatabase().grantAccess(slug, user.userId, "owner");
@@ -258,7 +256,7 @@ async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
   try {
     await getVMEngine().removeVMFull(
       vmId,
-      vm.vm_ip || cidToVmIp(vm.vsock_cid || 3),
+      vm.vm_ip || "",
       vm.app_port,
       vm.ssh_port,
       vm.opencode_port,

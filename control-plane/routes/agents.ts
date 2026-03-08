@@ -4,7 +4,7 @@ import { agentManager } from "../agents/manager.js";
 import { wsHub } from "../agents/ws-hub.js";
 import type { AgentCommand, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort } from "../agents/types.js";
 import { OpenCodeBridge } from "../agents/opencode-bridge.js";
-import { spawnProcessOverVsock } from "../services/vsock-ssh.js";
+import { getVMEngine } from "../adapters/providers.js";
 import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 
 const VALID_AGENT_TYPES = new Set(["codex", "opencode"]);
@@ -255,10 +255,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
     const vm = getDatabase().findVMById(id);
     if (!vm) return reply.status(404).send({ error: "VM not found" });
-    if (!vm.vm_ip) return reply.status(503).send({ error: "VM not available" });
-
     try {
-      const bridge = new OpenCodeBridge(vm.opencode_port, vm.opencode_password || "", vm.vm_ip);
+      const bridge = new OpenCodeBridge(vm.id, vm.opencode_port, vm.opencode_password || "");
       const raw = await bridge.listProviders();
       const connectedSet = new Set(raw.connected || []);
 
@@ -367,10 +365,10 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
       // ChatGPT login via device code (CLI-based, since app-server OAuth needs localhost redirect)
       const vm = getDatabase().findVMById(id);
-      if (!vm?.vm_ip) return reply.status(500).send({ error: "VM not available" });
+      if (!vm) return reply.status(500).send({ error: "VM not available" });
 
       return new Promise<void>((resolve) => {
-        const vsock = spawnProcessOverVsock(vm.vm_ip!, "codex login --device-auth");
+        const vsock = getVMEngine().spawnProcess(vm.id, "codex login --device-auth");
         const proc = vsock.process;
 
         let output = "";

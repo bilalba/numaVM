@@ -1,4 +1,5 @@
-import type { IVMEngine, CreateVMParams, VMRuntimeInfo } from "../vm-engine.js";
+import type { IPty } from "node-pty";
+import type { IVMEngine, CreateVMParams, VMRuntimeInfo, SpawnedProcess, AllocatedResources } from "../vm-engine.js";
 import {
   createAndStartVM as _createAndStartVM,
   stopVM as _stopVM,
@@ -17,7 +18,13 @@ import {
   removeDnat as _removeDnat,
   reconcileRunningVMs as _reconcileRunningVMs,
   destroyAllVMs as _destroyAllVMs,
+  getDataDir,
 } from "../../services/firecracker.js";
+import { execInVM, spawnPtyOverVsock, spawnProcessOverVsock } from "../../services/vsock-ssh.js";
+import { allocatePorts, allocateCid, cidToVmIp } from "../../services/port-allocator.js";
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /**
  * Firecracker implementation of IVMEngine.
@@ -41,4 +48,98 @@ export class FirecrackerEngine implements IVMEngine {
   removeDnat(hostPort: number, vmIp: string, vmPort: number): void { _removeDnat(hostPort, vmIp, vmPort); }
   async reconcileRunningVMs(): Promise<void> { return _reconcileRunningVMs(); }
   async destroyAllVMs(): Promise<void> { return _destroyAllVMs(); }
+
+  // --- VM communication ---
+
+  async exec(vmId: string, cmd: string[], options?: { user?: string; timeoutMs?: number }): Promise<string> {
+    return execInVM(this.getVmIp(vmId), cmd, options);
+  }
+
+  spawnPty(vmId: string, remoteCmd: string, cols: number, rows: number): IPty {
+    return spawnPtyOverVsock(this.getVmIp(vmId), remoteCmd, cols, rows);
+  }
+
+  spawnProcess(vmId: string, remoteCmd: string, options?: { user?: string }): SpawnedProcess {
+    return spawnProcessOverVsock(this.getVmIp(vmId), remoteCmd, options);
+  }
+
+  // --- Resource management ---
+
+  allocateResources(): AllocatedResources {
+    const { appPort, sshPort, opencodePort } = allocatePorts();
+    const vsockCid = allocateCid();
+    const vmIp = cidToVmIp(vsockCid);
+    return { appPort, sshPort, opencodePort, vsockCid, vmIp };
+  }
+
+  // --- Disk operations ---
+
+  hasSnapshot(vmId: string): boolean {
+    const snapshotDir = join(getDataDir(), vmId, "snapshot");
+    return existsSync(join(snapshotDir, "vmstate")) && existsSync(join(snapshotDir, "memory"));
+  }
+
+  getVMConfig(vmId: string): Record<string, string> {
+    const configPath = join(getDataDir(), vmId, "env.json");
+    try {
+      return JSON.parse(readFileSync(configPath, "utf-8"));
+    } catch {
+      console.warn(`[firecracker-engine] No env.json found for ${vmId}, using defaults`);
+      return {};
+    }
+  }
+
+  async cloneDisks(sourceVmId: string, targetSlug: string): Promise<void> {
+    const dataDir = getDataDir();
+    const sourceDir = join(dataDir, sourceVmId);
+    const sourceRootfs = join(sourceDir, "rootfs.ext4");
+    const sourceData = join(sourceDir, "data.ext4");
+    const targetDir = join(dataDir, targetSlug);
+
+    mkdirSync(targetDir, { recursive: true });
+
+    const isRunning = _isVmRunning(sourceVmId);
+    if (isRunning) {
+      await _pauseVM(sourceVmId);
+    }
+
+    try {
+      // Copy rootfs (sparse/reflink when possible)
+      try {
+        execSync(`cp --reflink=auto "${sourceRootfs}" "${join(targetDir, "rootfs.ext4")}"`, { stdio: "pipe" });
+      } catch {
+        execSync(`cp "${sourceRootfs}" "${join(targetDir, "rootfs.ext4")}"`, { stdio: "pipe" });
+      }
+
+      // Copy data volume if it exists
+      if (existsSync(sourceData)) {
+        try {
+          execSync(`cp --reflink=auto "${sourceData}" "${join(targetDir, "data.ext4")}"`, { stdio: "pipe" });
+        } catch {
+          execSync(`cp "${sourceData}" "${join(targetDir, "data.ext4")}"`, { stdio: "pipe" });
+        }
+      }
+    } finally {
+      if (isRunning) {
+        await _resumeVM(sourceVmId);
+      }
+    }
+  }
+
+  hasRootfs(vmId: string): boolean {
+    return existsSync(join(getDataDir(), vmId, "rootfs.ext4"));
+  }
+
+  // --- Monitoring ---
+
+  getLiveTraffic(vmId: string): { rxBytes: number; txBytes: number } {
+    const tapDev = `tap-${vmId}`;
+    try {
+      const rx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/rx_bytes`, "utf-8").trim(), 10);
+      const tx = parseInt(readFileSync(`/sys/class/net/${tapDev}/statistics/tx_bytes`, "utf-8").trim(), 10);
+      return { rxBytes: rx, txBytes: tx };
+    } catch {
+      return { rxBytes: 0, txBytes: 0 };
+    }
+  }
 }

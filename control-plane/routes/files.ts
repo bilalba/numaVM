@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { getDatabase } from "../adapters/providers.js";
-import { execInVM } from "../services/vsock-ssh.js";
+import { getDatabase, getVMEngine } from "../adapters/providers.js";
 
 export interface FileEntry {
   name: string;
@@ -60,7 +59,7 @@ export function registerFileRoutes(app: FastifyInstance) {
     const dirPath = sanitizePath(query.path || "/home/dev");
 
     try {
-      const output = await execInVM(vm.vm_ip, [
+      const output = await getVMEngine().exec(vm.id, [
         "ls", "-la", "--time-style=long-iso", dirPath,
       ]);
 
@@ -107,7 +106,7 @@ export function registerFileRoutes(app: FastifyInstance) {
     const filePath = sanitizePath(query.path);
 
     try {
-      const sizeOutput = await execInVM(vm.vm_ip, [
+      const sizeOutput = await getVMEngine().exec(vm.id, [
         "stat", "--format=%s", filePath,
       ]);
       const size = parseInt(sizeOutput.trim(), 10);
@@ -118,7 +117,7 @@ export function registerFileRoutes(app: FastifyInstance) {
         return reply.status(413).send({ error: "File too large (max 1MB)" });
       }
 
-      const mimeOutput = await execInVM(vm.vm_ip, [
+      const mimeOutput = await getVMEngine().exec(vm.id, [
         "file", "--brief", "--mime-type", filePath,
       ]);
       const mimeType = mimeOutput.trim();
@@ -128,7 +127,7 @@ export function registerFileRoutes(app: FastifyInstance) {
         return { path: filePath, binary: true, mimeType, size, content: null };
       }
 
-      const content = await execInVM(vm.vm_ip, ["cat", filePath]);
+      const content = await getVMEngine().exec(vm.id, ["cat", filePath]);
       return { path: filePath, binary: false, mimeType, size, content };
     } catch (err: any) {
       return reply.status(500).send({ error: `Failed to read file: ${err.message}` });
@@ -159,7 +158,7 @@ export function registerFileRoutes(app: FastifyInstance) {
 
     try {
       // Check file exists and get size
-      const sizeOutput = await execInVM(vm.vm_ip, [
+      const sizeOutput = await getVMEngine().exec(vm.id, [
         "stat", "--format=%s", filePath,
       ]);
       const size = parseInt(sizeOutput.trim(), 10);
@@ -171,13 +170,13 @@ export function registerFileRoutes(app: FastifyInstance) {
       }
 
       // Get mime type
-      const mimeOutput = await execInVM(vm.vm_ip, [
+      const mimeOutput = await getVMEngine().exec(vm.id, [
         "file", "--brief", "--mime-type", filePath,
       ]);
       const mimeType = mimeOutput.trim() || "application/octet-stream";
 
       // Read file content as base64 for binary-safe transfer
-      const b64 = await execInVM(vm.vm_ip, ["base64", filePath]);
+      const b64 = await getVMEngine().exec(vm.id, ["base64", filePath]);
       const content = Buffer.from(b64.trim(), "base64");
 
       return reply
@@ -208,7 +207,7 @@ export function registerFileRoutes(app: FastifyInstance) {
     const limit = Math.min(parseInt(query.limit || "20", 10) || 20, 100);
 
     try {
-      const output = await execInVM(vm.vm_ip, [
+      const output = await getVMEngine().exec(vm.id, [
         "git", "-C", "/home/dev/repo", "log",
         `--max-count=${limit}`,
         "--format=%H|||%an|||%ae|||%at|||%s",

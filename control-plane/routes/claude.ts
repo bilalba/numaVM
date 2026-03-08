@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { getDatabase } from "../adapters/providers.js";
-import { execInVM } from "../services/vsock-ssh.js";
+import { getDatabase, getVMEngine } from "../adapters/providers.js";
 
 interface ClaudeSession {
   id: string;
@@ -24,7 +23,7 @@ export function registerClaudeRoutes(app: FastifyInstance) {
     }
 
     try {
-      const output = await execInVM(vm.vm_ip, [
+      const output = await getVMEngine().exec(vm.id, [
         "bash",
         "-c",
         `find /home/dev/.claude/projects -name '*.json' -path '*/sessions/*' 2>/dev/null | while read f; do echo "---FILE:$f"; cat "$f" 2>/dev/null; done`,

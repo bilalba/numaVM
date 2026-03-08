@@ -1,5 +1,5 @@
 import type { AgentBridge, AgentEvent, AgentType, ApprovalDecision } from "./types.js";
-import { execInVM } from "../services/vsock-ssh.js";
+import { getVMEngine } from "../adapters/providers.js";
 
 /**
  * OpenCode bridge — HTTP REST + SSE to VM's OpenCode server.
@@ -27,9 +27,9 @@ export class OpenCodeBridge implements AgentBridge {
   private cwd: string | undefined;
 
   constructor(
+    private vmId: string,
     private opencodePort: number,
     private opencodePassword: string,
-    private vmIp: string,
   ) {
     this.baseUrl = `http://localhost:${opencodePort}`;
     this.authHeader = "Basic " + Buffer.from(`opencode:${opencodePassword}`).toString("base64");
@@ -67,7 +67,7 @@ export class OpenCodeBridge implements AgentBridge {
     // Check if process exists but not yet ready
     let processRunning = false;
     try {
-      const out = await execInVM(this.vmIp, ["pgrep", "-f", "opencode serve"], { timeoutMs: 5000 });
+      const out = await getVMEngine().exec(this.vmId, ["pgrep", "-f", "opencode serve"], { timeoutMs: 5000 });
       processRunning = !!out.trim();
     } catch {
       // Not running
@@ -76,7 +76,7 @@ export class OpenCodeBridge implements AgentBridge {
     if (!processRunning) {
       // Verify opencode is installed
       try {
-        const which = await execInVM(this.vmIp, ["which", "opencode"], { timeoutMs: 5000 });
+        const which = await getVMEngine().exec(this.vmId, ["which", "opencode"], { timeoutMs: 5000 });
         if (!which.trim()) throw new Error("not found");
       } catch {
         throw new Error(
@@ -87,8 +87,8 @@ export class OpenCodeBridge implements AgentBridge {
       // Start OpenCode server (SSH connects as dev by default)
       // Source ~/.env to pick up API keys and NUMAVM_WORK_DIR
       // disown prevents bash from sending SIGHUP when SSH session ends
-      await execInVM(
-        this.vmIp,
+      await getVMEngine().exec(
+        this.vmId,
         [
           "bash", "-c",
           `source ~/.env 2>/dev/null; cd "\${NUMAVM_WORK_DIR:-$HOME}" 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${this.opencodePassword}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown`,
@@ -108,11 +108,11 @@ export class OpenCodeBridge implements AgentBridge {
         // Check if process died during startup
         if (!processRunning) {
           try {
-            const out = await execInVM(this.vmIp, ["pgrep", "-f", "opencode serve"], { timeoutMs: 3000 });
+            const out = await getVMEngine().exec(this.vmId, ["pgrep", "-f", "opencode serve"], { timeoutMs: 3000 });
             if (!out.trim()) {
               let log = "";
               try {
-                log = await execInVM(this.vmIp, ["tail", "-20", "/tmp/opencode.log"], { timeoutMs: 3000 });
+                log = await getVMEngine().exec(this.vmId, ["tail", "-20", "/tmp/opencode.log"], { timeoutMs: 3000 });
               } catch { /* ignore */ }
               throw new Error(`OpenCode process exited during startup${log ? `: ${log.trim()}` : ""}`);
             }

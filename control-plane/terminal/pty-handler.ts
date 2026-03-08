@@ -1,6 +1,6 @@
 import type { WebSocket } from "ws";
-import { spawnPtyOverVsock } from "../services/vsock-ssh.js";
 import type { IPty } from "node-pty";
+import { getVMEngine } from "../adapters/providers.js";
 
 interface TerminalSession {
   pty: IPty;
@@ -12,7 +12,6 @@ const sessions = new Map<string, TerminalSession>();
 let sessionCounter = 0;
 
 export interface CreateTerminalParams {
-  vmIp: string;
   ws: WebSocket;
   vmId: string;
   cols?: number;
@@ -21,11 +20,11 @@ export interface CreateTerminalParams {
 }
 
 export function createTerminal(params: CreateTerminalParams): string {
-  const { vmIp, ws, vmId, cols = 80, rows = 24, sessionName = "main" } = params;
+  const { ws, vmId, cols = 80, rows = 24, sessionName = "main" } = params;
   const sessionId = `term-${++sessionCounter}`;
 
   const remoteCmd = `tmux new-session -A -s ${sessionName} -x ${cols} -y ${rows}`;
-  const shell = spawnPtyOverVsock(vmIp, remoteCmd, cols, rows);
+  const shell = getVMEngine().spawnPty(vmId, remoteCmd, cols, rows);
 
   // PTY output -> WebSocket (raw text)
   shell.onData((data: string) => {

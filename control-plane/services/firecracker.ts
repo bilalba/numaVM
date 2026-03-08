@@ -7,7 +7,7 @@ import { join } from "node:path";
 function getFcBin() { return process.env.FC_BIN || "/opt/firecracker/bin/firecracker"; }
 function getKernelPath() { return process.env.FC_KERNEL || "/opt/firecracker/kernel/vmlinux"; }
 function getRootfsPath() { return process.env.FC_ROOTFS || "/opt/firecracker/rootfs/base.ext4"; }
-function getDataDir() { return process.env.DATA_DIR || "/data/vms"; }
+export function getDataDir() { return process.env.DATA_DIR || "/data/vms"; }
 function getSocketDir() { return process.env.FC_SOCKET_DIR || "/tmp"; }
 function getVmGateway() { return process.env.VM_GATEWAY || "172.16.0.1"; }
 function getDefaultVcpu() { return parseInt(process.env.VM_VCPU_COUNT || "2", 10); }

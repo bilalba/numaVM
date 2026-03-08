@@ -2,7 +2,6 @@ import type { ServerChannel } from "ssh2";
 import type { SshUser } from "../services/ssh-key-lookup.js";
 import { customAlphabet, nanoid } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
-import { allocatePorts, allocateCid, cidToVmIp } from "../services/port-allocator.js";
 import { fetchSshKeys } from "../services/github.js";
 import { registerPendingKey } from "../routes/user.js";
 
@@ -470,9 +469,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
   writeFrame(channel, creatingLines);
 
   const slug = `vm-${generateSlug()}`;
-  const { appPort, sshPort, opencodePort } = allocatePorts();
-  const vsockCid = allocateCid();
-  const vmIp = cidToVmIp(vsockCid);
+  const { appPort, sshPort, opencodePort, vsockCid, vmIp } = getVMEngine().allocateResources();
 
   // Fetch SSH keys
   const keyParts: string[] = [];
@@ -503,6 +500,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     opencode_port: opencodePort,
     opencode_password: opencodePassword,
     status: "creating",
+    status_detail: null,
     mem_size_mib: memSizeMib,
   });
   getDatabase().grantAccess(slug, user.userId, "owner");
@@ -579,7 +577,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
 }
 
 async function showVMDetail(channel: ServerChannel, user: SshUser, vmId: string): Promise<void> {
-  const vm = findVMsByUser(user.userId).find((e) => e.id === vmId);
+  const vm = getDatabase().findVMsByUser(user.userId).find((e: any) => e.id === vmId);
   if (!vm) {
     return showVMList(channel, user);
   }

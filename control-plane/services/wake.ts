@@ -1,8 +1,5 @@
-import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
+import { getDatabase, getVMEngine, getReverseProxy, getIdleMonitor } from "../adapters/providers.js";
 import type { VM } from "../adapters/types.js";
-import { resetIdleTimer } from "./idle-monitor.js";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 
 export class QuotaExceededError extends Error {
   current_ram_mib: number;
@@ -47,7 +44,7 @@ export async function ensureVMRunning(vmId: string): Promise<void> {
   // Check if already running in memory
   if (engine.isVmRunning(vmId)) {
     console.log(`[wake] ${vmId} already running in memory, skipping`);
-    resetIdleTimer(vmId);
+    getIdleMonitor().resetTimer(vmId);
     return;
   }
 
@@ -58,7 +55,7 @@ export async function ensureVMRunning(vmId: string): Promise<void> {
 
   // Already running according to DB and memory
   if (vm.status === "running" && engine.isVmRunning(vmId)) {
-    resetIdleTimer(vmId);
+    getIdleMonitor().resetTimer(vmId);
     return;
   }
 
@@ -107,10 +104,8 @@ async function doWake(vmId: string, vm: VM): Promise<void> {
   if (!vm.vsock_cid) throw new Error("VM has no vsock CID");
   if (!vm.vm_ip) throw new Error("VM has no IP address");
 
-  // Check if snapshot files actually exist
-  const dataDir = process.env.DATA_DIR || "/data/vms";
-  const snapshotDir = join(dataDir, vmId, "snapshot");
-  const hasSnapshot = existsSync(join(snapshotDir, "vmstate")) && existsSync(join(snapshotDir, "memory"));
+  // Check if snapshot files actually exist (delegated to engine)
+  const hasSnapshot = engine.hasSnapshot(vmId);
 
   db.updateVMStatus(vmId, "creating"); // Temporarily mark as creating
 
@@ -129,7 +124,7 @@ async function doWake(vmId: string, vm: VM): Promise<void> {
     } else {
       // Snapshot files missing — create a fresh VM instead
       console.log(`[wake] Snapshot files missing for ${vmId}, creating fresh VM...`);
-      await createFreshVM(vmId, vm, dataDir);
+      await createFreshVM(vmId, vm);
       console.log(`[wake] VM ${vmId} created fresh (no snapshot to restore)`);
     }
 
@@ -147,7 +142,7 @@ async function doWake(vmId: string, vm: VM): Promise<void> {
     db.emitAdminEvent("vm.woke", vmId, null, { hadSnapshot: hasSnapshot });
 
     // Reset idle timer so it doesn't immediately re-snapshot
-    resetIdleTimer(vmId);
+    getIdleMonitor().resetTimer(vmId);
   } catch (err: any) {
     db.updateVMStatus(vmId, "error");
     console.error(`[wake] Failed to wake VM ${vmId}: ${err.message}`);
@@ -159,21 +154,11 @@ async function doWake(vmId: string, vm: VM): Promise<void> {
  * Create a fresh VM when snapshot files are missing.
  * Reuses the existing rootfs and data volume from the VM's data dir.
  */
-async function createFreshVM(
-  vmId: string,
-  vm: VM,
-  dataDir: string,
-): Promise<void> {
+async function createFreshVM(vmId: string, vm: VM): Promise<void> {
   const engine = getVMEngine();
 
-  // Read VM config from the saved vm.json
-  const vmConfigPath = join(dataDir, vmId, "env.json");
-  let vmConfig: any = {};
-  try {
-    vmConfig = JSON.parse(readFileSync(vmConfigPath, "utf-8"));
-  } catch {
-    console.warn(`[wake] No env.json found for ${vmId}, using defaults`);
-  }
+  // Read VM config from the saved env.json (delegated to engine)
+  const vmConfig = engine.getVMConfig(vmId);
 
   await engine.createAndStartVM({
     slug: vmId,

@@ -28,8 +28,7 @@ import { registerBillingRoutes } from "./routes/billing.js";
 import { destroyAllTerminals } from "./terminal/pty-handler.js";
 import { agentManager } from "./agents/manager.js";
 import { getHealthStats } from "./services/health.js";
-import { initProviders, getVMEngine, getReverseProxy, getDatabase } from "./adapters/providers.js";
-import { startIdleMonitor, stopIdleMonitor } from "./services/idle-monitor.js";
+import { initProviders, getVMEngine, getReverseProxy, getDatabase, getIdleMonitor } from "./adapters/providers.js";
 import { startSshProxy, stopSshProxy } from "./services/ssh-proxy.js";
 
 declare module "fastify" {
@@ -75,8 +74,8 @@ await app.register(cors, {
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 });
 
-// Initialize providers (OSS defaults, or enterprise overrides via DEPLOYMAGI_PROVIDERS env var)
-const providerPkg = process.env.DEPLOYMAGI_PROVIDERS;
+// Initialize providers (OSS defaults, or enterprise overrides via NUMAVM_PROVIDERS env var)
+const providerPkg = process.env.NUMAVM_PROVIDERS;
 if (providerPkg) {
   const { register } = await import(providerPkg);
   await register();
@@ -191,7 +190,7 @@ process.on("unhandledRejection", (reason, promise) => {
 // Graceful shutdown — VMs are NOT killed here since they run as independent
 // systemd services and should survive CP restarts (reconciled on next startup)
 const shutdown = async () => {
-  stopIdleMonitor();
+  getIdleMonitor().stop();
   stopSshProxy();
   agentManager.destroyAll();
   destroyAllTerminals();
@@ -210,7 +209,7 @@ await startSshProxy();
 
 // Start idle monitor (only on non-localhost deployments)
 if (baseDomain !== "localhost") {
-  startIdleMonitor();
+  getIdleMonitor().start();
 }
 
 // Load Caddy config on startup (non-fatal — Caddy may not be running yet)

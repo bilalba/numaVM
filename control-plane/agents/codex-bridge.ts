@@ -1,7 +1,7 @@
 import { type ChildProcess } from "node:child_process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { AgentBridge, AgentEvent, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort, CodexModel, CodexThread } from "./types.js";
-import { spawnProcessOverVsock } from "../services/vsock-ssh.js";
+import { getVMEngine } from "../adapters/providers.js";
 
 /**
  * Codex bridge — JSON-RPC 2.0 over stdio via SSH-over-vsock.
@@ -28,24 +28,22 @@ export class CodexBridge implements AgentBridge {
     for (const l of this.listeners) l(event);
   }
 
-  async start(vmIp: string | number, options?: { model?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<string> {
-    // Accept VM IP string (e.g. "172.16.0.3")
-    const ip = typeof vmIp === "number" ? String(vmIp) : vmIp;
-    if (!ip) {
-      throw new Error("CodexBridge.start requires a VM IP address (string)");
+  async start(vmId: string, options?: { model?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<string> {
+    if (!vmId) {
+      throw new Error("CodexBridge.start requires a VM ID");
     }
 
     const cmd = options?.cwd
       ? `cd '${options.cwd}' && codex app-server`
       : "codex app-server";
-    const vsock = spawnProcessOverVsock(ip, cmd);
-    this.proc = vsock.process;
-    this.procStdin = vsock.stdin;
+    const spawned = getVMEngine().spawnProcess(vmId, cmd);
+    this.proc = spawned.process;
+    this.procStdin = spawned.stdin;
 
-    this.rl = createInterface({ input: vsock.stdout as NodeJS.ReadableStream });
+    this.rl = createInterface({ input: spawned.stdout as NodeJS.ReadableStream });
     this.rl.on("line", (line) => this.handleLine(line));
 
-    (vsock.stderr as NodeJS.ReadableStream).on("data", (data: Buffer) => {
+    (spawned.stderr as NodeJS.ReadableStream).on("data", (data: Buffer) => {
       const text = data.toString().trim();
       if (text) {
         this.emit({ type: "error", message: text, code: "codex_stderr" });

@@ -1,12 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { customAlphabet } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
-import { allocatePorts, allocateCid, cidToVmIp } from "../services/port-allocator.js";
 import { fetchSshKeys } from "../services/github.js";
-import { execInVM } from "../services/vsock-ssh.js";
 import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
@@ -42,9 +39,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     const slug = `vm-${generateSlug()}`;
-    const { appPort, sshPort, opencodePort } = allocatePorts();
-    const vsockCid = allocateCid();
-    const vmIp = cidToVmIp(vsockCid);
+    const { appPort, sshPort, opencodePort, vsockCid, vmIp } = getVMEngine().allocateResources();
 
     // GitHub repo is optional — if provided, VM will clone it
     const repoFullName = body.gh_repo || null;
@@ -86,6 +81,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       opencode_port: opencodePort,
       opencode_password: opencodePassword,
       status: "creating",
+      status_detail: null,
       mem_size_mib: memSizeMib,
     });
 
@@ -144,7 +140,7 @@ export function registerVMRoutes(app: FastifyInstance) {
 
         while (Date.now() - start < maxWait) {
           try {
-            const raw = await execInVM(vmIp, ["cat", "/tmp/init-progress"]);
+            const raw = await getVMEngine().exec(slug, ["cat", "/tmp/init-progress"]);
             const progress = raw.trim();
             if (progress && progress !== lastProgress) {
               lastProgress = progress;
@@ -294,7 +290,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     try {
       await getVMEngine().removeVMFull(
         id,
-        vm.vm_ip || cidToVmIp(vm.vsock_cid || 3),
+        vm.vm_ip || "",
         vm.app_port,
         vm.ssh_port,
         vm.opencode_port,
@@ -370,12 +366,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: `Cannot clone VM in '${sourceVM.status}' state` });
     }
 
-    const dataDir = process.env.DATA_DIR || "/data/vms";
-    const sourceDir = join(dataDir, id);
-    const sourceRootfs = join(sourceDir, "rootfs.ext4");
-    const sourceData = join(sourceDir, "data.ext4");
-
-    if (!existsSync(sourceRootfs)) {
+    if (!getVMEngine().hasRootfs(id)) {
       return reply.status(400).send({ error: "Source VM has no rootfs to clone" });
     }
 
@@ -394,9 +385,7 @@ export function registerVMRoutes(app: FastifyInstance) {
 
     const cloneName = body.name || `${sourceVM.name} (copy)`;
     const slug = `vm-${generateSlug()}`;
-    const { appPort, sshPort, opencodePort } = allocatePorts();
-    const vsockCid = allocateCid();
-    const vmIp = cidToVmIp(vsockCid);
+    const { appPort, sshPort, opencodePort, vsockCid, vmIp } = getVMEngine().allocateResources();
 
     // Fetch cloning user's SSH keys (not source's)
     const user = getDatabase().findUserById(request.userId);
@@ -413,42 +402,10 @@ export function registerVMRoutes(app: FastifyInstance) {
     const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
     const ghToken = user?.github_token || process.env.GH_PAT || null;
 
-    // Create target data directory
-    const targetDir = join(dataDir, slug);
-    mkdirSync(targetDir, { recursive: true });
-
-    // Copy disk files: pause source if running, copy, resume
+    // Clone disk files (handles pause/resume of source VM)
     try {
-      const isRunning = sourceVM.status === "running";
-      if (isRunning) {
-        await getVMEngine().pauseVM(id);
-      }
-
-      try {
-        // Copy rootfs (sparse/reflink when possible)
-        try {
-          execSync(`cp --reflink=auto "${sourceRootfs}" "${join(targetDir, "rootfs.ext4")}"`, { stdio: "pipe" });
-        } catch {
-          execSync(`cp "${sourceRootfs}" "${join(targetDir, "rootfs.ext4")}"`, { stdio: "pipe" });
-        }
-
-        // Copy data volume if it exists
-        if (existsSync(sourceData)) {
-          try {
-            execSync(`cp --reflink=auto "${sourceData}" "${join(targetDir, "data.ext4")}"`, { stdio: "pipe" });
-          } catch {
-            execSync(`cp "${sourceData}" "${join(targetDir, "data.ext4")}"`, { stdio: "pipe" });
-          }
-        }
-      } finally {
-        // Always resume source if we paused it
-        if (isRunning) {
-          await getVMEngine().resumeVM(id);
-        }
-      }
+      await getVMEngine().cloneDisks(id, slug);
     } catch (err: any) {
-      // Clean up target dir on copy failure
-      try { execSync(`rm -rf "${targetDir}"`, { stdio: "pipe" }); } catch { /* ok */ }
       request.log.error({ err, sourceId: id, targetSlug: slug }, "Failed to copy disk files for clone");
       return reply.status(500).send({ error: "Failed to copy disk files", details: err.message });
     }
@@ -470,6 +427,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       opencode_port: opencodePort,
       opencode_password: opencodePassword,
       status: "creating",
+      status_detail: null,
       mem_size_mib: cloneMemSize,
     });
     getDatabase().grantAccess(slug, request.userId, "owner");
@@ -497,7 +455,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     } catch (err: any) {
       getDatabase().revokeAllAccess(slug);
       getDatabase().deleteVM(slug);
-      try { execSync(`rm -rf "${targetDir}"`, { stdio: "pipe" }); } catch { /* ok */ }
+      try { getVMEngine().removeVM(slug); } catch { /* ok */ }
       request.log.error({ err, slug }, "Failed to create cloned VM");
       return reply.status(500).send({ error: "Failed to create cloned VM", details: err.message });
     }
@@ -671,7 +629,7 @@ export function registerVMRoutes(app: FastifyInstance) {
 
     try {
       const desiredKeys = await gatherUserKeys(request.userId);
-      const currentRaw = await execInVM(vm.vm_ip, [
+      const currentRaw = await getVMEngine().exec(vm.id, [
         "cat", "/home/dev/.ssh/authorized_keys",
       ]);
       const currentKeys = dedupeKeys(currentRaw);
@@ -702,7 +660,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     const keysB64 = Buffer.from(allKeys).toString("base64");
 
     try {
-      await execInVM(vm.vm_ip, [
+      await getVMEngine().exec(vm.id, [
         "sh", "-c",
         `echo '${keysB64}' | base64 -d > /home/dev/.ssh/authorized_keys && chmod 600 /home/dev/.ssh/authorized_keys`,
       ]);
