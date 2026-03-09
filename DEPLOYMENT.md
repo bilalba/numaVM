@@ -1,252 +1,401 @@
-# NumaVM — EC2 Deployment Guide
+# NumaVM — Production Deployment Guide
 
-This document covers deploying NumaVM on a bare-metal/EC2 instance with Firecracker support.
+Complete guide for deploying NumaVM on a fresh server. Tested on Ubuntu 24.04 (aarch64) on AWS EC2 `.metal` instances.
 
-## Production Instance Requirements
+## Server Requirements
 
-- **Architecture**: aarch64 (or x86_64), Ubuntu 24.04 recommended
-- **Minimum**: 4 cores, 8GB RAM (more for concurrent VMs)
-- **KVM**: Must have `/dev/kvm` available (bare-metal or nested virtualization)
+| Requirement | Details |
+|---|---|
+| **OS** | Ubuntu 24.04 LTS (other Linux distros may work but are untested) |
+| **Architecture** | aarch64 or x86_64 |
+| **KVM** | `/dev/kvm` must exist — bare-metal or `.metal` EC2 instances |
+| **CPU / RAM** | 4+ cores, 16+ GB RAM recommended (each VM uses 256–1536 MiB) |
+| **Disks** | Root volume (40 GB+) for OS, separate data volume (200 GB+) for VM storage |
 
-## Services Running
+### Why a Separate Data Volume?
 
-| Service | Port | Run As | Command |
-|---------|------|--------|---------|
-| Auth | 4000 | ubuntu | `npx tsx auth/server.ts` |
-| Control Plane | 4001 | root (needs TAP/iptables) | `sudo -E npx tsx control-plane/server.ts` |
-| Dashboard | 4002 | ubuntu | `npx serve -s dist -l 4002 --cors` |
+The data volume **must be XFS with reflinks enabled**. When creating a VM, the host copies a 2–4 GB rootfs image. On ext4, this is a full byte-by-byte copy (~1.7s). On XFS with reflinks, it's a copy-on-write operation (~1ms). This also benefits VM cloning.
 
-**Important**: The control plane MUST run as root because it creates TAP devices, iptables DNAT rules, and spawns Firecracker processes.
+Reflinks only work within the same filesystem, so both the base rootfs images and per-VM copies must live on the same XFS mount.
 
-## Installed Components
+## Step-by-Step Deployment
 
-| Component | Path | Version |
-|-----------|------|---------|
-| Firecracker | `/opt/firecracker/bin/firecracker` | v1.10.1 |
-| Jailer | `/opt/firecracker/bin/jailer` | v1.10.1 |
-| Kernel | `/opt/firecracker/kernel/vmlinux` | 6.1.102 (from `firecracker-ci/v1.9/aarch64/`) |
-| Rootfs | `/opt/firecracker/rootfs/base.ext4` | 976MB Alpine 3.21 ext4 |
-| TAP helpers | `/opt/firecracker/bin/{create,destroy}-tap` | — |
-| DNAT helpers | `/opt/firecracker/bin/{add,remove}-dnat` | — |
-| Caddy | `/usr/bin/caddy` | v2.11.1 (installed, not yet configured) |
-| Node.js (host) | `/usr/bin/node` | v22.22.0 |
-| socat (host) | `/usr/bin/socat` | v1.8.0.0 |
-| Bridge | `br0` at `172.16.0.1/16` | — |
-| Data dir | `/data/envs` | — |
+### 1. Provision the Server
 
-## VM Rootfs Contents
+On AWS:
+1. Launch a `.metal` instance (e.g., `c7g.metal` for aarch64, `c6i.metal` for x86_64)
+2. Root volume: 40 GB gp3 (ext4, for the OS)
+3. **Additional volume: 200+ GB gp3** — this becomes `/data` (XFS)
+4. Security group: open ports 22, 80, 443, 2222, 4000–4003
 
-Alpine 3.21 with:
-- **Node.js 24** (from Alpine edge, with matching libssl3/libcrypto3)
-- **Codex CLI** (`@openai/codex`) — installed globally
-- **Claude Code CLI** (`@anthropic-ai/claude-code`) — installed globally
-- **OpenCode** (`/root/.opencode/bin/opencode`, symlinked to `/usr/local/bin/opencode`)
-- **PM2** process manager
-- SSH, git, Python 3, build-base, socat, tmux, curl, jq, iptables
+### 2. Change SSH to Port 2222
 
-## Environment Variables (`.env`)
+Port 22 is reserved for the VM SSH proxy service. Move the host's SSH to port 2222.
 
 ```bash
-JWT_SECRET=<random-hex>          # Generate with: openssl rand -hex 32
-BASE_DOMAIN=your-host.example.com
-DATA_DIR=/data/envs
-AUTH_PORT=4000
-DEV_MODE=true    # Bypasses OAuth, uses fake dev-user identity
+# Edit sshd config
+sudo sed -i 's/^#Port 22/Port 2222/' /etc/ssh/sshd_config
 
-# Optional — fill in for full functionality:
-GITHUB_CLIENT_ID=
-GITHUB_CLIENT_SECRET=
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-RESEND_API_KEY=
-GH_PAT=          # For auto-creating GitHub repos on env creation
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
+# Ubuntu 24.04 uses socket activation which overrides sshd_config.
+# You MUST also update the socket unit:
+sudo sed -i 's/ListenStream=22/ListenStream=2222/' /lib/systemd/system/ssh.socket
+sudo systemctl daemon-reload
+sudo systemctl restart ssh.socket ssh.service
+
+# Verify
+sudo ss -tlnp | grep ssh   # should show 2222
 ```
 
-### DEV_MODE=true
+> **Important**: Update your local `~/.ssh/config` to use `Port 2222` before disconnecting, or you'll lock yourself out.
 
-When `DEV_MODE=true`, the control plane skips Caddy `forward_auth` and auto-creates a `dev-user` identity. This is required when running without Caddy or without OAuth configured.
+### 3. Format the Data Volume as XFS
 
-### Dashboard `.env`
+Find the data volume (the unformatted one):
 
 ```bash
-VITE_API_URL=//your-host.example.com:4001
+lsblk
+# Look for the unformatted disk, e.g., nvme1n1 (no partitions, no mountpoint)
 ```
 
-Must be rebuilt (`cd dashboard && npm run build`) after changing this value.
+Format and mount:
 
-## Deployment Steps (from scratch)
-
-### 1. Transfer files
 ```bash
-rsync -avz --exclude node_modules --exclude '*.db' --exclude .data --exclude .claude \
-  /path/to/numavm/ numavm:~/numavm/
+sudo mkfs.xfs -m reflink=1 /dev/nvme1n1
+sudo mkdir -p /data
+sudo mount /dev/nvme1n1 /data
+
+# Persist across reboots
+echo '/dev/nvme1n1 /data xfs defaults 0 0' | sudo tee -a /etc/fstab
+
+# Verify
+df -hT /data              # should show xfs
+xfs_info /data | grep reflink  # should show reflink=1
 ```
 
-### 2. Install system dependencies
+### 4. Install System Dependencies
+
 ```bash
-ssh numavm
-sudo apt-get install -y build-essential python3 socat
+# Node.js 22
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-# Load vhost_vsock kernel module (required for Firecracker vsock device)
-sudo modprobe vhost_vsock
-echo 'vhost_vsock' | sudo tee /etc/modules-load.d/vhost-vsock.conf
+# tsx (TypeScript runner)
+sudo npm install -g tsx
+
+# Build tools (required for node-pty native module)
+sudo apt-get install -y build-essential python3
+
+# Caddy (reverse proxy)
+sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt-get update
+sudo apt-get install -y caddy
 ```
 
-### 3. Run host setup (Firecracker, bridge, NAT)
+### 5. Set Up Firecracker (Host Setup)
+
 ```bash
-cd ~/numavm && sudo bash infra/setup-host.sh
+git clone https://github.com/bilalba/numaVM.git
+cd numaVM/oss
+sudo bash infra/setup-host.sh
 ```
 
-### 4. Download kernel 6.1 (replaces the broken 4.14 fallback)
+This installs:
+- Firecracker + jailer binaries (v1.14.2) to `/opt/firecracker/bin/`
+- Linux kernel for VMs to `/opt/firecracker/kernel/vmlinux`
+- Bridge interface `br0` at `172.16.0.1/16` with NAT
+- TAP and DNAT helper scripts
+- Data directory at `/data/envs`
+
+### 6. Build the VM Rootfs
+
+Build the rootfs into `/data/rootfs/` so it's on the same XFS filesystem as VM copies (required for reflinks):
+
 ```bash
-sudo curl -fsSL \
-  'https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.9/aarch64/vmlinux-6.1.102' \
-  -o /opt/firecracker/kernel/vmlinux
+sudo mkdir -p /data/rootfs
+cd vm && sudo bash build-rootfs.sh --distro alpine --output-dir /data/rootfs
 ```
 
-**Critical**: The setup script's primary kernel URL (v1.10 CI) returns 404. The fallback downloads kernel 4.14 which is too old for the Alpine rootfs. Must manually download 6.1 from v1.9 CI.
+This creates a ~2 GB Alpine Linux ext4 image with Node.js, SSH, git, tmux, and agent CLIs (Codex, Claude Code, OpenCode) pre-installed. Takes 2–5 minutes.
 
-### 5. Build VM rootfs
+Verify reflinks work:
+
 ```bash
-cd ~/numavm/vm && sudo bash build-rootfs.sh
+sudo time cp --reflink=always /data/rootfs/alpine-v1.ext4 /data/test-reflink.ext4
+# Should complete in <0.1s. If it takes seconds, reflinks aren't working.
+sudo rm /data/test-reflink.ext4
 ```
 
-Takes ~2-3 minutes. Installs Alpine packages + Node.js + agent CLIs.
+### 7. Install npm Dependencies
 
-### 6. Install npm dependencies
 ```bash
-cd ~/numavm && npm install
+cd /path/to/numaVM/oss
+npm install
+
+# Also install commercial dependencies (if using commercial layer)
+cd /path/to/numaVM/commercial
+npm install
 ```
 
-### 7. Fix data dir permissions
+### 8. Configure Environment
+
 ```bash
-sudo chown -R ubuntu:ubuntu /data/envs
+cp .env.example .env
 ```
 
-### 8. Configure .env
-See "Environment Variables" section above.
+Edit `.env` with your values:
 
-### 9. Build dashboard
 ```bash
-cd ~/numavm/dashboard && npm run build
+# Required
+JWT_SECRET=$(openssl rand -hex 32)   # Generate a random secret
+BASE_DOMAIN=yourdomain.com
+DATA_DIR=/data/envs
+DEV_MODE=false                        # Set to true if not using OAuth
+SECURE_COOKIES=true
+AUTH_ORIGIN=https://auth.yourdomain.com
+
+# Firecracker — point to XFS rootfs location
+FC_ROOTFS_DIR=/data/rootfs            # NOT FC_ROOTFS (legacy, bypasses XFS optimization)
+
+# Auth (at minimum, set up GitHub OAuth)
+GITHUB_CLIENT_ID=...
+GITHUB_CLIENT_SECRET=...
+
+# Optional
+GH_PAT=ghp_...                       # For auto-creating repos
+OPENAI_API_KEY=sk-...                 # For Codex in VMs
+ANTHROPIC_API_KEY=sk-ant-...          # For Claude Code in VMs
+
+# Stripe (only if using commercial layer)
+STRIPE_SECRET_KEY=sk_...
+STRIPE_PUBLISHABLE_KEY=pk_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_BASE_PRICE_ID=price_...
 ```
 
-### 10. Start services
+> **Important**: Use `FC_ROOTFS_DIR=/data/rootfs` (directory), not the legacy `FC_ROOTFS` (single file path). The legacy var takes precedence and bypasses the XFS reflink optimization.
+
+### 9. Set Up TLS Certificates
+
+If using **Cloudflare proxy** (recommended), create a Cloudflare Origin Certificate:
+
+1. Cloudflare dashboard → SSL/TLS → Origin Server → Create Certificate
+2. Save the certificate and private key:
+
 ```bash
-# Auth (as regular user)
-cd ~/numavm && nohup npx tsx auth/server.ts > /tmp/auth.log 2>&1 &
-
-# Control plane (as root — needs TAP/iptables)
-cd ~/numavm && sudo -E nohup npx tsx control-plane/server.ts > /tmp/control-plane.log 2>&1 &
-
-# Dashboard (static file server)
-cd ~/numavm/dashboard && nohup npx serve -s dist -l 4002 --cors > /tmp/dashboard.log 2>&1 &
+sudo mkdir -p /etc/caddy/ssl
+sudo nano /etc/caddy/ssl/yourdomain.com.pem   # Paste certificate
+sudo nano /etc/caddy/ssl/yourdomain.com.key   # Paste private key
+sudo chmod 600 /etc/caddy/ssl/*.key
 ```
 
-### 11. AWS Security Group
+The control plane dynamically loads Caddy config via its admin API, referencing these cert files.
+
+If **not using Cloudflare**, Caddy will auto-provision Let's Encrypt certificates (requires ports 80/443 open and DNS pointing to the server).
+
+### 10. Configure Caddy
+
+Copy the minimal Caddyfile that enables the admin API (the control plane loads the full config dynamically):
+
+```bash
+sudo cp /path/to/numaVM/oss/Caddyfile /etc/caddy/Caddyfile
+sudo systemctl restart caddy
+```
+
+### 11. Deploy and Start Services
+
+Using the deploy script (from your local machine):
+
+```bash
+cd commercial    # or oss/ for standalone
+./deploy.sh --install-services
+```
+
+This:
+1. Builds the dashboard and admin SPAs
+2. Rsyncs code to the server
+3. Runs `npm install` on the server
+4. Installs and starts systemd services
+
+Or manually on the server:
+
+```bash
+# Install systemd units
+sudo cp infra/systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable numavm-auth numavm-control-plane numavm-dashboard numavm-admin
+sudo systemctl start numavm-auth
+sudo systemctl start numavm-control-plane
+sudo systemctl start numavm-dashboard
+sudo systemctl start numavm-admin
+```
+
+### 12. Configure DNS
+
+Point these DNS records at your server's IP:
+
+| Record | Type | Value |
+|---|---|---|
+| `yourdomain.com` | A | `<server-ip>` |
+| `*.yourdomain.com` | A | `<server-ip>` |
+
+If using Cloudflare, enable the proxy (orange cloud) for DDoS protection and caching.
+
+Specific subdomains used:
+- `auth.yourdomain.com` → auth service
+- `api.yourdomain.com` → control plane API
+- `app.yourdomain.com` → dashboard
+- `admin.yourdomain.com` → admin dashboard
+- `vm-XXXXXX.yourdomain.com` → per-VM subdomains (dynamically created)
+
+### 13. Verify
+
+```bash
+# Check all services are running
+sudo systemctl status numavm-auth numavm-control-plane numavm-dashboard numavm-admin
+
+# Health checks
+curl -sf http://localhost:4000/health | jq .
+curl -sf http://localhost:4001/health | jq .
+
+# Verify Caddy loaded the dynamic config
+sudo journalctl -u caddy --no-pager -n 10
+
+# Test reflinks work for VM creation
+sudo time cp --reflink=always /data/rootfs/alpine-v1.ext4 /data/envs/test.ext4
+sudo rm /data/envs/test.ext4
+```
+
+---
+
+## Ongoing Deployments
+
+After the initial setup, use the deploy script for updates:
+
+```bash
+./deploy.sh                    # Full deploy (build + sync + restart all)
+./deploy.sh --skip-build       # Skip dashboard/admin build
+./deploy.sh --cp-only          # Only restart control plane
+./deploy.sh --auth-only        # Only restart auth
+./deploy.sh --dashboard-only   # Only restart dashboard
+./deploy.sh --admin-only       # Only restart admin
+```
+
+---
+
+## Architecture on Disk
+
+```
+Server
+├── /opt/firecracker/
+│   ├── bin/firecracker          # Firecracker binary
+│   ├── bin/jailer               # Jailer binary
+│   ├── bin/{create,destroy}-tap # TAP device helpers
+│   ├── bin/{add,remove}-dnat    # DNAT helpers
+│   └── kernel/vmlinux           # Linux kernel for VMs
+├── /data/                       # XFS volume (reflink=1)
+│   ├── rootfs/                  # Base rootfs images
+│   │   ├── alpine-v1.ext4      # Alpine base image (~2 GB)
+│   │   ├── alpine.ext4 → alpine-v1.ext4
+│   │   ├── base.ext4 → alpine.ext4
+│   │   └── manifest.json
+│   └── envs/                    # Per-VM data directories
+│       ├── vm-abc123/
+│       │   ├── rootfs.ext4      # Reflink copy of base image
+│       │   ├── firecracker.log
+│       │   └── ...
+│       └── .ssh/
+│           └── numavm_internal  # Internal SSH keypair
+├── /home/ubuntu/numavm/
+│   ├── oss/                     # OSS platform code
+│   │   ├── platform.db          # SQLite database
+│   │   ├── .env                 # Environment config
+│   │   └── node_modules/
+│   └── commercial/              # Commercial layer (optional)
+│       └── node_modules/
+└── /etc/caddy/
+    ├── Caddyfile                # Minimal config (admin API only)
+    └── ssl/
+        ├── yourdomain.com.pem   # Origin certificate
+        └── yourdomain.com.key   # Private key
+```
+
+## Systemd Services
+
+| Service | Port | Runs As | Description |
+|---|---|---|---|
+| `numavm-auth` | 4000 | root | Auth service (OAuth, JWT, sessions) |
+| `numavm-control-plane` | 4001 | root | Control plane (VM CRUD, agents, files) |
+| `numavm-dashboard` | 4002 | ubuntu | Dashboard SPA (static file server) |
+| `numavm-admin` | 4003 | ubuntu | Admin dashboard SPA |
+| `caddy` | 80, 443 | caddy | Reverse proxy (TLS, forward_auth) |
+
+The control plane runs as root because it creates TAP devices, iptables DNAT rules, and spawns Firecracker processes.
+
+Logs: `sudo journalctl -u numavm-control-plane -f`
+
+## AWS Security Group
 
 Open these inbound ports:
-- **22** — SSH
-- **4000-4002** — Auth, Control Plane, Dashboard
-- **80, 443** — Caddy (when configured)
-- **10001-10100** — VM app ports
-- **20001-20100** — VM SSH ports
 
-## Known Issues & Fixes Applied
+| Port | Purpose |
+|---|---|
+| 2222 | Host SSH (moved from 22) |
+| 22 | VM SSH proxy (control plane listens here) |
+| 80, 443 | Caddy (HTTP/HTTPS) |
+| 4000–4003 | Services (only needed if accessing directly, not through Caddy) |
 
-### Kernel 4.14 too old
-The Firecracker CI S3 bucket doesn't have v1.10 kernels. The fallback URL downloads kernel 4.14.174 which causes `Attempted to kill init!` panics because the Alpine rootfs binaries need newer syscalls. **Fix**: Download kernel 6.1.102 from the v1.9 CI path.
+## Troubleshooting
 
-### Alpine edge Node.js 24 OpenSSL mismatch
-Alpine edge's Node.js 24 package is built against a newer OpenSSL that provides `EVP_MD_CTX_get_size_ex`, but the base Alpine 3.21 `libssl3` doesn't have it. **Fix**: Upgrade `libssl3` and `libcrypto3` from edge *before* installing Node.js (see `build-rootfs.sh`).
+### SSH port change doesn't take effect (Ubuntu 24.04)
 
-### init.sh `ip link set eth0 up` crash
-The init script used `set -e` and `ip link set eth0 up` without error handling, causing a kernel panic if eth0 doesn't exist yet. **Fix**: Added `2>/dev/null || true`.
+Ubuntu 24.04 uses `ssh.socket` (systemd socket activation) which overrides `sshd_config`. You must update both:
 
-### CORS for non-localhost
-The control plane only allowed CORS from `localhost:4002` or `app.${BASE_DOMAIN}`. When accessing via IP or hostname on port 4002 (without Caddy), CORS was blocked. **Fix**: CORS now uses dynamic origin validation — accepts any origin containing the `BASE_DOMAIN` or any origin on port 4002 (to support IP-based access like `http://<server-ip>:4002`).
-
-### Control plane needs root
-Creating TAP devices, iptables rules, and spawning Firecracker all require root. Running as regular user causes `EACCES` and `TUNSETIFF: Operation not permitted` errors.
-
-### `/data/envs` permissions
-Created by root during `setup-host.sh` but the control plane (even when running as root) creates subdirectories. Ensure the directory is accessible.
-
-### OpenSSH 10+ rejects locked accounts
-Alpine's `adduser -D` creates user accounts with `!` in `/etc/shadow` (locked). OpenSSH 10.2 (in Alpine edge) rejects pubkey authentication for locked accounts, even with `UsePAM no`. **Fix**: `init.sh` runs `sed -i 's/^dev:!:/dev:*:/' /etc/shadow` at boot. Also fixed in `build-rootfs.sh` so new base images don't have this issue.
-
-### Firecracker vsock not usable via AF_VSOCK from host
-`socat VSOCK-CONNECT:${cid}:22` uses the kernel's `AF_VSOCK` socket family, but Firecracker exposes its vsock through a Unix domain socket (`/tmp/fc-{slug}-vsock.sock`) with a custom `CONNECT <port>\n` / `OK <cid>\n` handshake protocol. The AF_VSOCK approach fails with "No such device". **Fix**: Switched all VM exec to TCP SSH over the bridge network (`172.16.0.x`). The `vsock-ssh.ts` functions now connect directly to the VM's bridge IP instead of using a vsock proxy command.
-
-### `vhost_vsock` kernel module not loaded
-The `vhost_vsock` module must be loaded for Firecracker's vsock device to work. Without it, VM creation succeeds but vsock UDS sockets are non-functional. **Fix**: `sudo modprobe vhost_vsock` + persisted in `/etc/modules-load.d/vhost-vsock.conf`.
-
-### `socat` missing on host
-The host Ubuntu instance didn't have `socat` installed. While no longer needed for vsock SSH proxy (switched to TCP), it's used inside VMs for the vsock listener and useful for debugging. **Fix**: `sudo apt install socat`.
-
-### Caddy admin API 403 "not allowed from origin ''"
-Node.js `fetch()` doesn't send an `Origin` header by default. Caddy's admin API requires one and returns 403 without it. **Fix**: Added `Origin: ${caddyAdmin}` header to all Caddy admin API requests in `caddy.ts`.
-
-## Patching the Rootfs Without Full Rebuild
-
-To update files inside the rootfs without rebuilding from scratch:
 ```bash
-sudo bash -c '
-MOUNTDIR=$(mktemp -d)
-LOOP=$(losetup --find --show /opt/firecracker/rootfs/base.ext4)
-mount $LOOP $MOUNTDIR
-# Make your changes, e.g.:
-cp /home/ubuntu/numavm/vm/init.sh $MOUNTDIR/opt/numavm/init.sh
-chmod +x $MOUNTDIR/opt/numavm/init.sh
-umount $MOUNTDIR
-losetup -d $LOOP
-rmdir $MOUNTDIR
-'
+sudo sed -i 's/ListenStream=22/ListenStream=2222/' /lib/systemd/system/ssh.socket
+sudo systemctl daemon-reload
+sudo systemctl restart ssh.socket ssh.service
 ```
 
-## Firecracker Kernel Sources
+### node-pty fails to install
 
-Pre-built kernels are hosted at:
-```
-https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v{VERSION}/{ARCH}/vmlinux-{KERNEL}
-```
+`npm install` fails with `not found: make`. Install build tools:
 
-Available versions (as of March 2026):
-- `v1.5` through `v1.9` — have aarch64 kernels
-- `v1.10` — **does NOT exist** in S3
-- For aarch64, use `vmlinux-6.1.102` from v1.9
-
-To list available kernels:
 ```bash
-curl -s 'https://s3.amazonaws.com/spec.ccfc.min/?prefix=firecracker-ci/v1.9/aarch64/vmlinux' \
-  | grep -oP '<Key>[^<]+'
+sudo apt-get install -y build-essential python3
 ```
 
-## VM SSH Exec Architecture
+### Caddy reports "no such file or directory" for SSL cert
 
-The control plane executes commands inside VMs via SSH over the bridge network:
+The control plane's dynamic Caddy config expects TLS certificates at `/etc/caddy/ssl/<domain>.pem` and `.key`. Create a Cloudflare Origin Certificate or use Let's Encrypt (remove the `tls` directive in `caddy.ts` to let Caddy auto-provision).
 
+### Reflink copy fails with "Invalid cross-device link"
+
+Source and destination must be on the same filesystem. Ensure both `/data/rootfs/` (base images) and `/data/envs/` (VM copies) are on the XFS volume. If you're testing with `cp --reflink=always` to `/tmp`, it will fail because `/tmp` is on the root ext4 filesystem.
+
+### VM rootfs copy is slow (~1.7s instead of ~1ms)
+
+1. Check the filesystem: `df -hT /data` should show `xfs`
+2. Check reflinks: `xfs_info /data | grep reflink` should show `reflink=1`
+3. Check env: `.env` should have `FC_ROOTFS_DIR=/data/rootfs` (not `FC_ROOTFS`)
+4. The legacy `FC_ROOTFS` env var takes precedence — remove it if present
+
+### Control plane can't bind port 22
+
+The SSH proxy needs port 22. If the host's sshd is still on port 22, move it to 2222 (see step 2).
+
+### Bridge br0 not persisted after reboot
+
+The `setup-host.sh` script creates a `numavm-bridge.service` that recreates the bridge on boot. Verify it's enabled:
+
+```bash
+sudo systemctl is-enabled numavm-bridge.service
 ```
-Control Plane → SSH (tcp) → 172.16.0.x:22 → VM sshd → command
+
+NAT/iptables rules also need to be persisted. Install `iptables-persistent`:
+
+```bash
+sudo apt-get install -y iptables-persistent
+sudo netfilter-persistent save
 ```
-
-- **Auth**: Internal ed25519 keypair at `/data/envs/.ssh/numavm_internal`
-- **User**: Commands run as `dev` (UID 1000, sudo NOPASSWD)
-- **Functions** (`control-plane/services/vsock-ssh.ts`):
-  - `execInVM(vmIp, cmd)` — run a command, return stdout
-  - `spawnPtyOverVsock(vmIp, cmd, cols, rows)` — interactive PTY session (terminal)
-  - `spawnProcessOverVsock(vmIp, cmd)` — long-running process with stdio pipes (agent bridges)
-- **Readiness check**: After VM start, `waitForVmSsh(vmIp, timeout)` polls SSH until the VM responds (typically 2-5s)
-
-**Note**: The file is still named `vsock-ssh.ts` and functions still have "vsock" in their names for historical reasons. They actually use TCP SSH to the VM's bridge IP.
-
-## Logs
-
-- Auth: `/tmp/auth.log`
-- Control Plane: `/tmp/control-plane.log`
-- Dashboard: `/tmp/dashboard.log`
-- Firecracker per-VM: `/data/envs/{slug}/firecracker.log`

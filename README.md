@@ -204,15 +204,44 @@ Email magic links work without Resend too — when `RESEND_API_KEY` is not set, 
 
 ## Production deployment
 
-For a publicly accessible instance with TLS, custom domains, and systemd services, see [DEPLOYMENT.md](./DEPLOYMENT.md).
+For the full step-by-step guide, see **[DEPLOYMENT.md](./DEPLOYMENT.md)**.
 
-Quick summary:
-1. Point a wildcard DNS (`*.yourdomain.com`) at your server
-2. Set `BASE_DOMAIN=yourdomain.com` in `.env`
-3. Install Caddy and start it with `caddy run --config Caddyfile`
-4. Install systemd services: `./deploy.sh --install-services`
-5. Build dashboards: `cd dashboard && npm run build && cd ../admin && npm run build`
-6. Start services: `systemctl start numavm-auth numavm-control-plane numavm-dashboard numavm-admin`
+Quick summary for a fresh Ubuntu 24.04 server:
+
+```bash
+# 1. Move host SSH to port 2222 (port 22 is for VM SSH proxy)
+sudo sed -i 's/^#Port 22/Port 2222/' /etc/ssh/sshd_config
+sudo sed -i 's/ListenStream=22/ListenStream=2222/' /lib/systemd/system/ssh.socket
+sudo systemctl daemon-reload && sudo systemctl restart ssh.socket ssh.service
+
+# 2. Format data volume as XFS with reflinks (makes VM creation ~1700x faster)
+sudo mkfs.xfs -m reflink=1 /dev/<your-data-disk>
+sudo mkdir -p /data && sudo mount /dev/<your-data-disk> /data
+echo '/dev/<your-data-disk> /data xfs defaults 0 0' | sudo tee -a /etc/fstab
+
+# 3. Install Node.js 22, tsx, Caddy, build tools
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs build-essential python3 caddy
+sudo npm install -g tsx
+
+# 4. Set up Firecracker (bridge, NAT, binaries, kernel)
+sudo bash infra/setup-host.sh
+
+# 5. Build rootfs on XFS (so reflinks work for VM copies)
+sudo mkdir -p /data/rootfs
+sudo bash vm/build-rootfs.sh --distro alpine --output-dir /data/rootfs
+
+# 6. Configure .env (set FC_ROOTFS_DIR=/data/rootfs, not FC_ROOTFS)
+cp .env.example .env && vim .env
+
+# 7. Deploy
+npm install
+./deploy.sh --install-services
+
+# 8. DNS: point *.yourdomain.com at the server
+```
+
+**Key architecture detail**: The data volume must be XFS with `reflink=1`. Both base rootfs images (`/data/rootfs/`) and per-VM copies (`/data/envs/`) live on this volume. When the control plane runs `cp --reflink=auto` to create a VM, XFS does a copy-on-write (~1ms) instead of a full 2–4 GB copy (~1.7s).
 
 The control plane dynamically configures Caddy via its admin API — each VM gets a subdomain like `vm-abc123.yourdomain.com` with auth gating via Caddy's `forward_auth`.
 

@@ -1,6 +1,10 @@
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, exec, execSync, type ChildProcess } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, unlinkSync, readdirSync } from "node:fs";
+import { createConnection as netCreateConnection } from "node:net";
 import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 
 // --- Config (lazy reads for ESM import hoisting) ---
 
@@ -217,6 +221,10 @@ function createTap(tapName: string, vmIp: string): void {
     execSync(`ip link set "${tapName}" master ${process.env.BRIDGE_IF || "br0"}`, { stdio: "pipe" });
     execSync(`ip link set "${tapName}" up`, { stdio: "pipe" });
   }
+
+  // Flush stale ARP for this VM IP. When a previous VM used the same IP,
+  // the host ARP cache retains the old MAC, causing ~4s of unreachability.
+  try { execSync(`ip neigh flush dev ${process.env.BRIDGE_IF || "br0"} to ${vmIp} 2>/dev/null`, { stdio: "pipe" }); } catch { /* ok */ }
 }
 
 function destroyTap(tapName: string): void {
@@ -280,37 +288,6 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   mkdirSync(overlayDir, { recursive: true });
   mkdirSync(snapshotDir, { recursive: true });
 
-  // Create writable rootfs overlay (copy-on-write via Firecracker's overlay support)
-  // Firecracker doesn't natively support overlayfs for rootfs, so we use a per-VM
-  // writable copy. The base rootfs is shared read-only; we create a thin writable layer.
-  const vmRootfs = join(dataDir, "rootfs.ext4");
-  if (!existsSync(vmRootfs)) {
-    // Create a sparse copy — uses reflinks on supported filesystems, falls back to cp
-    const baseRootfs = resolveRootfsPath(image);
-    try {
-      execSync(`cp --reflink=auto "${baseRootfs}" "${vmRootfs}"`, { stdio: "pipe" });
-    } catch {
-      execSync(`cp "${baseRootfs}" "${vmRootfs}"`, { stdio: "pipe" });
-    }
-  }
-
-  progress("Creating rootfs overlay");
-
-  // Create TAP device
-  createTap(tapDev, vmIp);
-
-  // Write env config to a file that init.sh can read
-  const envConfig = {
-    gh_repo: ghRepo || "",
-    gh_token: ghToken || "",
-    ssh_keys: sshKeys,
-    internal_ssh_key: getInternalSshPubKey(),
-    opencode_password: opencodePassword,
-    openai_api_key: openaiApiKey || "",
-    anthropic_api_key: anthropicApiKey || "",
-  };
-  writeFileSync(join(dataDir, "env.json"), JSON.stringify(envConfig));
-
   // Build kernel cmdline with dm.* params
   // Base64-encode SSH keys to avoid whitespace issues in cmdline
   const sshKeysB64 = Buffer.from(
@@ -344,17 +321,63 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
 
   progress("Starting Firecracker");
 
-  // Spawn Firecracker as a transient systemd service so it survives CP restarts.
-  // `systemd-run` (without --scope) forks the command as an independent service unit
-  // with its own cgroup, then exits immediately. The FC process lives on.
+  // --- Parallel pre-boot setup ---
+  // rootfs_copy, tap_create, env_write, data_volume_create, and systemd_run
+  // are all independent. Run them concurrently to save ~80ms.
+
+  const vmRootfs = join(dataDir, "rootfs.ext4");
+  const dataVolume = join(dataDir, "data.ext4");
   const fcLogPath = join(dataDir, "firecracker.log");
-  execSync(
-    `systemd-run --unit fc-${slug} --description "Firecracker VM ${slug}" ` +
-    `${getFcBin()} --api-sock ${socketPath} --log-path ${fcLogPath} --level Debug`,
-    { stdio: "pipe" },
+
+  const setupTasks: Promise<void>[] = [];
+
+  // Rootfs copy (reflink) — async so it runs in parallel
+  if (!existsSync(vmRootfs)) {
+    const baseRootfs = resolveRootfsPath(image);
+    setupTasks.push(
+      execAsync(`cp --reflink=auto "${baseRootfs}" "${vmRootfs}"`).then(() => {}).catch(() =>
+        execAsync(`cp "${baseRootfs}" "${vmRootfs}"`).then(() => {})
+      )
+    );
+  }
+
+  // TAP device + ARP flush — async
+  setupTasks.push(execAsync(
+    `${existsSync(process.env.TAP_CREATE || "/opt/firecracker/bin/create-tap")
+      ? `"${process.env.TAP_CREATE || "/opt/firecracker/bin/create-tap"}" "${tapDev}" "${vmIp}"`
+      : `ip link delete "${tapDev}" 2>/dev/null; ip tuntap add dev "${tapDev}" mode tap && ip link set "${tapDev}" master ${process.env.BRIDGE_IF || "br0"} && ip link set "${tapDev}" up`
+    } && ip neigh flush dev ${process.env.BRIDGE_IF || "br0"} to ${vmIp} 2>/dev/null; true`
+  ).then(() => {}));
+
+  // Data volume (first boot only) — async
+  if (!existsSync(dataVolume)) {
+    setupTasks.push(
+      execAsync(`dd if=/dev/zero of="${dataVolume}" bs=1 count=0 seek=${diskSizeGib}G 2>/dev/null && mkfs.ext4 -F -q "${dataVolume}"`).then(() => {})
+    );
+  }
+
+  // Env config file (sync — fast, just a write)
+  const envConfig = {
+    gh_repo: ghRepo || "",
+    gh_token: ghToken || "",
+    ssh_keys: sshKeys,
+    internal_ssh_key: getInternalSshPubKey(),
+    opencode_password: opencodePassword,
+    openai_api_key: openaiApiKey || "",
+    anthropic_api_key: anthropicApiKey || "",
+  };
+  writeFileSync(join(dataDir, "env.json"), JSON.stringify(envConfig));
+
+  // Spawn Firecracker via systemd (survives CP restarts) — async
+  setupTasks.push(
+    execAsync(
+      `systemd-run --unit fc-${slug} --description "Firecracker VM ${slug}" ` +
+      `${getFcBin()} --api-sock ${socketPath} --log-path ${fcLogPath} --level Debug`
+    ).then(() => {})
   );
 
-  // systemd-run exits immediately; FC is now managed by systemd
+  await Promise.all(setupTasks);
+
   // Get the PID from systemd
   let fcPid = 0;
   try {
@@ -390,13 +413,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     is_read_only: false,
   });
 
-  // 4. Data volume (persistent storage)
-  const dataVolume = join(dataDir, "data.ext4");
-  if (!existsSync(dataVolume)) {
-    // Create a sparse data volume sized per disk_size_gib
-    execSync(`dd if=/dev/zero of="${dataVolume}" bs=1 count=0 seek=${diskSizeGib}G 2>/dev/null`, { stdio: "pipe" });
-    execSync(`mkfs.ext4 -F -q "${dataVolume}"`, { stdio: "pipe" });
-  }
+  // 4. Data volume (already created in parallel_setup)
   await fcApi(socketPath, "PUT", "/drives/data", {
     drive_id: "data",
     path_on_host: dataVolume,
@@ -411,9 +428,10 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   });
 
   // 6. Vsock
+  const vsockUdsPath = join(getSocketDir(), `fc-${slug}-vsock.sock`);
   await fcApi(socketPath, "PUT", "/vsock", {
     guest_cid: vsockCid,
-    uds_path: join(getSocketDir(), `fc-${slug}-vsock.sock`),
+    uds_path: vsockUdsPath,
   });
 
   // 7. Start the VM
@@ -439,9 +457,12 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     startedAt,
   });
 
-  // Wait for VM to be ready (SSH accessible over bridge network)
-  progress("Waiting for SSH");
-  await waitForVmSsh(vmIp, 30000);
+  // Wait for TCP port 22 to accept connections.
+  // Kernel boots in ~400ms, init.sh starts sshd at ~550ms from InstanceStart.
+  // TCP poll with 50ms timeout + 25ms sleep = 75ms per cycle catches it quickly.
+  // ARP is pre-flushed in createTap() so no stale cache delays.
+  progress("Waiting for VM");
+  await waitForTcpReady(vmIp, 22, 30000);
 
   return slug;
 }
@@ -558,6 +579,7 @@ export async function snapshotVM(vmId: string): Promise<void> {
   const vm = runningVMs.get(vmId);
   if (!vm) throw new Error(`VM ${vmId} is not running`);
 
+
   const snapshotDir = join(getDataDir(), vmId, "snapshot");
   mkdirSync(snapshotDir, { recursive: true });
 
@@ -606,6 +628,7 @@ export async function restoreVM(
   sshPort: number,
   opencodePort: number,
 ): Promise<void> {
+
   const snapshotDir = join(getDataDir(), vmId, "snapshot");
   const snapshotPath = join(snapshotDir, "vmstate");
   const memPath = join(snapshotDir, "memory");
@@ -672,14 +695,15 @@ export async function restoreVM(
     startedAt,
   });
 
-  // Wait for SSH over bridge network
-  await waitForVmSsh(vmIp, 15000);
+  // Restored VMs don't re-run init.sh, so no vsock signal — use TCP poll directly
+  await waitForTcpReady(vmIp, 22, 15000);
 
   // Clean up snapshot files after successful restore
   try {
     unlinkSync(snapshotPath);
     unlinkSync(memPath);
   } catch { /* ok */ }
+
 }
 
 // --- Process management ---
@@ -773,25 +797,20 @@ async function waitForSocket(socketPath: string, timeoutMs: number): Promise<voi
   throw new Error(`Firecracker socket ${socketPath} not ready after ${timeoutMs}ms`);
 }
 
-async function waitForVmSsh(vmIp: string, timeoutMs: number): Promise<void> {
+async function waitForTcpReady(ip: string, port: number, timeoutMs: number): Promise<void> {
   const start = Date.now();
-  const keyPath = getInternalSshKeyPath();
 
   while (Date.now() - start < timeoutMs) {
-    try {
-      execSync(
-        `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ` +
-        `-o ConnectTimeout=2 -o LogLevel=ERROR ` +
-        `-i "${keyPath}" dev@${vmIp} echo ok`,
-        { stdio: "pipe", timeout: 5000 },
-      );
-      return; // SSH is ready
-    } catch {
-      await sleep(500);
-    }
+    const connected = await new Promise<boolean>((resolve) => {
+      const sock = netCreateConnection({ host: ip, port, timeout: 50 });
+      sock.once("connect", () => { sock.destroy(); resolve(true); });
+      sock.once("error", () => { sock.destroy(); resolve(false); });
+      sock.once("timeout", () => { sock.destroy(); resolve(false); });
+    });
+    if (connected) return;
+    await sleep(5);
   }
-  // Don't throw — VM may still be booting but SSH not ready yet
-  console.warn(`[firecracker] VM ${vmIp}: SSH not ready after ${timeoutMs}ms (continuing anyway)`);
+  console.warn(`[firecracker] ${ip}:${port} not ready after ${timeoutMs}ms (continuing anyway)`);
 }
 
 /**

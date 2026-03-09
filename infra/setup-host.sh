@@ -90,14 +90,20 @@ if [ -f "${KERNEL_DIR}/vmlinux" ]; then
   echo "Kernel already exists at ${KERNEL_DIR}/vmlinux"
 else
   echo "Downloading Firecracker-compatible kernel..."
-  # Firecracker provides pre-built kernels via their CI
-  KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.10/${ARCH}/vmlinux-6.1"
-  curl -fsSL "${KERNEL_URL}" -o "${KERNEL_DIR}/vmlinux" || {
-    echo "Failed to download from Firecracker CI. Trying alternative..."
-    # Alternative: use a known-good kernel from Firecracker releases
+  # Firecracker CI publishes pre-built kernels per minor version
+  FC_MINOR="v$(echo ${FC_VERSION} | cut -d. -f1,2)"
+  # Find the latest 6.1.x kernel for this Firecracker version
+  KERNEL_KEY=$(curl -s "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/${FC_MINOR}/${ARCH}/vmlinux-6.1&list-type=2" \
+    | grep -oP "(?<=<Key>)(firecracker-ci/${FC_MINOR}/${ARCH}/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
+    | sort -V | tail -1)
+  if [ -n "${KERNEL_KEY}" ]; then
+    KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/${KERNEL_KEY}"
+    echo "  Found kernel: ${KERNEL_KEY}"
+  else
+    echo "  WARNING: Could not find kernel in CI for ${FC_MINOR}/${ARCH}, trying fallback..."
     KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/${ARCH}/kernels/vmlinux.bin"
-    curl -fsSL "${KERNEL_URL}" -o "${KERNEL_DIR}/vmlinux"
-  }
+  fi
+  curl -fsSL "${KERNEL_URL}" -o "${KERNEL_DIR}/vmlinux"
   echo "Kernel downloaded to ${KERNEL_DIR}/vmlinux"
 fi
 
@@ -254,12 +260,28 @@ else
   echo "  NOTE: Install debootstrap manually if you plan to build Ubuntu rootfs images"
 fi
 
-# --- 8. Create data directories ---
+# --- 8. Build rootfs images ---
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_ROOTFS="${SCRIPT_DIR}/../vm/build-rootfs.sh"
+
+if [ -x "$BUILD_ROOTFS" ] || [ -f "$BUILD_ROOTFS" ]; then
+  echo "Building Alpine rootfs image..."
+  bash "$BUILD_ROOTFS" --distro alpine --output-dir "${INSTALL_DIR}/rootfs"
+
+  echo "Building Ubuntu rootfs image..."
+  bash "$BUILD_ROOTFS" --distro ubuntu --output-dir "${INSTALL_DIR}/rootfs"
+else
+  echo "WARNING: build-rootfs.sh not found at ${BUILD_ROOTFS}"
+  echo "  You will need to build rootfs images manually."
+fi
+
+# --- 9. Create data directories ---
 
 mkdir -p "${DATA_DIR}"
 echo "Data directory: ${DATA_DIR}"
 
-# --- 9. Create systemd service for bridge persistence (optional) ---
+# --- 10. Create systemd service for bridge persistence (optional) ---
 
 cat > /etc/systemd/system/numavm-bridge.service <<EOF
 [Unit]
@@ -292,8 +314,5 @@ echo "  - DNAT helpers:   ${INSTALL_DIR}/bin/{add,remove}-dnat"
 echo "  - Data dir:       ${DATA_DIR}"
 echo ""
 echo "Next steps:"
-echo "  1. Build rootfs images:"
-echo "       cd ../vm && sudo ./build-rootfs.sh --distro alpine"
-echo "       cd ../vm && sudo ./build-rootfs.sh --distro ubuntu"
-echo "  2. Test a VM manually before wiring up the control plane"
-echo "  3. Update .env with FC_INSTALL_DIR=${INSTALL_DIR}"
+echo "  1. Test a VM manually before wiring up the control plane"
+echo "  2. Update .env with FC_INSTALL_DIR=${INSTALL_DIR}"

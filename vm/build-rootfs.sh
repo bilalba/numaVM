@@ -203,6 +203,7 @@ PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
+PermitUserEnvironment yes
 ChallengeResponseAuthentication no
 UsePAM no
 X11Forwarding no
@@ -317,11 +318,11 @@ rm -f "${MOUNTDIR}/etc/resolv.conf"
 echo "Writing manifest..."
 
 # Compute SHA256
-umount "${MOUNTDIR}/dev"
-umount "${MOUNTDIR}/sys"
-umount "${MOUNTDIR}/proc"
+umount "${MOUNTDIR}/dev" 2>/dev/null || true
+umount "${MOUNTDIR}/sys" 2>/dev/null || true
+umount "${MOUNTDIR}/proc" 2>/dev/null || true
 umount "${MOUNTDIR}"
-losetup -d "${LOOP}"
+losetup -d "${LOOP}" 2>/dev/null || true
 
 SHA256=$(sha256sum "${OUTPUT}" | awk '{print $1}')
 SIZE_BYTES=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "0")

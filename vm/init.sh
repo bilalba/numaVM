@@ -12,8 +12,6 @@
 
 set -e
 
-echo "[init] NumaVM VM starting..."
-
 # --- Mount essential filesystems (if not already done by numavm-init) ---
 
 mountpoint -q /proc || mount -t proc proc /proc
@@ -24,6 +22,7 @@ mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
 mountpoint -q /dev/shm || mount -t tmpfs tmpfs /dev/shm
 mountpoint -q /run || mount -t tmpfs tmpfs /run
 mountpoint -q /tmp || mount -t tmpfs tmpfs /tmp
+
 
 # --- Parse kernel cmdline ---
 
@@ -55,11 +54,8 @@ fi
 SAFE_DIR_NAME=$(echo "${ENV_NAME:-workspace}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
 [ -z "${SAFE_DIR_NAME}" ] && SAFE_DIR_NAME="workspace"
 
-echo "[init] VM IP: ${VM_IP}, Gateway: ${GATEWAY}, CID: ${VSOCK_CID}, Dir: ${SAFE_DIR_NAME}"
 
 # --- Networking ---
-
-echo "[init] Configuring network..."
 
 # Bring up loopback (needed for localhost-binding services like Claude Code OAuth)
 ip link set lo up 2>/dev/null || true
@@ -73,22 +69,14 @@ ip route add default via "${GATEWAY}" 2>/dev/null || true
 echo "nameserver ${DNS}" > /etc/resolv.conf
 echo "nameserver 8.8.4.4" >> /etc/resolv.conf
 
-# Verify connectivity (best-effort, don't block boot)
-ping -c1 -W2 "${GATEWAY}" > /dev/null 2>&1 && echo "[init] Gateway reachable" || echo "[init] WARNING: Gateway unreachable"
 
 # --- Swap ---
 
 if [ -f /swapfile ]; then
-  swapon /swapfile 2>/dev/null && echo "[init] Swap enabled (1GB)" || echo "[init] WARNING: Failed to enable swap"
+  swapon /swapfile 2>/dev/null && true || true
 fi
 
 # --- SSH Setup ---
-
-echo "[init] Configuring SSH..."
-
-# Unlock the dev account — OpenSSH 10+ rejects pubkey auth for locked accounts
-# Alpine's adduser -D sets shadow to "!" (locked); change to "*" (no password)
-sed -i 's/^dev:!:/dev:*:/' /etc/shadow
 
 # Decode and write authorized_keys
 if [ -n "${DM_ssh_keys:-}" ]; then
@@ -107,27 +95,34 @@ if [ -n "${DM_internal_ssh_key:-}" ]; then
   }
 fi
 
-# Generate host keys if missing
-ssh-keygen -A 2>/dev/null
+# Host keys and sshd_config (including PermitUserEnvironment) are pre-baked
+# into the rootfs by build-rootfs.sh. No ssh-keygen -A needed.
 
 # Start TCP SSH (for external access)
 mkdir -p /run/sshd
 /usr/sbin/sshd -e 2>/dev/null &
-echo "[init] sshd started on TCP port 22"
 
-# Start vsock SSH listener (for host↔guest exec)
-# socat listens on vsock CID:port and forks sshd for each connection
-if command -v socat &>/dev/null; then
-  socat VSOCK-LISTEN:22,reuseaddr,fork EXEC:"/usr/sbin/sshd -i -e" &
-  echo "[init] vsock SSH listener started on CID ${VSOCK_CID}:22"
-else
-  echo "[init] WARNING: socat not found, vsock SSH unavailable"
-fi
 
-# --- Git config ---
+# Wait for sshd to actually bind port 22 before signaling the host.
+# sshd is backgrounded above — it needs a moment to load keys and bind.
+# Check /proc/net/tcp for port 22 (0x0016) in LISTEN state (0A). Zero deps.
+while ! grep -q ':0016 .*0A' /proc/net/tcp 2>/dev/null; do
+  sleep 0.01
+done
 
-sudo -u dev bash -lc 'git config --global user.email "agent@numavm.dev"' 2>/dev/null
-sudo -u dev bash -lc 'git config --global user.name "Agent"' 2>/dev/null
+
+# Signal the host that we're ready via vsock (best-effort).
+# Falls back gracefully if no host listener is present.
+/usr/local/bin/vsock-signal 2>/dev/null || true
+
+
+# --- Git config + env files (parallel with git clone) ---
+
+{
+  sudo -u dev git config --global user.email "agent@numavm.dev" 2>/dev/null
+  sudo -u dev git config --global user.name "Agent" 2>/dev/null
+} &
+GIT_CONFIG_PID=$!
 
 # --- Clone or pull repo ---
 
@@ -144,14 +139,11 @@ if [ -n "${GH_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
 
   if [ ! -d "${CLONE_DIR}/.git" ]; then
     echo "cloning" > /tmp/init-progress
-    echo "[init] Cloning ${GH_REPO} into ${CLONE_DIR}..."
     sudo -u dev bash -lc "git clone 'https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
-      echo "[init] WARNING: git clone failed, creating empty workspace"
       sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
       CLONE_DIR=""
     }
   else
-    echo "[init] Repo exists at ${CLONE_DIR}, pulling..."
     sudo -u dev bash -lc "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
   fi
 
@@ -164,22 +156,23 @@ elif [ -n "${GH_REPO}" ]; then
 
   if [ ! -d "${CLONE_DIR}/.git" ]; then
     echo "cloning" > /tmp/init-progress
-    echo "[init] Cloning public repo ${GH_REPO} into ${CLONE_DIR}..."
     sudo -u dev bash -lc "git clone 'https://github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
-      echo "[init] WARNING: clone failed (repo may be private or not found)"
       sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
       CLONE_DIR=""
     }
   else
-    echo "[init] Repo exists at ${CLONE_DIR}, pulling..."
     sudo -u dev bash -lc "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
   fi
 
   [ -n "${CLONE_DIR}" ] && WORK_DIR="${CLONE_DIR}"
 else
-  echo "[init] No GH_REPO, creating empty workspace"
-  sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init" 2>/dev/null
+  sudo -u dev mkdir -p "${WORK_DIR}"
+  sudo -u dev git -C "${WORK_DIR}" init 2>/dev/null || true
 fi
+
+
+# Wait for parallel git config
+wait $GIT_CONFIG_PID 2>/dev/null || true
 
 # --- Persist env vars for SSH sessions ---
 
@@ -210,24 +203,19 @@ PORT=3000
 EOF
 chmod 600 /home/dev/.ssh/environment
 
-# Enable PermitUserEnvironment in sshd
-grep -q 'PermitUserEnvironment' /etc/ssh/sshd_config || {
-  echo 'PermitUserEnvironment yes' >> /etc/ssh/sshd_config
-}
-
 # Set up git credential helper so git clone/push works with GH_TOKEN automatically
 if [ -n "${GH_TOKEN}" ]; then
-  sudo -u dev bash -lc "git config --global credential.helper '!f() { echo username=x-access-token; echo password=\$GH_TOKEN; }; f'"
-  sudo -u dev bash -lc "git config --global user.name '${DM_github_username:-dev}'"
+  sudo -u dev git config --global credential.helper '!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f'
+  sudo -u dev git config --global user.name "${DM_github_username:-dev}"
 fi
 
 chown dev:dev /home/dev/.env /home/dev/.bashrc /home/dev/.ssh/environment
+
 
 # Pre-start OpenCode server so it's ready when the user creates a session
 # (avoids ~3s cold-start delay on first session creation)
 if command -v opencode &>/dev/null && [ -n "${DM_opencode_password:-}" ]; then
   sudo -u dev bash -lc "source ~/.env 2>/dev/null; cd '${WORK_DIR}' 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${DM_opencode_password}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown" &
-  echo "[init] OpenCode server starting in background on port 5000 (cwd: ${WORK_DIR})"
 fi
 
 # --- Start user app (best-effort) ---
@@ -250,7 +238,6 @@ patch_vite_allowed_hosts() {
       if ! grep -q 'allowedHosts' "$cfg" 2>/dev/null; then
         # Insert server.allowedHosts into defineConfig (after the opening { of defineConfig)
         sed -i 's/defineConfig(\s*{/defineConfig({ server: { allowedHosts: true },/' "$cfg" 2>/dev/null || true
-        echo "[init] Patched $cfg with allowedHosts: true"
       fi
       return 0
     fi
@@ -318,10 +305,8 @@ detect_start_cmd() {
 
 if [ -f "${WORK_DIR}/package.json" ]; then
   echo "installing" > /tmp/init-progress
-  echo "[init] Detected Node.js project, installing dependencies..."
   sudo -u dev bash -lc "cd '${WORK_DIR}' && npm install" 2>/dev/null || {
     echo "error:npm install failed" > /tmp/init-progress
-    echo "[init] WARNING: npm install failed"
   }
 
   START_CMD=$(detect_start_cmd)
@@ -334,19 +319,15 @@ if [ -f "${WORK_DIR}/package.json" ]; then
   if [ -n "$START_CMD" ] && ! echo "$START_CMD" | grep -q 'npm run dev'; then
     if grep -q '"build"' "${WORK_DIR}/package.json" 2>/dev/null; then
       echo "building" > /tmp/init-progress
-      echo "[init] Running build step..."
       sudo -u dev bash -lc "cd '${WORK_DIR}' && source ~/.env 2>/dev/null && npm run build" 2>/dev/null || {
         echo "error:build failed" > /tmp/init-progress
-        echo "[init] WARNING: build failed, app may not start"
       }
     fi
   fi
 
   echo "starting" > /tmp/init-progress
-  echo "[init] Starting app with: ${START_CMD}"
   sudo -u dev bash -lc "cd '${WORK_DIR}' && source ~/.env 2>/dev/null && pm2 start '${START_CMD}' --name app" 2>/dev/null || {
     echo "error:app failed to start" > /tmp/init-progress
-    echo "[init] WARNING: app failed to start"
   }
 elif [ -f "${WORK_DIR}/requirements.txt" ]; then
   echo "installing" > /tmp/init-progress
@@ -358,7 +339,6 @@ elif [ -f "${WORK_DIR}/requirements.txt" ]; then
 fi
 
 echo "ready" > /tmp/init-progress
-echo "[init] NumaVM VM ready"
 
 # --- Keep PID 1 alive ---
 # Use a wait loop that handles signals for clean shutdown

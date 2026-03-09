@@ -174,45 +174,10 @@ export function registerVMRoutes(app: FastifyInstance) {
         });
         getDatabase().updateVMInfo(slug, vmId, vmIp, vsockCid, null);
 
-        // Poll VM init progress (cloning → installing → building → starting → ready)
-        const progressLabels: Record<string, string> = {
-          cloning: "Cloning repository",
-          installing: "Installing dependencies",
-          building: "Building project",
-          starting: "Starting server",
-          ready: "Ready",
-        };
-        let lastProgress = "";
-        const maxWait = 5 * 60 * 1000; // 5 min timeout for init
-        const start = Date.now();
-
-        while (Date.now() - start < maxWait) {
-          try {
-            const raw = await getVMEngine().exec(slug, ["cat", "/tmp/init-progress"]);
-            const progress = raw.trim();
-            if (progress && progress !== lastProgress) {
-              lastProgress = progress;
-              if (progress.startsWith("error:")) {
-                getDatabase().updateVMStatusDetail(slug, `Error: ${progress.slice(6)}`);
-                // Don't fail the whole VM — it's still SSH-accessible
-                break;
-              }
-              getDatabase().updateVMStatusDetail(slug, progressLabels[progress] || progress);
-              if (progress === "ready") break;
-            }
-          } catch {
-            // SSH may not be ready yet or file doesn't exist yet
-          }
-          await new Promise((r) => setTimeout(r, 2000));
-        }
-
+        // VM is booted and SSH-ready (vsock signal confirmed). Set running immediately.
         getDatabase().updateVMStatus(slug, "running");
-        // Keep status_detail so the dashboard can show what happened
-        if (lastProgress === "ready") {
-          getDatabase().updateVMStatusDetail(slug, null);
-        }
 
-        // Register Caddy route AFTER status is "running" so it gets the proxy route
+        // Register Caddy route now that VM is running
         try {
           await getReverseProxy().addRoute(slug, appPort);
         } catch (err) {
@@ -220,6 +185,39 @@ export function registerVMRoutes(app: FastifyInstance) {
         }
 
         getDatabase().emitAdminEvent("vm.created", slug, userId, { name: body.name, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib, ...(repoFullName ? { repo: repoFullName } : {}) });
+
+        // Poll VM init progress in background (non-blocking) for dashboard status_detail
+        const progressLabels: Record<string, string> = {
+          cloning: "Cloning repository",
+          installing: "Installing dependencies",
+          building: "Building project",
+          starting: "Starting server",
+          ready: "Ready",
+        };
+        (async () => {
+          let lastProgress = "";
+          const maxWait = 5 * 60 * 1000;
+          const start = Date.now();
+          while (Date.now() - start < maxWait) {
+            try {
+              const raw = await getVMEngine().exec(slug, ["cat", "/tmp/init-progress"]);
+              const progress = raw.trim();
+              if (progress && progress !== lastProgress) {
+                lastProgress = progress;
+                if (progress.startsWith("error:")) {
+                  getDatabase().updateVMStatusDetail(slug, `Error: ${progress.slice(6)}`);
+                  break;
+                }
+                getDatabase().updateVMStatusDetail(slug, progressLabels[progress] || progress);
+                if (progress === "ready") {
+                  getDatabase().updateVMStatusDetail(slug, null);
+                  break;
+                }
+              }
+            } catch { /* SSH may not be ready yet */ }
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+        })().catch(() => {});
       } catch (err: any) {
         console.error(`[vm] Background VM creation failed for ${slug}:`, err);
         getDatabase().updateVMStatusDetail(slug, `Error: ${err.message}`);
