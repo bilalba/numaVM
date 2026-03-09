@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+set +H 2>/dev/null || true  # Disable history expansion (prevents \! in heredocs)
 
 # NumaVM — Build Rootfs for Firecracker
 #
@@ -252,6 +253,14 @@ fi
 exec sleep infinity
 INIT
 chmod +x "${MOUNTDIR}/sbin/numavm-init"
+
+# Verify shebang wasn't corrupted (bash history expansion can turn #!/bin/bash into #\!/bin/bash)
+if ! head -1 "${MOUNTDIR}/sbin/numavm-init" | grep -q '^#!/bin/bash$'; then
+  echo "ERROR: numavm-init shebang is corrupted: $(head -1 "${MOUNTDIR}/sbin/numavm-init")" >&2
+  echo "  This usually happens when the build script is run in an interactive shell." >&2
+  echo "  Run with: sudo ./build-rootfs.sh (not 'sudo bash' then paste)" >&2
+  exit 1
+fi
 
 # Create the numavm dir for init script
 mkdir -p "${MOUNTDIR}/opt/numavm"
