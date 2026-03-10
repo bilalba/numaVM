@@ -273,6 +273,13 @@ if [ -f "${SCRIPT_DIR}/init.sh" ]; then
   echo "Installed init.sh to /opt/numavm/init.sh"
 fi
 
+# Copy BASE_AGENTS.md (used by init.sh to write AGENTS.md into project directories)
+mkdir -p "${MOUNTDIR}/etc/numavm"
+if [ -f "${SCRIPT_DIR}/BASE_AGENTS.md" ]; then
+  cp "${SCRIPT_DIR}/BASE_AGENTS.md" "${MOUNTDIR}/etc/numavm/BASE_AGENTS.md"
+  echo "Installed BASE_AGENTS.md to /etc/numavm/BASE_AGENTS.md"
+fi
+
 # ============================================================
 # Phase 9: MOTD (shared)
 # ============================================================

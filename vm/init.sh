@@ -211,6 +211,11 @@ fi
 
 chown dev:dev /home/dev/.env /home/dev/.bashrc /home/dev/.ssh/environment
 
+# Write AGENTS.md into project directory (gives AI agents context about the environment)
+if [ -f /etc/numavm/BASE_AGENTS.md ] && [ -d "${WORK_DIR}" ]; then
+  cp /etc/numavm/BASE_AGENTS.md "${WORK_DIR}/AGENTS.md"
+  chown dev:dev "${WORK_DIR}/AGENTS.md"
+fi
 
 # Pre-start OpenCode server so it's ready when the user creates a session
 # (avoids ~3s cold-start delay on first session creation)
