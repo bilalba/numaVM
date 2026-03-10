@@ -100,7 +100,7 @@ export function FilesTab({ vmId }: FilesTabProps) {
   const fileName = selectedFile?.path.split("/").pop() || "";
 
   return (
-    <div className="flex flex-col md:flex-row h-[calc(100vh-200px)] min-h-[400px] gap-0 md:gap-4">
+    <div className="flex flex-col md:flex-row h-full min-h-[400px] gap-0 md:gap-4">
       {/* File tree (left panel) — hidden on mobile when viewing a file */}
       <div className={`${mobileShowFile ? "hidden" : "flex"} md:flex w-full md:w-72 shrink-0 bg-panel-sidebar border border-neutral-200 flex-col overflow-hidden`}>
         <div className="px-3 py-2 border-b border-neutral-200 flex items-center justify-between">

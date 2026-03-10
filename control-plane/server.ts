@@ -167,7 +167,8 @@ export async function createServer(options?: CreateServerOptions) {
     }
     const { github_token, ...rest } = user;
     const plan = db.getUserPlan(request.userId);
-    return { ...rest, has_github_token: !!github_token, plan: plan.plan, plan_label: plan.label, trial_active: plan.trial_active, trial_expires_at: plan.trial_expires_at };
+    const devMode = process.env.DEV_MODE === "true";
+    return { ...rest, has_github_token: !!github_token, plan: plan.plan, plan_label: plan.label, trial_active: plan.trial_active, trial_expires_at: plan.trial_expires_at, dev_mode: devMode };
   });
 
   // Register route modules

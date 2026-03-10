@@ -128,14 +128,14 @@ export function TerminalTab({ vmId }: TerminalTabProps) {
 
   if (loading) {
     return (
-      <div className="h-[calc(100vh-200px)] min-h-[400px] bg-[#0a0a0a] overflow-hidden border border-neutral-200 flex items-center justify-center">
+      <div className="h-full min-h-[400px] bg-[#0a0a0a] overflow-hidden border border-neutral-200 flex items-center justify-center">
         <span className="text-xs text-neutral-500">Loading terminal sessions...</span>
       </div>
     );
   }
 
   return (
-    <div className="h-[calc(100vh-200px)] min-h-[400px] overflow-hidden border border-neutral-200 flex flex-col">
+    <div className="h-full min-h-[400px] overflow-hidden border border-neutral-200 flex flex-col">
       {/* Tab bar */}
       <div className="flex items-center bg-panel-sidebar border-b border-neutral-200 shrink-0">
         <div className="flex overflow-x-auto">

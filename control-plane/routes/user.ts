@@ -93,6 +93,7 @@ export function registerUserRoutes(app: FastifyInstance) {
     return {
       connected: !!user?.github_token,
       username: user?.github_username || null,
+      dev_mode: process.env.DEV_MODE === "true",
     };
   });
 

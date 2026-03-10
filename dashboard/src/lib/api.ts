@@ -88,6 +88,19 @@ export interface VMDetail {
     max_ram_mib: number;
     plan: string;
   };
+  disk_quota_error?: {
+    message: string;
+    used_gib: number;
+    vm_gib: number;
+    max_gib: number;
+    plan: string;
+  };
+  data_quota_error?: {
+    message: string;
+    data_used_bytes: number;
+    data_max_bytes: number;
+    plan: string;
+  };
 }
 
 export interface ClaudeSession {
@@ -200,6 +213,7 @@ export interface User {
   plan_label?: string;
   trial_active?: boolean;
   trial_expires_at?: string | null;
+  dev_mode?: boolean;
 }
 
 export interface Subscription {

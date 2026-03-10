@@ -145,7 +145,7 @@ export function VMList() {
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
   const [showSshKeys, setShowSshKeys] = useState(false);
-  const [githubStatus, setGithubStatus] = useState<{ connected: boolean; username: string | null } | null>(null);
+  const [githubStatus, setGithubStatus] = useState<{ connected: boolean; username: string | null; dev_mode?: boolean } | null>(null);
   const [repoMode, setRepoMode] = useState<"none" | "existing" | "new">("none");
   const [repoSearch, setRepoSearch] = useState("");
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
@@ -355,7 +355,7 @@ export function VMList() {
       )}
 
       {/* GitHub connection banner (dismissable, only when not connected) */}
-      {githubStatus && !githubStatus.connected && !githubBannerDismissed && (
+      {githubStatus?.dev_mode && githubStatus && !githubStatus.connected && !githubBannerDismissed && (
         <div className="mb-6 border border-neutral-200 px-5 py-4 flex items-center justify-between bg-panel-chat">
           <span className="text-xs text-neutral-600">
             Connect GitHub to clone and push to your repositories

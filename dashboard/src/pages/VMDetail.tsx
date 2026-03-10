@@ -48,13 +48,13 @@ export function VMDetail() {
   // Poll for status updates when VM is snapshotted/paused (waking up)
   useEffect(() => {
     if (!slug || !vm) return;
-    if (vm.quota_error) return; // Don't poll if quota exceeded — wake won't proceed
+    if (vm.quota_error || vm.disk_quota_error || vm.data_quota_error) return; // Don't poll if quota exceeded — wake won't proceed
     if (vm.status !== "snapshotted" && vm.status !== "paused" && vm.status !== "creating") return;
 
     const interval = setInterval(() => {
       api.getVM(slug).then((updated) => {
         setVM(updated);
-        if (updated.status === "running" || updated.quota_error) clearInterval(interval);
+        if (updated.status === "running" || updated.quota_error || updated.disk_quota_error || updated.data_quota_error) clearInterval(interval);
       }).catch(() => {});
     }, 3000);
 
@@ -93,7 +93,7 @@ export function VMDetail() {
   ];
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col h-[calc(100vh-33px)]">
       {/* Header */}
       <div className="mb-4 sm:mb-6">
         <Link to="/" className="text-xs text-neutral-500 underline underline-offset-4 transition-opacity hover:opacity-60 mb-2 inline-block">
@@ -178,8 +178,32 @@ export function VMDetail() {
         </div>
       )}
 
+      {/* Disk quota exceeded banner */}
+      {vm.disk_quota_error && (
+        <div className="mb-4 border border-red-200 px-4 py-3 flex items-center gap-3 bg-red-50">
+          <div className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+          <span className="text-xs text-red-700">
+            This VM can't wake up — you've reached your plan's disk limit ({vm.disk_quota_error.used_gib}/{vm.disk_quota_error.max_gib} GiB in use).{" "}
+            Delete a VM or{" "}
+            <Link to="/plan" className="underline font-medium">upgrade your plan</Link>.
+          </span>
+        </div>
+      )}
+
+      {/* Data quota exceeded banner */}
+      {vm.data_quota_error && (
+        <div className="mb-4 border border-red-200 px-4 py-3 flex items-center gap-3 bg-red-50">
+          <div className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+          <span className="text-xs text-red-700">
+            This VM can't wake up — you've reached your plan's monthly data transfer limit.{" "}
+            <Link to="/plan" className="underline font-medium">Upgrade your plan</Link>{" "}
+            or wait until next month.
+          </span>
+        </div>
+      )}
+
       {/* Waking up banner */}
-      {(vm.status === "snapshotted" || vm.status === "paused") && !vm.quota_error && (
+      {(vm.status === "snapshotted" || vm.status === "paused") && !vm.quota_error && !vm.disk_quota_error && !vm.data_quota_error && (
         <div className="mb-4 border border-neutral-200 px-4 py-3 flex items-center gap-3 bg-panel-chat">
           <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-[pulseDot_1s_ease-in-out_infinite]" />
           <span className="text-xs text-neutral-600">
@@ -206,7 +230,7 @@ export function VMDetail() {
       </div>
 
       {/* Tab content */}
-      <div>
+      <div className="flex-1 min-h-0">
         {activeTab === "codex" && <AgentTab vmId={vm.id} agentType="codex" vmStatus={vm.status} />}
         {activeTab === "opencode" && <AgentTab vmId={vm.id} agentType="opencode" vmName={vm.name} vmStatus={vm.status} pendingSession={pendingSession} />}
         {activeTab === "terminal" && <TerminalTab vmId={vm.id} />}

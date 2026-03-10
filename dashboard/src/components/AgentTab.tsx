@@ -385,6 +385,16 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
             setInitProgress(null);
           }
           setSessionStatus("error");
+          // Show the error message to the user
+          if (event.message) {
+            // Try to extract readable message from JSON error strings
+            let errorText = event.message;
+            try {
+              const parsed = JSON.parse(errorText);
+              if (parsed.detail) errorText = parsed.detail;
+            } catch {}
+            toast(errorText, "error");
+          }
           break;
       }
     });
@@ -678,10 +688,11 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
       codexModelOptions.push({ value: m.id, label: m.displayName });
     }
   } else {
+    // Fallback if model list hasn't loaded yet
     codexModelOptions.push(
-      { value: "o4-mini", label: "o4-mini" },
-      { value: "o3", label: "o3" },
-      { value: "codex-mini-latest", label: "codex-mini" },
+      { value: "gpt-5.3-codex", label: "gpt-5.3-codex" },
+      { value: "gpt-5.2-codex", label: "gpt-5.2-codex" },
+      { value: "gpt-5.1-codex-mini", label: "gpt-5.1-codex-mini" },
     );
   }
 
@@ -710,7 +721,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
     const deviceCode = lr?.userCode || lr?.user_code || lr?.code;
 
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-200px)] min-h-[400px] px-4">
+      <div className="flex items-center justify-center h-full min-h-[400px] px-4">
         <div className="border border-neutral-300 bg-surface p-5 max-w-sm w-full text-center">
           <h2 className="text-sm font-semibold mb-2">Sign in to Codex</h2>
           <p className="text-xs text-neutral-500 mb-6">
@@ -800,7 +811,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   }
 
   return (
-    <div className="flex flex-col md:flex-row h-[calc(100vh-200px)] min-h-[400px] gap-0 md:gap-4">
+    <div className="flex flex-col md:flex-row h-full min-h-[400px] gap-0 md:gap-4">
       {/* Session sidebar — horizontal scrollable strip on mobile, vertical sidebar on desktop */}
       <div className="md:w-56 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col">
         <div className="p-2 sm:p-3 border-b border-neutral-200 flex md:flex-col items-center md:items-stretch gap-2">
