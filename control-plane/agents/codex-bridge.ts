@@ -3,6 +3,16 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import type { AgentBridge, AgentEvent, AgentType, ApprovalDecision, ApprovalPolicy, SandboxPolicy, ReasoningEffort, CodexModel, CodexThread } from "./types.js";
 import { getVMEngine } from "../adapters/providers.js";
 
+/** Map our simple string sandbox policy to codex app-server's tagged enum format */
+function toCodexSandbox(policy: SandboxPolicy): Record<string, unknown> {
+  switch (policy) {
+    case "read-only": return { type: "readOnly" };
+    case "workspace-write": return { type: "workspaceWrite" };
+    case "full-access": return { type: "dangerFullAccess" };
+    default: return { type: "workspaceWrite" };
+  }
+}
+
 /**
  * Codex bridge — JSON-RPC 2.0 over stdio via SSH-over-vsock.
  *
@@ -75,7 +85,7 @@ export class CodexBridge implements AgentBridge {
     if (options?.model) threadParams.model = options.model;
     if (options?.effort) threadParams.reasoningEffort = options.effort;
     if (options?.approvalPolicy) threadParams.approvalPolicy = options.approvalPolicy;
-    if (options?.sandboxPolicy) threadParams.sandboxPolicy = options.sandboxPolicy;
+    if (options?.sandboxPolicy) threadParams.sandboxPolicy = toCodexSandbox(options.sandboxPolicy);
     const threadResult = await this.rpcCall("thread/start", threadParams);
 
     this.threadId = threadResult?.thread?.id || null;
@@ -99,7 +109,7 @@ export class CodexBridge implements AgentBridge {
       approvalPolicy: options?.approvalPolicy || "on-request",
     };
     if (options?.effort) turnParams.reasoningEffort = options.effort;
-    if (options?.sandboxPolicy) turnParams.sandboxPolicy = options.sandboxPolicy;
+    if (options?.sandboxPolicy) turnParams.sandboxPolicy = toCodexSandbox(options.sandboxPolicy);
 
     this.rpcCall("turn/start", turnParams).catch((err) => {
       this.emit({ type: "error", message: err.message, code: "turn_error" });
@@ -136,7 +146,7 @@ export class CodexBridge implements AgentBridge {
 
   async listModels(includeHidden = false): Promise<CodexModel[]> {
     const result = await this.rpcCall("model/list", { includeHidden });
-    const models = result?.models || [];
+    const models = result?.data || result?.models || [];
     return models.map((m: any) => ({
       id: m.id,
       displayName: m.displayName || m.id,
@@ -152,10 +162,11 @@ export class CodexBridge implements AgentBridge {
     if (options?.cursor) params.cursor = options.cursor;
     if (options?.limit) params.limit = options.limit;
     const result = await this.rpcCall("thread/list", params);
-    const threads = (result?.threads || []).map((t: any) => ({
+    const items = result?.data || result?.threads || [];
+    const threads = items.map((t: any) => ({
       id: t.id,
-      title: t.title,
-      model: t.model,
+      title: t.title || t.preview || "",
+      model: t.model || t.modelProvider || "",
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
     }));
@@ -377,6 +388,17 @@ export class CodexBridge implements AgentBridge {
 
       case "account/rateLimits/updated":
         // Could surface rate limit info if desired
+        break;
+
+      case "error": {
+        // Server-pushed error notification (e.g. model not supported, API errors)
+        const errMsg = params?.error?.message || "Unknown codex error";
+        this.emit({ type: "error", message: errMsg, code: "codex_error" });
+        break;
+      }
+
+      case "codex/event/error":
+        // Redundant with the "error" notification — skip to avoid duplicate errors
         break;
     }
   }

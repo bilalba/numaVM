@@ -313,6 +313,18 @@ class AgentManager {
     return this.activeSessions.has(sessionId);
   }
 
+  /** Cleanly tear down all bridges for a VM (e.g. before snapshot) without marking sessions as error */
+  destroyBridgesForVM(vmId: string): void {
+    for (const [sessionId, active] of this.activeSessions) {
+      if (active.vmId === vmId) {
+        active.bridge.destroy().catch(() => {});
+        this.activeSessions.delete(sessionId);
+      }
+    }
+    // Also clean up auth bridges
+    this.destroyAuthBridge(vmId).catch(() => {});
+  }
+
   destroyAll(): void {
     for (const [id, active] of this.activeSessions) {
       active.bridge.destroy().catch(() => {});
@@ -407,13 +419,42 @@ class AgentManager {
           this.maybeSetTitle(sessionId, active.pendingText);
           active.pendingText = "";
         }
-        getDatabase().updateAgentSessionStatus(sessionId, "idle");
+        // Don't overwrite "error" status — a preceding error event may have already
+        // marked this session (e.g. model not supported, API failure).
+        const curStatus = getDatabase().findAgentSession(sessionId)?.status;
+        if (curStatus !== "error") {
+          getDatabase().updateAgentSessionStatus(sessionId, "idle");
+        }
         break;
       }
 
-      case "error":
-        getDatabase().updateAgentSessionStatus(sessionId, "error");
+      case "error": {
+        // Skip transient errors that the agent recovers from automatically.
+        // "retry" = LLM provider retry (OpenCode keeps working after)
+        // "sse_error" = SSE reconnect (bridge auto-reconnects in 2s)
+        // "codex_stderr" = app-server stderr output (diagnostic, not fatal)
+        const code = (event as any).code;
+        if (code === "retry" || code === "sse_error" || code === "codex_stderr") break;
+
+        // Only mark as "error" if actively busy — don't corrupt idle sessions
+        // (e.g. VM snapshotted after conversation completed)
+        const currentStatus = getDatabase().findAgentSession(sessionId)?.status;
+        if (currentStatus === "busy") {
+          getDatabase().updateAgentSessionStatus(sessionId, "error");
+          // Persist the error message so the user sees why
+          const errMsg = (event as any).message;
+          if (errMsg) {
+            getDatabase().insertAgentMessage({
+              id: nanoid(),
+              session_id: sessionId,
+              role: "assistant",
+              content: errMsg,
+              metadata: JSON.stringify({ error: true, code }),
+            });
+          }
+        }
         break;
+      }
     }
   }
 
