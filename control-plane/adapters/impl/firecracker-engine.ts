@@ -22,7 +22,7 @@ import {
   getAvailableImages as _getAvailableImages,
 } from "../../services/firecracker.js";
 import { execInVM, spawnPtyOverVsock, spawnProcessOverVsock } from "../../services/vsock-ssh.js";
-import { allocatePorts, allocateCid, cidToVmIp } from "../../services/port-allocator.js";
+import { allocatePorts, allocateCid, cidToVmIp, cidToVmIpv6, allocatePublicIPv6 } from "../../services/port-allocator.js";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -35,7 +35,7 @@ export class FirecrackerEngine implements IVMEngine {
   async createAndStartVM(params: CreateVMParams): Promise<string> { return _createAndStartVM(params); }
   async stopVM(vmId: string): Promise<void> { return _stopVM(vmId); }
   async removeVM(vmId: string): Promise<void> { return _removeVM(vmId); }
-  async removeVMFull(vmId: string, vmIp: string, appPort: number, sshPort: number, opencodePort: number): Promise<void> { return _removeVMFull(vmId, vmIp, appPort, sshPort, opencodePort); }
+  async removeVMFull(vmId: string, vmIp: string, appPort: number, sshPort: number, opencodePort: number, vmIpv6?: string | null, vsockCid?: number): Promise<void> { return _removeVMFull(vmId, vmIp, appPort, sshPort, opencodePort, vmIpv6, vsockCid); }
   async inspectVM(vmId: string): Promise<VMRuntimeInfo> { return _inspectVM(vmId); }
   async pauseVM(vmId: string): Promise<void> { return _pauseVM(vmId); }
   async resumeVM(vmId: string): Promise<void> { return _resumeVM(vmId); }
@@ -70,7 +70,9 @@ export class FirecrackerEngine implements IVMEngine {
     const { appPort, sshPort, opencodePort } = allocatePorts();
     const vsockCid = allocateCid();
     const vmIp = cidToVmIp(vsockCid);
-    return { appPort, sshPort, opencodePort, vsockCid, vmIp };
+    const vmIpv6Internal = cidToVmIpv6(vsockCid);  // ULA address for bridge
+    const vmIpv6 = allocatePublicIPv6() ?? vmIpv6Internal;  // Pool IP, fallback to ULA (legacy)
+    return { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal };
   }
 
   // --- Disk operations ---

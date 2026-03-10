@@ -5,6 +5,7 @@ import { customAlphabet } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
 import { fetchSshKeys } from "../services/github.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
+import { bindWakeProxy, unbindWakeProxy } from "../services/wake-proxy.js";
 import { agentManager } from "../agents/manager.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
@@ -83,7 +84,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     const slug = `vm-${generateSlug()}`;
-    const { appPort, sshPort, opencodePort, vsockCid, vmIp } = getVMEngine().allocateResources();
+    const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal } = getVMEngine().allocateResources();
 
     // GitHub repo is optional — if provided, VM will clone it
     const repoFullName = body.gh_repo || null;
@@ -130,10 +131,16 @@ export function registerVMRoutes(app: FastifyInstance) {
       disk_size_gib: diskSizeGib,
       image,
       image_version: imageVersion,
+      vm_ipv6: vmIpv6,
     });
 
     // Grant owner access (used by auth verify for subdomain gating)
     getDatabase().grantAccess(slug, request.userId, "owner");
+
+    // Bind wake-on-connect proxy for IPv6 (port 22 always, plus any future firewall rules)
+    if (vmIpv6) {
+      bindWakeProxy(slug, vmIpv6, []);
+    }
 
     // Return immediately — VM creation happens in the background.
     // Dashboard polls GET /vms/:id for status + status_detail.
@@ -166,6 +173,8 @@ export function registerVMRoutes(app: FastifyInstance) {
           anthropicApiKey: process.env.ANTHROPIC_API_KEY,
           vsockCid,
           vmIp,
+          vmIpv6,
+          vmIpv6Internal,
           memSizeMib: memSizeMib,
           diskSizeGib: diskSizeGib,
           image,
@@ -349,6 +358,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       image: vm.image,
       image_version: vm.image_version,
       is_public: !!vm.is_public,
+      vm_ipv6: vm.vm_ipv6 || null,
       ...(quotaError ? { quota_error: quotaError } : {}),
       ...(diskQuotaError ? { disk_quota_error: diskQuotaError } : {}),
       ...(dataQuotaError ? { data_quota_error: dataQuotaError } : {}),
@@ -368,7 +378,10 @@ export function registerVMRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "Only the owner can delete a VM" });
     }
 
-    // Cleanup VM (best-effort) — includes TAP, iptables DNAT
+    // Tear down wake-on-connect proxy
+    unbindWakeProxy(id);
+
+    // Cleanup VM (best-effort) — includes TAP, iptables DNAT, IPv6 firewall + NAT
     try {
       await getVMEngine().removeVMFull(
         id,
@@ -376,6 +389,8 @@ export function registerVMRoutes(app: FastifyInstance) {
         vm.app_port,
         vm.ssh_port,
         vm.opencode_port,
+        vm.vm_ipv6,
+        vm.vsock_cid ?? undefined,
       );
     } catch { /* may already be stopped/removed */ }
 
@@ -492,7 +507,7 @@ export function registerVMRoutes(app: FastifyInstance) {
 
     const cloneName = body.name || `${sourceVM.name} (copy)`;
     const slug = `vm-${generateSlug()}`;
-    const { appPort, sshPort, opencodePort, vsockCid, vmIp } = getVMEngine().allocateResources();
+    const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal } = getVMEngine().allocateResources();
 
     // Fetch cloning user's SSH keys (not source's)
     const user = getDatabase().findUserById(request.userId);
@@ -539,8 +554,14 @@ export function registerVMRoutes(app: FastifyInstance) {
       disk_size_gib: cloneDiskSize,
       image: sourceVM.image,
       image_version: sourceVM.image_version,
+      vm_ipv6: vmIpv6,
     });
     getDatabase().grantAccess(slug, request.userId, "owner");
+
+    // Bind wake-on-connect proxy for IPv6
+    if (vmIpv6) {
+      bindWakeProxy(slug, vmIpv6, []);
+    }
 
     // Boot new VM from copied disks (createAndStartVM skips rootfs/data creation if files exist)
     try {
@@ -559,6 +580,8 @@ export function registerVMRoutes(app: FastifyInstance) {
         anthropicApiKey: process.env.ANTHROPIC_API_KEY,
         vsockCid,
         vmIp,
+        vmIpv6,
+        vmIpv6Internal,
         memSizeMib: cloneMemSize,
       });
       getDatabase().updateVMInfo(slug, vmId, vmIp, vsockCid, null);

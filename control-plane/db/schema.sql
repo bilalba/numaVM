@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS vms (
   created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
   pages_port        INTEGER UNIQUE,
   mem_size_mib      INTEGER NOT NULL DEFAULT 512,
-  disk_size_gib     INTEGER NOT NULL DEFAULT 10
+  disk_size_gib     INTEGER NOT NULL DEFAULT 10,
+  vm_ipv6           TEXT,
+  firewall_rules    TEXT DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);

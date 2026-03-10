@@ -1,7 +1,9 @@
 import type { VM, VMWithRole, User, UserPlan, AgentSession, AgentMessage } from "./types.js";
+import type { FirewallRule } from "../db/client.js";
 
 // Re-export types so consumers can import everything from one place
 export type { VM, VMWithRole, User, UserPlan, AgentSession, AgentMessage } from "./types.js";
+export type { FirewallRule } from "../db/client.js";
 
 // --- Sub-interfaces grouped by domain ---
 
@@ -17,6 +19,8 @@ export interface IVMStore {
   updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: number, vmPid: number | null): void;
   updateVMSnapshotPath(id: string, snapshotPath: string | null): void;
   updateVMPublic(id: string, isPublic: boolean): void;
+  updateVMFirewallRules(id: string, rules: FirewallRule[]): void;
+  getVMFirewallRules(id: string): FirewallRule[];
   findVMBySshPort(port: number): VM | undefined;
   getAuthorizedUsersForVM(vmId: string): { id: string; ssh_public_keys: string | null; github_username: string | null }[];
 }
@@ -61,6 +65,7 @@ export interface IAgentStore {
 export interface IInfraStore {
   getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[];
   getUsedCids(): number[];
+  getUsedIpv6(): string[];
   insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number, ownerId?: string): void;
   getTrafficHistory(vmId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[];
   getTrafficSummary(hours: number): { vm_id: string; total_rx: number; total_tx: number; samples: number }[];

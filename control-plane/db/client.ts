@@ -141,6 +141,18 @@ if (!vmCols6.some((c) => c.name === "is_public")) {
   db.exec("ALTER TABLE vms ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0");
 }
 
+// Migrate: add vm_ipv6 column to vms
+const vmCols7 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols7.some((c) => c.name === "vm_ipv6")) {
+  db.exec("ALTER TABLE vms ADD COLUMN vm_ipv6 TEXT");
+}
+
+// Migrate: add firewall_rules column to vms
+const vmCols8 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols8.some((c) => c.name === "firewall_rules")) {
+  db.exec("ALTER TABLE vms ADD COLUMN firewall_rules TEXT DEFAULT '[]'");
+}
+
 // Migrate: add owner_id to vm_traffic so data usage survives VM deletion
 const trafficCols = db.pragma("table_info(vm_traffic)") as { name: string }[];
 if (!trafficCols.some((c) => c.name === "owner_id")) {
@@ -216,6 +228,8 @@ export interface VM {
   image: string;
   image_version: number;
   is_public?: number;
+  vm_ipv6: string | null;
+  firewall_rules?: string | null;
 }
 
 export interface VMWithRole extends VM {
@@ -255,9 +269,11 @@ export function clearUserGithubToken(userId: string): void {
 
 // --- VM CRUD ---
 
+const DEFAULT_FIREWALL_RULES = JSON.stringify([{ proto: "tcp", port: 22, source: "::/0" }]);
+
 const insertVMStmt = db.prepare(`
-  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib, disk_size_gib, image, image_version)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib, disk_size_gib, image, image_version, vm_ipv6, firewall_rules)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 export function insertVM(vm: Omit<VM, "created_at">): void {
   insertVMStmt.run(
@@ -265,7 +281,7 @@ export function insertVM(vm: Omit<VM, "created_at">): void {
     vm.container_id, vm.vm_ip, vm.vsock_cid, vm.vm_pid, vm.snapshot_path,
     vm.app_port, vm.ssh_port, vm.opencode_port,
     vm.opencode_password, vm.status, vm.mem_size_mib, vm.disk_size_gib,
-    vm.image, vm.image_version
+    vm.image, vm.image_version, vm.vm_ipv6, DEFAULT_FIREWALL_RULES
   );
 }
 
@@ -314,6 +330,30 @@ export function updateVMSnapshotPath(id: string, snapshotPath: string | null): v
 const updateVMPublicStmt = db.prepare("UPDATE vms SET is_public = ? WHERE id = ?");
 export function updateVMPublic(id: string, isPublic: boolean): void {
   updateVMPublicStmt.run(isPublic ? 1 : 0, id);
+}
+
+// --- Firewall rules ---
+
+export interface FirewallRule {
+  proto: "tcp" | "udp";
+  port: number;
+  source: string;
+  description?: string;
+}
+
+const updateVMFirewallRulesStmt = db.prepare("UPDATE vms SET firewall_rules = ? WHERE id = ?");
+export function updateVMFirewallRules(id: string, rules: FirewallRule[]): void {
+  updateVMFirewallRulesStmt.run(JSON.stringify(rules), id);
+}
+
+export function getVMFirewallRules(id: string): FirewallRule[] {
+  const vm = findVMById(id);
+  if (!vm || !vm.firewall_rules) return [];
+  try {
+    return JSON.parse(vm.firewall_rules) as FirewallRule[];
+  } catch {
+    return [];
+  }
 }
 
 // --- RAM quota ---
@@ -405,6 +445,15 @@ const getUsedCidsStmt = db.prepare(
 );
 export function getUsedCids(): number[] {
   return (getUsedCidsStmt.all() as { vsock_cid: number }[]).map((r) => r.vsock_cid);
+}
+
+// --- IPv6 pool allocation ---
+
+const getUsedIpv6Stmt = db.prepare(
+  "SELECT vm_ipv6 FROM vms WHERE vm_ipv6 IS NOT NULL AND status != 'error'"
+);
+export function getUsedIpv6(): string[] {
+  return (getUsedIpv6Stmt.all() as { vm_ipv6: string }[]).map((r) => r.vm_ipv6);
 }
 
 // --- SSH proxy lookups ---

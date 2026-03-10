@@ -23,6 +23,8 @@ export interface CreateVMParams {
   anthropicApiKey?: string;
   vsockCid: number;
   vmIp: string;
+  vmIpv6?: string | null;
+  vmIpv6Internal?: string | null;
   vcpuCount?: number;
   memSizeMib?: number;
   diskSizeGib?: number;
@@ -51,6 +53,8 @@ export interface AllocatedResources {
   opencodePort: number;
   vsockCid: number;
   vmIp: string;
+  vmIpv6: string | null;
+  vmIpv6Internal: string | null;
 }
 
 export interface IVMEngine {
@@ -58,7 +62,7 @@ export interface IVMEngine {
   createAndStartVM(params: CreateVMParams): Promise<string>;
   stopVM(vmId: string): Promise<void>;
   removeVM(vmId: string): Promise<void>;
-  removeVMFull(vmId: string, vmIp: string, appPort: number, sshPort: number, opencodePort: number): Promise<void>;
+  removeVMFull(vmId: string, vmIp: string, appPort: number, sshPort: number, opencodePort: number, vmIpv6?: string | null, vsockCid?: number): Promise<void>;
   inspectVM(vmId: string): Promise<VMRuntimeInfo>;
 
   // Pause/resume (for disk copy during clone)

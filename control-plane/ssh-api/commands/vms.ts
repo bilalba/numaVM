@@ -152,7 +152,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
 
   // Allocate resources
   const slug = `vm-${generateSlug()}`;
-  const { appPort, sshPort, opencodePort, vsockCid, vmIp } = getVMEngine().allocateResources();
+  const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal } = getVMEngine().allocateResources();
 
   // Fetch SSH keys
   const dbUser = getDatabase().findUserById(user.userId);
@@ -199,6 +199,7 @@ async function createVM(ctx: CommandContext): Promise<void> {
     disk_size_gib: diskSizeGib,
     image: "alpine",
     image_version: 1,
+    vm_ipv6: vmIpv6,
   });
   getDatabase().grantAccess(slug, user.userId, "owner");
 
@@ -221,6 +222,8 @@ async function createVM(ctx: CommandContext): Promise<void> {
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       vsockCid,
       vmIp,
+      vmIpv6,
+      vmIpv6Internal,
       memSizeMib,
     });
     getDatabase().updateVMInfo(slug, vmId, vmIp, vsockCid, null);
@@ -281,6 +284,8 @@ async function deleteVMCmd(vmId: string, ctx: CommandContext): Promise<void> {
       vm.app_port,
       vm.ssh_port,
       vm.opencode_port,
+      vm.vm_ipv6,
+      vm.vsock_cid ?? undefined,
     );
   } catch { /* may already be stopped */ }
 

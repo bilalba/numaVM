@@ -176,6 +176,80 @@ if ! iptables -C FORWARD -i "${BRIDGE_IF}" -o "${DEFAULT_IF}" -j ACCEPT 2>/dev/n
   iptables -A FORWARD -i "${DEFAULT_IF}" -o "${BRIDGE_IF}" -m state --state RELATED,ESTABLISHED -j ACCEPT
 fi
 
+# --- 5b. Optional IPv6 setup (when VM_IPV6_PREFIX or VM_IPV6_POOL_FILE is set) ---
+
+# Determine if IPv6 is needed (either prefix-based or pool-based)
+IPV6_ENABLED=false
+if [ -n "${VM_IPV6_PREFIX:-}" ] || [ -n "${VM_IPV6_POOL_FILE:-}" ] || [ -n "${VM_IPV6_POOL:-}" ]; then
+  IPV6_ENABLED=true
+fi
+
+if [ "${IPV6_ENABLED}" = "true" ]; then
+  # Default ULA prefix when pool is configured but prefix isn't explicitly set
+  if [ -z "${VM_IPV6_PREFIX:-}" ]; then
+    VM_IPV6_PREFIX="fd00::"
+  fi
+  echo "Configuring IPv6 for VMs (ULA prefix: ${VM_IPV6_PREFIX})..."
+
+  # Enable IPv6 forwarding
+  sysctl -w net.ipv6.conf.all.forwarding=1 > /dev/null
+  echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.d/99-numavm.conf
+
+  # Add ULA gateway address to bridge (fd00::1 or prefix::1)
+  IPV6_GW="${VM_IPV6_PREFIX}1"
+  if ! ip -6 addr show dev "${BRIDGE_IF}" | grep -q "${IPV6_GW}"; then
+    ip -6 addr add "${IPV6_GW}/64" dev "${BRIDGE_IF}"
+    echo "  Added ${IPV6_GW}/64 to ${BRIDGE_IF}"
+  else
+    echo "  ${IPV6_GW}/64 already on ${BRIDGE_IF}"
+  fi
+
+  # Enable NDP proxy on bridge (host answers NDP for absent/snapshotted VMs)
+  sysctl -w net.ipv6.conf.${BRIDGE_IF}.proxy_ndp=1 > /dev/null
+  echo "net.ipv6.conf.${BRIDGE_IF}.proxy_ndp=1" >> /etc/sysctl.d/99-numavm.conf
+
+  # Allow forwarding between bridge and external (IPv6)
+  if ! ip6tables -C FORWARD -i "${BRIDGE_IF}" -o "${DEFAULT_IF}" -j ACCEPT 2>/dev/null; then
+    ip6tables -A FORWARD -i "${BRIDGE_IF}" -o "${DEFAULT_IF}" -j ACCEPT
+    ip6tables -A FORWARD -i "${DEFAULT_IF}" -o "${BRIDGE_IF}" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    echo "  Added ip6tables FORWARD rules"
+  else
+    echo "  ip6tables FORWARD rules already exist"
+  fi
+
+  # Load ip6table_nat kernel module (needed for DNAT/SNAT with pool-based allocation)
+  if [ -n "${VM_IPV6_POOL_FILE:-}" ] || [ -n "${VM_IPV6_POOL:-}" ]; then
+    echo "  Loading ip6table_nat kernel module for pool-based DNAT/SNAT..."
+    modprobe ip6table_nat 2>/dev/null || true
+    if ! grep -q "ip6table_nat" /etc/modules-load.d/*.conf 2>/dev/null; then
+      echo "ip6table_nat" >> /etc/modules-load.d/numavm.conf
+    fi
+
+    # Populate pool file from EC2 metadata if not already present
+    if [ -n "${VM_IPV6_POOL_FILE:-}" ] && [ ! -f "${VM_IPV6_POOL_FILE}" ]; then
+      echo "  Attempting to populate ${VM_IPV6_POOL_FILE} from EC2 metadata..."
+      mkdir -p "$(dirname "${VM_IPV6_POOL_FILE}")"
+      MAC_ADDR=$(cat /sys/class/net/${DEFAULT_IF}/address 2>/dev/null || echo "")
+      if [ -n "${MAC_ADDR}" ]; then
+        TOKEN=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' 2>/dev/null || echo "")
+        if [ -n "${TOKEN}" ]; then
+          curl -sf -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+            "http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC_ADDR}/ipv6s" \
+            > "${VM_IPV6_POOL_FILE}" 2>/dev/null || echo "  WARNING: Could not fetch IPv6 addresses from EC2 metadata"
+          if [ -s "${VM_IPV6_POOL_FILE}" ]; then
+            POOL_COUNT=$(wc -l < "${VM_IPV6_POOL_FILE}")
+            echo "  Populated ${VM_IPV6_POOL_FILE} with ${POOL_COUNT} IPv6 addresses"
+          fi
+        else
+          echo "  WARNING: Could not get EC2 metadata token (not running on EC2?)"
+        fi
+      fi
+    fi
+  fi
+else
+  echo "Skipping IPv6 setup (VM_IPV6_PREFIX and VM_IPV6_POOL not set)"
+fi
+
 # --- 6. Install TAP helper scripts ---
 
 echo "Installing TAP device helper scripts..."
@@ -249,6 +323,62 @@ echo "Removed DNAT: host:${HOST_PORT} -> ${VM_IP}:${VM_PORT} (${PROTO})"
 TAPSCRIPT
 chmod +x "${INSTALL_DIR}/bin/remove-dnat"
 
+cat > "${INSTALL_DIR}/bin/apply-ipv6-sg" <<'SGSCRIPT'
+#!/bin/bash
+# Usage: apply-ipv6-sg <slug> <vm-ipv6> [proto:port:source ...]
+# Creates/flushes a per-VM ip6tables chain and applies security group rules.
+# Always allows ICMPv6 and established connections. Default deny.
+set -euo pipefail
+
+SLUG="$1"
+VM_IPV6="$2"
+shift 2
+
+CHAIN="numavm-${SLUG}"
+
+# Create chain (ignore if exists) then flush
+ip6tables -N "$CHAIN" 2>/dev/null || true
+ip6tables -F "$CHAIN"
+
+# Ensure FORWARD jump exists
+ip6tables -C FORWARD -d "$VM_IPV6" -j "$CHAIN" 2>/dev/null || \
+  ip6tables -I FORWARD -d "$VM_IPV6" -j "$CHAIN"
+
+# Always allow ICMPv6 (NDP, path MTU)
+ip6tables -A "$CHAIN" -p icmpv6 -j ACCEPT
+
+# Allow established/related
+ip6tables -A "$CHAIN" -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# Per-rule ACCEPT entries (format: proto:port:source)
+for RULE in "$@"; do
+  IFS=: read -r PROTO PORT SOURCE <<< "$RULE"
+  ip6tables -A "$CHAIN" -p "$PROTO" --dport "$PORT" -s "${SOURCE:-::/0}" -j ACCEPT
+done
+
+# Default deny
+ip6tables -A "$CHAIN" -j DROP
+echo "Applied IPv6 security group for ${SLUG} (${VM_IPV6}): $# rules"
+SGSCRIPT
+chmod +x "${INSTALL_DIR}/bin/apply-ipv6-sg"
+
+cat > "${INSTALL_DIR}/bin/remove-ipv6-sg" <<'SGSCRIPT'
+#!/bin/bash
+# Usage: remove-ipv6-sg <slug> <vm-ipv6>
+# Removes a per-VM ip6tables chain.
+set -euo pipefail
+
+SLUG="$1"
+VM_IPV6="$2"
+CHAIN="numavm-${SLUG}"
+
+ip6tables -D FORWARD -d "$VM_IPV6" -j "$CHAIN" 2>/dev/null || true
+ip6tables -F "$CHAIN" 2>/dev/null || true
+ip6tables -X "$CHAIN" 2>/dev/null || true
+echo "Removed IPv6 security group for ${SLUG}"
+SGSCRIPT
+chmod +x "${INSTALL_DIR}/bin/remove-ipv6-sg"
+
 # --- 7. Install build dependencies for rootfs images ---
 
 echo "Installing rootfs build dependencies..."
@@ -311,6 +441,7 @@ echo "  - Kernel:         ${KERNEL_DIR}/vmlinux"
 echo "  - Bridge:         ${BRIDGE_IF} (${BRIDGE_IP})"
 echo "  - TAP helpers:    ${INSTALL_DIR}/bin/{create,destroy}-tap"
 echo "  - DNAT helpers:   ${INSTALL_DIR}/bin/{add,remove}-dnat"
+echo "  - IPv6 SG:       ${INSTALL_DIR}/bin/{apply,remove}-ipv6-sg"
 echo "  - Data dir:       ${DATA_DIR}"
 echo ""
 echo "Next steps:"

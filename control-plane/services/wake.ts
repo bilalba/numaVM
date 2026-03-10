@@ -1,5 +1,6 @@
 import { getDatabase, getVMEngine, getReverseProxy, getIdleMonitor } from "../adapters/providers.js";
 import type { VM } from "../adapters/types.js";
+import { cidToVmIpv6 } from "./port-allocator.js";
 
 export class QuotaExceededError extends Error {
   current_ram_mib: number;
@@ -204,6 +205,7 @@ async function createFreshVM(vmId: string, vm: VM): Promise<void> {
   // Read VM config from the saved env.json (delegated to engine)
   const vmConfig = engine.getVMConfig(vmId);
 
+  const vmIpv6Internal = cidToVmIpv6(vm.vsock_cid!);
   await engine.createAndStartVM({
     slug: vmId,
     name: vm.name,
@@ -218,6 +220,8 @@ async function createFreshVM(vmId: string, vm: VM): Promise<void> {
     anthropicApiKey: vmConfig.anthropic_api_key || "",
     vsockCid: vm.vsock_cid!,
     vmIp: vm.vm_ip!,
+    vmIpv6: vm.vm_ipv6,
+    vmIpv6Internal,
     memSizeMib: vm.mem_size_mib,
   });
 }

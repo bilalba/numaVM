@@ -94,6 +94,8 @@ export interface CreateVMParams {
   anthropicApiKey?: string;
   vsockCid: number;
   vmIp: string;
+  vmIpv6?: string | null;
+  vmIpv6Internal?: string | null;
   vcpuCount?: number;
   memSizeMib?: number;
   diskSizeGib?: number;
@@ -256,6 +258,80 @@ export function removeDnat(hostPort: number, vmIp: string, vmPort: number): void
   }
 }
 
+// --- IPv6 Firewall (per-VM ip6tables chains) ---
+
+export interface FirewallRule {
+  proto: "tcp" | "udp";
+  port: number;
+  source: string;
+  description?: string;
+}
+
+export function applyIpv6FirewallRules(slug: string, vmIpv6: string | null | undefined, rules: FirewallRule[]): void {
+  if (!vmIpv6) return;
+
+  const chain = `numavm-${slug}`;
+
+  // Create chain (ignore if exists) then flush it
+  try { execSync(`ip6tables -N ${chain} 2>/dev/null`, { stdio: "pipe" }); } catch { /* exists */ }
+  execSync(`ip6tables -F ${chain}`, { stdio: "pipe" });
+
+  // Ensure FORWARD jump exists for this VM's IPv6 address
+  try {
+    execSync(`ip6tables -C FORWARD -d ${vmIpv6} -j ${chain} 2>/dev/null`, { stdio: "pipe" });
+  } catch {
+    execSync(`ip6tables -I FORWARD -d ${vmIpv6} -j ${chain}`, { stdio: "pipe" });
+  }
+
+  // Always allow ICMPv6 (NDP, path MTU discovery)
+  execSync(`ip6tables -A ${chain} -p icmpv6 -j ACCEPT`, { stdio: "pipe" });
+
+  // Allow established/related connections
+  execSync(`ip6tables -A ${chain} -m state --state RELATED,ESTABLISHED -j ACCEPT`, { stdio: "pipe" });
+
+  // Per-rule ACCEPT entries
+  for (const rule of rules) {
+    const src = rule.source || "::/0";
+    execSync(`ip6tables -A ${chain} -p ${rule.proto} --dport ${rule.port} -s ${src} -j ACCEPT`, { stdio: "pipe" });
+  }
+
+  // Default deny
+  execSync(`ip6tables -A ${chain} -j DROP`, { stdio: "pipe" });
+}
+
+export function removeIpv6FirewallRules(slug: string, vmIpv6: string | null | undefined): void {
+  if (!vmIpv6) return;
+
+  const chain = `numavm-${slug}`;
+
+  // Remove FORWARD jump
+  try { execSync(`ip6tables -D FORWARD -d ${vmIpv6} -j ${chain} 2>/dev/null`, { stdio: "pipe" }); } catch { /* ok */ }
+
+  // Flush and delete chain
+  try { execSync(`ip6tables -F ${chain} 2>/dev/null`, { stdio: "pipe" }); } catch { /* ok */ }
+  try { execSync(`ip6tables -X ${chain} 2>/dev/null`, { stdio: "pipe" }); } catch { /* ok */ }
+}
+
+// --- IPv6 NAT (DNAT/SNAT for pool-based allocation) ---
+
+/**
+ * Add DNAT + SNAT rules to map a public IPv6 address to an internal ULA address.
+ * Inbound: packets to publicIpv6 are rewritten to ulaIpv6 (DNAT)
+ * Outbound: packets from ulaIpv6 are rewritten to publicIpv6 (SNAT)
+ */
+export function addIpv6Nat(publicIpv6: string, ulaIpv6: string): void {
+  try { execSync(`ip6tables -t nat -A PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
+  try { execSync(`ip6tables -t nat -A POSTROUTING -s ${ulaIpv6} -j SNAT --to-source ${publicIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
+}
+
+/**
+ * Remove DNAT + SNAT rules for a public↔ULA mapping.
+ */
+export function removeIpv6Nat(publicIpv6: string, ulaIpv6: string): void {
+  try { execSync(`ip6tables -t nat -D PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
+  try { execSync(`ip6tables -t nat -D POSTROUTING -s ${ulaIpv6} -j SNAT --to-source ${publicIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
+}
+
 // --- Lifecycle ---
 
 export async function createAndStartVM(params: CreateVMParams): Promise<string> {
@@ -263,7 +339,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     slug, name, appPort, sshPort, opencodePort,
     ghRepo, ghToken, githubUsername, sshKeys, opencodePassword,
     openaiApiKey, anthropicApiKey,
-    vsockCid, vmIp,
+    vsockCid, vmIp, vmIpv6, vmIpv6Internal,
     vcpuCount = getDefaultVcpu(),
     memSizeMib = getDefaultMem(),
     diskSizeGib = 5,
@@ -317,6 +393,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     `dm.openai_api_key=${openaiApiKey || ""}`,
     `dm.anthropic_api_key=${anthropicApiKey || ""}`,
     `dm.env_name=${envNameB64}`,
+    ...((vmIpv6Internal || vmIpv6) ? [`dm.ipv6=${vmIpv6Internal || vmIpv6}`, `dm.ipv6_prefix_len=64`] : []),
   ].join(" ");
 
   progress("Starting Firecracker");
@@ -444,6 +521,27 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   addDnat(appPort, vmIp, 3000);    // app port
   addDnat(opencodePort, vmIp, 5000); // OpenCode port
 
+  // Set up IPv6 DNAT/SNAT if pool-based allocation (public differs from ULA)
+  const ipv6Ula = vmIpv6Internal || vmIpv6;
+  if (vmIpv6 && ipv6Ula && vmIpv6 !== ipv6Ula) {
+    try {
+      addIpv6Nat(vmIpv6, ipv6Ula);
+    } catch (err) {
+      console.error(`[firecracker] Failed to add IPv6 NAT for ${slug}:`, err);
+    }
+  }
+
+  // Apply IPv6 firewall rules (default-deny) using ULA address (post-DNAT destination)
+  if (ipv6Ula) {
+    try {
+      const { getVMFirewallRules } = await import("../db/client.js");
+      const rules = getVMFirewallRules(slug);
+      applyIpv6FirewallRules(slug, ipv6Ula, rules);
+    } catch (err) {
+      console.error(`[firecracker] Failed to apply IPv6 firewall rules for ${slug}:`, err);
+    }
+  }
+
   const startedAt = new Date().toISOString();
 
   // Track the running VM (process is null — managed by systemd)
@@ -519,12 +617,26 @@ export async function removeVMFull(
   appPort: number,
   sshPort: number,
   opencodePort: number,
+  vmIpv6?: string | null,
+  vsockCid?: number,
 ): Promise<void> {
   await removeVM(vmId);
 
   // Clean up DNAT rules (SSH handled by ssh-proxy, no DNAT to remove)
   removeDnat(appPort, vmIp, 3000);
   removeDnat(opencodePort, vmIp, 5000);
+
+  // Derive ULA for IPv6 NAT cleanup
+  const { cidToVmIpv6 } = await import("./port-allocator.js");
+  const ula = vsockCid ? cidToVmIpv6(vsockCid) : null;
+
+  // Clean up IPv6 NAT rules (public↔ULA mapping)
+  if (vmIpv6 && ula && vmIpv6 !== ula) {
+    removeIpv6Nat(vmIpv6, ula);
+  }
+
+  // Clean up IPv6 firewall chain (uses ULA address, or public if no pool)
+  removeIpv6FirewallRules(vmId, ula || vmIpv6);
 }
 
 export async function inspectVM(vmId: string): Promise<VMStatus> {
@@ -612,6 +724,20 @@ export async function snapshotVM(vmId: string): Promise<void> {
   // 5. Clean up TAP device and DNAT rules (caller handles DNAT)
   destroyTap(vm.tapDev);
 
+  // 5b. Clean up IPv6 NAT + firewall rules (will be re-added on restore)
+  try {
+    const { findVMById } = await import("../db/client.js");
+    const { cidToVmIpv6 } = await import("./port-allocator.js");
+    const vmRecord = findVMById(vmId);
+    const ula = cidToVmIpv6(vm.vsockCid);
+    if (vmRecord?.vm_ipv6 && ula && vmRecord.vm_ipv6 !== ula) {
+      removeIpv6Nat(vmRecord.vm_ipv6, ula);
+    }
+    removeIpv6FirewallRules(vmId, ula || vmRecord?.vm_ipv6);
+  } catch (err) {
+    console.error(`[firecracker] Failed to clean up IPv6 rules on snapshot for ${vmId}:`, err);
+  }
+
   // 6. Clean up sockets
   if (existsSync(vm.socketPath)) unlinkSync(vm.socketPath);
   const vsockSocket = join(getSocketDir(), `fc-${vmId}-vsock.sock`);
@@ -682,6 +808,24 @@ export async function restoreVM(
   addDnat(appPort, vmIp, 3000);
   addDnat(opencodePort, vmIp, 5000);
 
+  // Re-apply IPv6 NAT + firewall rules from DB
+  try {
+    const { findVMById, getVMFirewallRules } = await import("../db/client.js");
+    const { cidToVmIpv6 } = await import("./port-allocator.js");
+    const vmRecord = findVMById(vmId);
+    const ula = cidToVmIpv6(vsockCid);
+    if (vmRecord?.vm_ipv6 && ula && vmRecord.vm_ipv6 !== ula) {
+      addIpv6Nat(vmRecord.vm_ipv6, ula);
+    }
+    const firewallTarget = ula || vmRecord?.vm_ipv6;
+    if (firewallTarget) {
+      const rules = getVMFirewallRules(vmId);
+      applyIpv6FirewallRules(vmId, firewallTarget, rules);
+    }
+  } catch (err) {
+    console.error(`[firecracker] Failed to apply IPv6 rules on restore for ${vmId}:`, err);
+  }
+
   const startedAt = new Date().toISOString();
 
   // Track the restored VM (process is null — managed by systemd)
@@ -735,10 +879,11 @@ function isProcessAlive(pid: number): boolean {
  */
 export async function reconcileRunningVMs(): Promise<void> {
   const { db } = await import("../db/client.js");
+  const { cidToVmIpv6 } = await import("./port-allocator.js");
 
   const runningVMsList = db.prepare(
-    "SELECT id, vm_ip, vsock_cid, app_port, ssh_port, opencode_port FROM vms WHERE status = 'running'"
-  ).all() as { id: string; vm_ip: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number }[];
+    "SELECT id, vm_ip, vm_ipv6, firewall_rules, vsock_cid, app_port, ssh_port, opencode_port FROM vms WHERE status = 'running'"
+  ).all() as { id: string; vm_ip: string; vm_ipv6: string | null; firewall_rules: string | null; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number }[];
 
   if (runningVMsList.length === 0) return;
 
@@ -771,6 +916,25 @@ export async function reconcileRunningVMs(): Promise<void> {
       // Re-establish iptables DNAT rules (SSH handled by ssh-proxy, no DNAT needed)
       addDnat(vm.app_port, vm.vm_ip, 3000);
       addDnat(vm.opencode_port, vm.vm_ip, 5000);
+
+      // Re-apply IPv6 NAT + firewall rules
+      const ula = cidToVmIpv6(vm.vsock_cid);
+      if (vm.vm_ipv6 && ula && vm.vm_ipv6 !== ula) {
+        try {
+          addIpv6Nat(vm.vm_ipv6, ula);
+        } catch (err) {
+          console.error(`[reconcile] Failed to add IPv6 NAT for ${vm.id}:`, err);
+        }
+      }
+      const firewallTarget = ula || vm.vm_ipv6;
+      if (firewallTarget) {
+        try {
+          const rules: FirewallRule[] = vm.firewall_rules ? JSON.parse(vm.firewall_rules) : [];
+          applyIpv6FirewallRules(vm.id, firewallTarget, rules);
+        } catch (err) {
+          console.error(`[reconcile] Failed to apply IPv6 firewall rules for ${vm.id}:`, err);
+        }
+      }
 
       console.log(`[reconcile] Re-adopted VM ${vm.id} (PID ${pid}), DNAT rules restored`);
     } else {

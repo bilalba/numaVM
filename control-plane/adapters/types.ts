@@ -23,6 +23,8 @@ export interface VM {
   image: string;
   image_version: number;
   is_public?: number;
+  vm_ipv6: string | null;
+  firewall_rules?: string | null;
 }
 
 export interface VMWithRole extends VM {

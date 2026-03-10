@@ -7,8 +7,9 @@ import { ClaudeCodeTab } from "../components/ClaudeCodeTab";
 import { AgentTab } from "../components/AgentTab";
 import { AccessPanel } from "../components/AccessPanel";
 import { FilesTab } from "../components/FilesTab";
+import { FirewallPanel } from "../components/FirewallPanel";
 
-type TabId = "terminal" | "claude" | "codex" | "opencode" | "files" | "access";
+type TabId = "terminal" | "claude" | "codex" | "opencode" | "files" | "access" | "firewall";
 
 const statusColors: Record<string, string> = {
   running: "bg-green-500",
@@ -23,7 +24,7 @@ export function VMDetail() {
   const { slug } = useParams<{ slug: string }>();
   const [vm, setVM] = useState<VMDetailType | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  const validTabs: TabId[] = ["terminal", "claude", "codex", "opencode", "files", "access"];
+  const validTabs: TabId[] = ["terminal", "claude", "codex", "opencode", "files", "access", "firewall"];
   const tabParam = searchParams.get("tab") as TabId | null;
   const activeTab: TabId = tabParam && validTabs.includes(tabParam) ? tabParam : "opencode";
   const setActiveTab = (tab: TabId) => setSearchParams({ tab }, { replace: true });
@@ -88,6 +89,7 @@ export function VMDetail() {
     { id: "terminal", label: "Terminal" },
     { id: "files", label: "Files" },
     { id: "access", label: "Access" },
+    { id: "firewall", label: "Firewall" },
   ];
 
   return (
@@ -220,6 +222,13 @@ export function VMDetail() {
             isPublic={vm.is_public}
             vmUrl={vm.url}
             onPublicChange={(isPublic) => setVM((prev) => prev ? { ...prev, is_public: isPublic } : prev)}
+          />
+        )}
+        {activeTab === "firewall" && (
+          <FirewallPanel
+            vmId={vm.id}
+            currentUserRole={vm.role}
+            vmIpv6={vm.vm_ipv6}
           />
         )}
       </div>

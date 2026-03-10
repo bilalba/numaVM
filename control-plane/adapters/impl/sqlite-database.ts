@@ -1,4 +1,4 @@
-import type { IDatabase } from "../database.js";
+import type { IDatabase, FirewallRule } from "../database.js";
 import type { VM, VMWithRole, User, UserPlan, AgentSession, AgentMessage } from "../types.js";
 import { getPlanRegistry } from "../providers.js";
 import {
@@ -14,6 +14,8 @@ import {
   updateVMInfo as _updateVMInfo,
   updateVMSnapshotPath as _updateVMSnapshotPath,
   updateVMPublic as _updateVMPublic,
+  updateVMFirewallRules as _updateVMFirewallRules,
+  getVMFirewallRules as _getVMFirewallRules,
   findVMBySshPort as _findVMBySshPort,
   getAuthorizedUsersForVM as _getAuthorizedUsersForVM,
   grantAccess as _grantAccess,
@@ -46,6 +48,7 @@ import {
   deleteAgentSessionsByVM as _deleteAgentSessionsByVM,
   getUsedPorts as _getUsedPorts,
   getUsedCids as _getUsedCids,
+  getUsedIpv6 as _getUsedIpv6,
   insertTrafficRecord as _insertTrafficRecord,
   getTrafficHistory as _getTrafficHistory,
   getTrafficSummary as _getTrafficSummary,
@@ -70,6 +73,8 @@ export class SqliteDatabase implements IDatabase {
   updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: number, vmPid: number | null): void { _updateVMInfo(id, vmId, vmIp, vsockCid, vmPid); }
   updateVMSnapshotPath(id: string, snapshotPath: string | null): void { _updateVMSnapshotPath(id, snapshotPath); }
   updateVMPublic(id: string, isPublic: boolean): void { _updateVMPublic(id, isPublic); }
+  updateVMFirewallRules(id: string, rules: FirewallRule[]): void { _updateVMFirewallRules(id, rules); }
+  getVMFirewallRules(id: string): FirewallRule[] { return _getVMFirewallRules(id); }
   findVMBySshPort(port: number): VM | undefined { return _findVMBySshPort(port); }
   getAuthorizedUsersForVM(vmId: string): { id: string; ssh_public_keys: string | null; github_username: string | null }[] { return _getAuthorizedUsersForVM(vmId); }
 
@@ -110,6 +115,7 @@ export class SqliteDatabase implements IDatabase {
   // --- IInfraStore ---
   getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[] { return _getUsedPorts(); }
   getUsedCids(): number[] { return _getUsedCids(); }
+  getUsedIpv6(): string[] { return _getUsedIpv6(); }
   insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number, ownerId?: string): void { _insertTrafficRecord(vmId, rxBytes, txBytes, ownerId); }
   getTrafficHistory(vmId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[] { return _getTrafficHistory(vmId, hours); }
   getTrafficSummary(hours: number): { vm_id: string; total_rx: number; total_tx: number; samples: number }[] { return _getTrafficSummary(hours); }

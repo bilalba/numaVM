@@ -65,6 +65,16 @@ ip addr add "${VM_IP}/16" dev eth0 2>/dev/null || true
 ip link set eth0 up 2>/dev/null || true
 ip route add default via "${GATEWAY}" 2>/dev/null || true
 
+# IPv6 (only if dm.ipv6 was passed via kernel cmdline)
+if [ -n "${DM_ipv6:-}" ]; then
+  IPV6_PREFIX_LEN="${DM_ipv6_prefix_len:-64}"
+  ip -6 addr add "${DM_ipv6}/${IPV6_PREFIX_LEN}" dev eth0 2>/dev/null || true
+  # Derive gateway: replace the last component (our CID) with "1"
+  # e.g. fd00::3 → fd00::1
+  IPV6_GW=$(echo "${DM_ipv6}" | sed 's/::[0-9a-fA-F]*$/::1/')
+  ip -6 route add default via "${IPV6_GW}" 2>/dev/null || true
+fi
+
 # DNS
 echo "nameserver ${DNS}" > /etc/resolv.conf
 echo "nameserver 8.8.4.4" >> /etc/resolv.conf

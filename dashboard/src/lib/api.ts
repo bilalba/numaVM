@@ -80,6 +80,7 @@ export interface VMDetail {
   image: string;
   image_version: number;
   is_public: boolean;
+  vm_ipv6?: string | null;
   quota_error?: {
     message: string;
     current_ram_mib: number;
@@ -217,6 +218,13 @@ export interface ImageInfo {
   label: string;
   distro_version: string;
   node_version: string;
+}
+
+export interface FirewallRule {
+  proto: "tcp" | "udp";
+  port: number;
+  source: string;
+  description?: string;
 }
 
 export interface GitHubRepo {
@@ -471,6 +479,16 @@ export const api = {
     apiFetch<{ ok: boolean; is_public: boolean }>(`/vms/${vmId}/public`, {
       method: "POST",
       body: JSON.stringify({ is_public: isPublic }),
+    }),
+
+  // Firewall rules
+  getFirewallRules: (vmId: string) =>
+    apiFetch<{ rules: FirewallRule[]; vm_ipv6: string | null }>(`/vms/${vmId}/firewall`),
+
+  setFirewallRules: (vmId: string, rules: FirewallRule[]) =>
+    apiFetch<{ ok: boolean; rules: FirewallRule[] }>(`/vms/${vmId}/firewall`, {
+      method: "POST",
+      body: JSON.stringify({ rules }),
     }),
 
   // File content + git log

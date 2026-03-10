@@ -1,4 +1,5 @@
 import { getDatabase } from "../adapters/providers.js";
+import { hasIPv6Pool, allocateFromPool } from "./ipv6-pool.js";
 
 const APP_PORT_BASE = 10001;
 const SSH_PORT_BASE = 20001;
@@ -56,4 +57,46 @@ export function cidToVmIp(cid: number): string {
   const thirdOctet = Math.floor(offset / 256);
   const fourthOctet = offset % 256;
   return `172.16.${thirdOctet}.${fourthOctet}`;
+}
+
+/**
+ * Read the VM_IPV6_PREFIX env var (lazy, cached).
+ * When a pool is configured and prefix isn't explicitly set, defaults to "fd00::"
+ * (ULA range) so VMs always get an internal IPv6 for the bridge network.
+ */
+let _ipv6Prefix: string | null | undefined;
+export function getIPv6Prefix(): string | null {
+  if (_ipv6Prefix === undefined) {
+    const raw = process.env.VM_IPV6_PREFIX?.trim();
+    if (raw) {
+      _ipv6Prefix = raw;
+    } else if (hasIPv6Pool()) {
+      // Default ULA prefix when pool is configured but no prefix is set
+      _ipv6Prefix = "fd00::";
+    } else {
+      _ipv6Prefix = null;
+    }
+  }
+  return _ipv6Prefix;
+}
+
+/**
+ * Derive a per-VM internal (ULA) IPv6 address from the configured prefix and CID.
+ * Returns null if no IPv6 prefix is configured (and no pool).
+ * Example: prefix "fd00::" + CID 3 → "fd00::3"
+ */
+export function cidToVmIpv6(cid: number): string | null {
+  const prefix = getIPv6Prefix();
+  if (!prefix) return null;
+  return `${prefix}${cid}`;
+}
+
+/**
+ * Allocate a public IPv6 address from the pool.
+ * Returns null if no pool is configured or all addresses are in use.
+ */
+export function allocatePublicIPv6(): string | null {
+  if (!hasIPv6Pool()) return null;
+  const usedAddresses = getDatabase().getUsedIpv6();
+  return allocateFromPool(usedAddresses);
 }

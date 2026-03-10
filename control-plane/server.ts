@@ -25,11 +25,13 @@ import { registerFileRoutes } from "./routes/files.js";
 import { registerUserRoutes } from "./routes/user.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerBillingRoutes } from "./routes/billing.js";
+import { registerFirewallRoutes } from "./routes/firewall.js";
 import { destroyAllTerminals } from "./terminal/pty-handler.js";
 import { agentManager } from "./agents/manager.js";
 import { getHealthStats } from "./services/health.js";
 import { initProviders, getVMEngine, getReverseProxy, getDatabase, getIdleMonitor } from "./adapters/providers.js";
 import { startSshProxy, stopSshProxy } from "./services/ssh-proxy.js";
+import { initWakeProxies } from "./services/wake-proxy.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -178,6 +180,7 @@ export async function createServer(options?: CreateServerOptions) {
   registerUserRoutes(app);
   registerAdminRoutes(app);
   registerBillingRoutes(app);
+  registerFirewallRoutes(app);
 
   // Global error handler
   app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
@@ -208,6 +211,9 @@ export async function createServer(options?: CreateServerOptions) {
 
     // Reconcile in-memory VM state with any surviving Firecracker processes
     await getVMEngine().reconcileRunningVMs();
+
+    // Bind wake-on-connect TCP proxies for all VMs with IPv6
+    initWakeProxies();
 
     // Start SSH proxy (auth + wake-on-connect for all VMs)
     await startSshProxy();
