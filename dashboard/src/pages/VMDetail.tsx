@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { api, type VMDetail as VMDetailType } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { TerminalTab } from "../components/TerminalTab";
@@ -22,12 +22,18 @@ const statusColors: Record<string, string> = {
 export function VMDetail() {
   const { slug } = useParams<{ slug: string }>();
   const [vm, setVM] = useState<VMDetailType | null>(null);
-  const [activeTab, setActiveTab] = useState<TabId>("codex");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const validTabs: TabId[] = ["terminal", "claude", "codex", "opencode", "files", "access"];
+  const tabParam = searchParams.get("tab") as TabId | null;
+  const activeTab: TabId = tabParam && validTabs.includes(tabParam) ? tabParam : "opencode";
+  const setActiveTab = (tab: TabId) => setSearchParams({ tab }, { replace: true });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pausing, setPausing] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
+  const pendingSession = !!(location.state as any)?.pendingSession;
 
   useEffect(() => {
     if (!slug) return;
@@ -76,8 +82,8 @@ export function VMDetail() {
   }
 
   const tabs: { id: TabId; label: string }[] = [
-    { id: "codex", label: "Codex" },
     { id: "opencode", label: "OpenCode" },
+    { id: "codex", label: "Codex" },
     { id: "claude", label: "Claude Code" },
     { id: "terminal", label: "Terminal" },
     { id: "files", label: "Files" },
@@ -199,15 +205,22 @@ export function VMDetail() {
 
       {/* Tab content */}
       <div>
-        {activeTab === "codex" && <AgentTab vmId={vm.id} agentType="codex" />}
-        {activeTab === "opencode" && <AgentTab vmId={vm.id} agentType="opencode" />}
+        {activeTab === "codex" && <AgentTab vmId={vm.id} agentType="codex" vmStatus={vm.status} />}
+        {activeTab === "opencode" && <AgentTab vmId={vm.id} agentType="opencode" vmName={vm.name} vmStatus={vm.status} pendingSession={pendingSession} />}
         {activeTab === "terminal" && <TerminalTab vmId={vm.id} />}
         {activeTab === "claude" && (
           <ClaudeCodeTab vmId={vm.id} sshCommand={vm.ssh_command} />
         )}
         {activeTab === "files" && <FilesTab vmId={vm.id} />}
         {activeTab === "access" && (
-          <AccessPanel vmId={vm.id} currentUserRole={vm.role} sshCommand={vm.ssh_command} />
+          <AccessPanel
+            vmId={vm.id}
+            currentUserRole={vm.role}
+            sshCommand={vm.ssh_command}
+            isPublic={vm.is_public}
+            vmUrl={vm.url}
+            onPublicChange={(isPublic) => setVM((prev) => prev ? { ...prev, is_public: isPublic } : prev)}
+          />
         )}
       </div>
     </div>

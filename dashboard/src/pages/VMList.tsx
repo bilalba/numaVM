@@ -157,6 +157,7 @@ export function VMList() {
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [memSizeMib, setMemSizeMib] = useState(256);
   const [diskSizeGib, setDiskSizeGib] = useState(1);
+  const [initialPrompt, setInitialPrompt] = useState("");
   const [selectedImage, setSelectedImage] = useState("alpine");
   const [availableImages, setAvailableImages] = useState<ImageInfo[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -309,13 +310,13 @@ export function VMList() {
         const created = await api.createGithubRepo(newRepoName.trim(), newRepoPrivate);
         ghRepo = created.fullName;
       }
-      await api.createVM({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib, image: selectedImage });
+      const prompt = initialPrompt.trim() || undefined;
+      const newVM = await api.createVM({ name: newName.trim(), gh_repo: ghRepo, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib, image: selectedImage, initial_prompt: prompt });
       setNewName("");
+      setInitialPrompt("");
       setShowCreate(false);
       resetRepoState();
-      setLoading(true);
-      loadVMs();
-      loadQuota();
+      navigate(`/vm/${newVM.id}?tab=opencode`, { state: { pendingSession: !!prompt } });
     } catch (err: any) {
       setError(err.message);
       toast(err.message, "error");
@@ -383,12 +384,15 @@ export function VMList() {
       )}
 
       {showCreate && (
-        <form
-          onSubmit={handleCreate}
-          className="mb-6 bg-panel-chat border border-neutral-200 p-5"
-        >
-          <div className="flex gap-4 items-end mb-2">
-            <div className="flex-1">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => { setShowCreate(false); resetRepoState(); }}>
+          <form
+            onSubmit={handleCreate}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-panel-chat border border-neutral-200 p-6 w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto"
+          >
+            <h2 className="text-sm font-semibold mb-4">New VM</h2>
+
+            <div className="mb-3">
               <label className="text-xs text-neutral-600 mb-1 block">Name</label>
               <input
                 type="text"
@@ -401,221 +405,250 @@ export function VMList() {
               />
               <p className="text-[10px] text-neutral-500 mt-1">A unique slug will be auto-generated for your subdomain.</p>
             </div>
-            <button
-              type="submit"
-              disabled={creating || !canCreate()}
-              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer shrink-0 pb-1"
-            >
-              {creating ? "Creating..." : "Create"}
-            </button>
-          </div>
 
-          {/* Advanced options (RAM + Disk) */}
-          <div className="mt-4 pt-4 border-t border-neutral-200">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="text-neutral-400 hover:text-neutral-600 text-[11px] cursor-pointer"
-            >
-              {showAdvanced ? "\u25BE" : "\u25B8"} Advanced
-              {!showAdvanced && <span className="ml-2 text-neutral-500">{memSizeMib >= 1024 ? `${(memSizeMib / 1024).toFixed(memSizeMib % 1024 ? 2 : 0)} GB` : `${memSizeMib} MB`} RAM, {diskSizeGib} GB disk{selectedImage !== "alpine" ? `, ${selectedImage}` : ""}</span>}
-            </button>
-            {showAdvanced && (
-              <div className="mt-3 space-y-4">
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-xs text-neutral-600">Memory</label>
-                    {ramQuota && (
-                      <span className="text-[10px] text-neutral-400">
-                        <span className={ramQuota.plan === "free" ? "text-amber-600" : "text-neutral-400"}>
-                          {ramQuota.plan_label}
-                          {ramQuota.trial_active && ramQuota.trial_expires_at && (
-                            <> &middot; trial ends {relativeTime(ramQuota.trial_expires_at)}</>
-                          )}
-                        </span>
-                        {" \u00B7 "}
-                        {ramQuota.used_mib} / {ramQuota.max_mib} MB used
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex gap-1.5">
-                    {(ramQuota?.valid_mem_sizes || [256]).map((size) => {
-                      const exceedsQuota = ramQuota ? ramQuota.used_mib + size > ramQuota.max_mib : false;
-                      const label = size >= 1024 ? `${(size / 1024).toFixed(size % 1024 ? 2 : 0)} GB` : `${size} MB`;
-                      return (
-                        <button
-                          key={size}
-                          type="button"
-                          disabled={exceedsQuota}
-                          onClick={() => setMemSizeMib(size)}
-                          title={exceedsQuota ? "Exceeds quota" : undefined}
-                          className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
-                            memSizeMib === size
-                              ? "border-foreground bg-surface font-medium"
-                              : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-xs text-neutral-600">Disk</label>
-                    {ramQuota && (
-                      <span className="text-[10px] text-neutral-400">
-                        {ramQuota.disk_used_gib} / {ramQuota.disk_max_gib} GB used
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex gap-1.5">
-                    {(ramQuota?.valid_disk_sizes || [1]).map((size) => {
-                      const exceedsQuota = ramQuota ? ramQuota.disk_used_gib + size > ramQuota.disk_max_gib : false;
-                      return (
-                        <button
-                          key={size}
-                          type="button"
-                          disabled={exceedsQuota}
-                          onClick={() => setDiskSizeGib(size)}
-                          title={exceedsQuota ? "Exceeds disk quota" : undefined}
-                          className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
-                            diskSizeGib === size
-                              ? "border-foreground bg-surface font-medium"
-                              : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
-                          }`}
-                        >
-                          {size} GB
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                {availableImages.length > 1 && (
+            {/* Initial prompt */}
+            <div className="mb-3">
+              <label className="text-xs text-neutral-600 mb-1 block">Prompt <span className="text-neutral-400">(optional)</span></label>
+              <textarea
+                value={initialPrompt}
+                onChange={(e) => setInitialPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (canCreate()) handleCreate(e);
+                  }
+                }}
+                placeholder="Start an OpenCode session with this prompt..."
+                rows={1}
+                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none resize-none leading-normal"
+              />
+            </div>
+
+            {/* Advanced options (RAM + Disk) */}
+            <div className="mb-3 pt-3 border-t border-neutral-200">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="text-neutral-400 hover:text-neutral-600 text-[11px] cursor-pointer"
+              >
+                {showAdvanced ? "\u25BE" : "\u25B8"} Advanced
+                {!showAdvanced && <span className="ml-2 text-neutral-500">{memSizeMib >= 1024 ? `${(memSizeMib / 1024).toFixed(memSizeMib % 1024 ? 2 : 0)} GB` : `${memSizeMib} MB`} RAM, {diskSizeGib} GB disk{selectedImage !== "alpine" ? `, ${selectedImage}` : ""}</span>}
+              </button>
+              {showAdvanced && (
+                <div className="mt-3 space-y-4">
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs text-neutral-600">Image</label>
+                      <label className="text-xs text-neutral-600">Memory</label>
+                      {ramQuota && (
+                        <span className="text-[10px] text-neutral-400">
+                          <span className={ramQuota.plan === "free" ? "text-amber-600" : "text-neutral-400"}>
+                            {ramQuota.plan_label}
+                            {ramQuota.trial_active && ramQuota.trial_expires_at && (
+                              <> &middot; trial ends {relativeTime(ramQuota.trial_expires_at)}</>
+                            )}
+                          </span>
+                          {" \u00B7 "}
+                          {ramQuota.used_mib} / {ramQuota.max_mib} MB used
+                        </span>
+                      )}
                     </div>
                     <div className="flex gap-1.5">
-                      {availableImages.map((img) => (
-                        <button
-                          key={img.distro}
-                          type="button"
-                          onClick={() => setSelectedImage(img.distro)}
-                          className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer ${
-                            selectedImage === img.distro
-                              ? "border-foreground bg-surface font-medium"
-                              : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
-                          }`}
-                        >
-                          {img.label}
-                        </button>
-                      ))}
+                      {(ramQuota?.valid_mem_sizes || [256]).map((size) => {
+                        const exceedsQuota = ramQuota ? ramQuota.used_mib + size > ramQuota.max_mib : false;
+                        const label = size >= 1024 ? `${(size / 1024).toFixed(size % 1024 ? 2 : 0)} GB` : `${size} MB`;
+                        return (
+                          <button
+                            key={size}
+                            type="button"
+                            disabled={exceedsQuota}
+                            onClick={() => setMemSizeMib(size)}
+                            title={exceedsQuota ? "Exceeds quota" : undefined}
+                            className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                              memSizeMib === size
+                                ? "border-foreground bg-surface font-medium"
+                                : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
                     </div>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-neutral-600">Disk</label>
+                      {ramQuota && (
+                        <span className="text-[10px] text-neutral-400">
+                          {ramQuota.disk_used_gib} / {ramQuota.disk_max_gib} GB used
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-1.5">
+                      {(ramQuota?.valid_disk_sizes || [1]).map((size) => {
+                        const exceedsQuota = ramQuota ? ramQuota.disk_used_gib + size > ramQuota.disk_max_gib : false;
+                        return (
+                          <button
+                            key={size}
+                            type="button"
+                            disabled={exceedsQuota}
+                            onClick={() => setDiskSizeGib(size)}
+                            title={exceedsQuota ? "Exceeds disk quota" : undefined}
+                            className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                              diskSizeGib === size
+                                ? "border-foreground bg-surface font-medium"
+                                : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
+                            }`}
+                          >
+                            {size} GB
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {availableImages.length > 1 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-xs text-neutral-600">Image</label>
+                      </div>
+                      <div className="flex gap-1.5">
+                        {availableImages.map((img) => (
+                          <button
+                            key={img.distro}
+                            type="button"
+                            onClick={() => setSelectedImage(img.distro)}
+                            className={`flex-1 py-1.5 text-xs border transition-colors cursor-pointer ${
+                              selectedImage === img.distro
+                                ? "border-foreground bg-surface font-medium"
+                                : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
+                            }`}
+                          >
+                            {img.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Repo picker — only when GitHub is connected */}
+            {githubStatus?.connected && (
+              <div className="mb-3 pt-3 border-t border-neutral-200">
+                <label className="text-xs text-neutral-600 mb-2 block">Repository</label>
+                <div className="flex gap-4 text-xs mb-3">
+                  {(["none", "existing", "new"] as const).map((mode) => (
+                    <label key={mode} className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="repoMode"
+                        checked={repoMode === mode}
+                        onChange={() => {
+                          setRepoMode(mode);
+                          setSelectedRepo(null);
+                          setRepoSearch("");
+                          setNewRepoName("");
+                        }}
+                        className="accent-foreground w-3 h-3"
+                      />
+                      <span className="text-foreground">
+                        {mode === "none" ? "No repo" : mode === "existing" ? "Existing repo" : "Create new repo"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+
+                {repoMode === "existing" && (
+                  <div>
+                    <input
+                      type="text"
+                      value={repoSearch}
+                      onChange={(e) => setRepoSearch(e.target.value)}
+                      placeholder="Search repositories..."
+                      className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none mb-2"
+                    />
+                    <div className="max-h-48 overflow-y-auto">
+                      {reposLoading && repos.length === 0 ? (
+                        <p className="text-xs text-neutral-500 py-2">Loading...</p>
+                      ) : repos.length === 0 ? (
+                        <p className="text-xs text-neutral-500 py-2">No repositories found</p>
+                      ) : (
+                        repos.map((repo) => (
+                          <button
+                            key={repo.fullName}
+                            type="button"
+                            onClick={() => setSelectedRepo(repo.fullName)}
+                            className={`w-full text-left px-3 py-2 text-xs border transition-colors cursor-pointer mb-1 ${
+                              selectedRepo === repo.fullName
+                                ? "border-foreground bg-surface"
+                                : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
+                            }`}
+                          >
+                            <span className="font-medium">{repo.fullName}</span>
+                            {repo.private && <span className="text-neutral-400 ml-2">private</span>}
+                          </button>
+                        ))
+                      )}
+                      {reposHasMore && (
+                        <button
+                          type="button"
+                          onClick={() => loadRepos(repoSearch, reposPage + 1)}
+                          disabled={reposLoading}
+                          className="text-xs underline underline-offset-4 text-neutral-500 hover:text-foreground transition-colors cursor-pointer py-1 disabled:opacity-30"
+                        >
+                          {reposLoading ? "Loading..." : "Load more"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {repoMode === "new" && (
+                  <div className="flex gap-4 items-end">
+                    <div className="flex-1">
+                      <input
+                        type="text"
+                        value={newRepoName}
+                        onChange={(e) => setNewRepoName(e.target.value)}
+                        placeholder="Repository name"
+                        maxLength={100}
+                        className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none"
+                      />
+                    </div>
+                    <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer shrink-0 pb-1">
+                      <input
+                        type="checkbox"
+                        checked={newRepoPrivate}
+                        onChange={(e) => setNewRepoPrivate(e.target.checked)}
+                        className="accent-foreground w-3 h-3"
+                      />
+                      Private
+                    </label>
                   </div>
                 )}
               </div>
             )}
-          </div>
 
-          {/* Repo picker — only when GitHub is connected */}
-          {githubStatus?.connected && (
-            <div className="mt-4 pt-4 border-t border-neutral-200">
-              <label className="text-xs text-neutral-600 mb-2 block">Repository</label>
-              <div className="flex gap-4 text-xs mb-3">
-                {(["none", "existing", "new"] as const).map((mode) => (
-                  <label key={mode} className="flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="repoMode"
-                      checked={repoMode === mode}
-                      onChange={() => {
-                        setRepoMode(mode);
-                        setSelectedRepo(null);
-                        setRepoSearch("");
-                        setNewRepoName("");
-                      }}
-                      className="accent-foreground w-3 h-3"
-                    />
-                    <span className="text-foreground">
-                      {mode === "none" ? "No repo" : mode === "existing" ? "Existing repo" : "Create new repo"}
-                    </span>
-                  </label>
-                ))}
-              </div>
-
-              {repoMode === "existing" && (
-                <div>
-                  <input
-                    type="text"
-                    value={repoSearch}
-                    onChange={(e) => setRepoSearch(e.target.value)}
-                    placeholder="Search repositories..."
-                    className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none mb-2"
-                  />
-                  <div className="max-h-48 overflow-y-auto">
-                    {reposLoading && repos.length === 0 ? (
-                      <p className="text-xs text-neutral-500 py-2">Loading...</p>
-                    ) : repos.length === 0 ? (
-                      <p className="text-xs text-neutral-500 py-2">No repositories found</p>
-                    ) : (
-                      repos.map((repo) => (
-                        <button
-                          key={repo.fullName}
-                          type="button"
-                          onClick={() => setSelectedRepo(repo.fullName)}
-                          className={`w-full text-left px-3 py-2 text-xs border transition-colors cursor-pointer mb-1 ${
-                            selectedRepo === repo.fullName
-                              ? "border-foreground bg-surface"
-                              : "border-neutral-200 bg-neutral-100 hover:border-neutral-300"
-                          }`}
-                        >
-                          <span className="font-medium">{repo.fullName}</span>
-                          {repo.private && <span className="text-neutral-400 ml-2">private</span>}
-                        </button>
-                      ))
-                    )}
-                    {reposHasMore && (
-                      <button
-                        type="button"
-                        onClick={() => loadRepos(repoSearch, reposPage + 1)}
-                        disabled={reposLoading}
-                        className="text-xs underline underline-offset-4 text-neutral-500 hover:text-foreground transition-colors cursor-pointer py-1 disabled:opacity-30"
-                      >
-                        {reposLoading ? "Loading..." : "Load more"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {repoMode === "new" && (
-                <div className="flex gap-4 items-end">
-                  <div className="flex-1">
-                    <input
-                      type="text"
-                      value={newRepoName}
-                      onChange={(e) => setNewRepoName(e.target.value)}
-                      placeholder="Repository name"
-                      maxLength={100}
-                      className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none"
-                    />
-                  </div>
-                  <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer shrink-0 pb-1">
-                    <input
-                      type="checkbox"
-                      checked={newRepoPrivate}
-                      onChange={(e) => setNewRepoPrivate(e.target.checked)}
-                      className="accent-foreground w-3 h-3"
-                    />
-                    Private
-                  </label>
-                </div>
-              )}
+            {/* Dialog footer */}
+            <div className="flex justify-end gap-3 pt-4 border-t border-neutral-200">
+              <button
+                type="button"
+                onClick={() => { setShowCreate(false); resetRepoState(); }}
+                className="text-xs text-neutral-500 hover:text-foreground transition-colors cursor-pointer px-3 py-1.5"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={creating || !canCreate()}
+                className="text-xs bg-foreground text-surface px-4 py-1.5 transition-opacity hover:opacity-80 disabled:opacity-30 cursor-pointer"
+              >
+                {creating ? "Creating..." : "Create"}
+              </button>
             </div>
-          )}
-        </form>
+          </form>
+        </div>
       )}
 
       {error && (

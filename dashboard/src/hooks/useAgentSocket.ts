@@ -9,6 +9,7 @@ export interface AgentEvent {
   turnId?: string;
   status?: string;
   tool?: string;
+  partId?: string;
   input?: unknown;
   result?: unknown;
   path?: string;
@@ -21,6 +22,7 @@ export interface AgentEvent {
   steps?: { text: string; done: boolean }[];
   model?: string;
   provider?: string;
+  step?: string;
 }
 
 export function useAgentSocket(vmId: string) {

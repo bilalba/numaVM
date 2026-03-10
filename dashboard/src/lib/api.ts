@@ -33,6 +33,7 @@ export interface VMSummary {
   disk_size_gib: number;
   image: string;
   image_version: number;
+  is_public: boolean;
 }
 
 export interface Quota {
@@ -78,6 +79,7 @@ export interface VMDetail {
   mem_size_mib: number;
   image: string;
   image_version: number;
+  is_public: boolean;
   quota_error?: {
     message: string;
     current_ram_mib: number;
@@ -232,7 +234,7 @@ export const api = {
 
   getVM: (id: string) => apiFetch<VMDetail>(`/vms/${id}`),
 
-  createVM: (body: { name: string; gh_repo?: string; mem_size_mib?: number; disk_size_gib?: number; image?: string }) =>
+  createVM: (body: { name: string; gh_repo?: string; mem_size_mib?: number; disk_size_gib?: number; image?: string; initial_prompt?: string }) =>
     apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
       "/vms",
       { method: "POST", body: JSON.stringify(body) }
@@ -271,7 +273,7 @@ export const api = {
     ),
 
   // Agent session APIs
-  createAgentSession: (vmId: string, agentType: "codex" | "opencode", opts?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }) =>
+  createAgentSession: (vmId: string, agentType: "codex" | "opencode", opts?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy; prompt?: string }) =>
     apiFetch<AgentSession>(`/vms/${vmId}/agents/${agentType}/sessions`, {
       method: "POST",
       body: JSON.stringify({
@@ -281,6 +283,7 @@ export const api = {
         ...(opts?.effort ? { effort: opts.effort } : {}),
         ...(opts?.approvalPolicy ? { approvalPolicy: opts.approvalPolicy } : {}),
         ...(opts?.sandboxPolicy ? { sandboxPolicy: opts.sandboxPolicy } : {}),
+        ...(opts?.prompt ? { prompt: opts.prompt } : {}),
       }),
     }),
 
@@ -288,7 +291,7 @@ export const api = {
     apiFetch<{ sessions: AgentSession[] }>(`/vms/${vmId}/agents/${agentType}/sessions`),
 
   getAgentSession: (vmId: string, sessionId: string) =>
-    apiFetch<{ session: AgentSession; messages: AgentMessage[] }>(
+    apiFetch<{ session: AgentSession; messages: AgentMessage[]; pendingApprovals?: { id: string; action: string; detail: unknown }[]; pendingQuestions?: { id: string; questions: { question: string; header: string; options: { label: string; description: string }[]; multiple?: boolean; custom?: boolean }[] }[]; todos?: { id: string; content: string; status: string; priority: string }[] }>(
       `/vms/${vmId}/sessions/${sessionId}`
     ),
 
@@ -331,6 +334,18 @@ export const api = {
     apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/approval`, {
       method: "POST",
       body: JSON.stringify({ approvalId, decision }),
+    }),
+
+  respondToQuestion: (vmId: string, sessionId: string, questionId: string, answers: string[][]) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/question`, {
+      method: "POST",
+      body: JSON.stringify({ questionId, answers }),
+    }),
+
+  rejectQuestion: (vmId: string, sessionId: string, questionId: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/question`, {
+      method: "POST",
+      body: JSON.stringify({ questionId, reject: true }),
     }),
 
   // Codex models + threads
@@ -450,6 +465,12 @@ export const api = {
     apiFetch<{ ok: boolean; message: string }>(`/vms/${vmId}/access`, {
       method: "POST",
       body: JSON.stringify({ email, role: null }),
+    }),
+
+  setVMPublic: (vmId: string, isPublic: boolean) =>
+    apiFetch<{ ok: boolean; is_public: boolean }>(`/vms/${vmId}/public`, {
+      method: "POST",
+      body: JSON.stringify({ is_public: isPublic }),
     }),
 
   // File content + git log

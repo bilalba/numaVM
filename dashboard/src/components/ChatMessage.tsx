@@ -18,11 +18,18 @@ export function ChatMessage({ message }: ChatMessageProps) {
   }
 
   if (message.role === "tool") {
+    const toolInput = metadata?.input;
+    const toolName = metadata?.tool || "unknown";
+    // Extract a human-readable summary of the tool input (e.g. bash command)
+    const inputSummary = toolInput
+      ? (toolInput.command || toolInput.pattern || toolInput.file_path || toolInput.path || toolInput.query || (typeof toolInput === "string" ? toolInput : null))
+      : null;
+
     return (
       <div className="mb-3 ml-2">
         <details className="border border-neutral-200 overflow-hidden">
           <summary className="px-3 py-2 text-xs text-neutral-500 cursor-pointer transition-opacity hover:opacity-60">
-            Tool: {metadata?.tool || "unknown"}
+            {toolName}{inputSummary ? `: ${inputSummary}` : ""}
           </summary>
           <pre className="px-3 py-2 text-xs text-neutral-600 overflow-x-auto whitespace-pre-wrap border-t border-neutral-100 max-h-48 bg-surface">
             {message.content}

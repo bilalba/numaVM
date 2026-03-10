@@ -3,6 +3,8 @@ import { api, type AgentSession, type AgentMessage, type OpenCodeProvider, type 
 import { useAgentSocket, type AgentEvent } from "../hooks/useAgentSocket";
 import { ChatMessage, StreamingMessage, StreamingReasoning } from "./ChatMessage";
 import { ApprovalCard } from "./ApprovalCard";
+import { QuestionCard } from "./QuestionCard";
+import { TodoList, type TodoItem } from "./TodoList";
 import { CommandPalette } from "./CommandPalette";
 import { useCommandPalette } from "../hooks/useCommandPalette";
 import { useToast } from "./Toast";
@@ -11,6 +13,10 @@ import { relativeTime } from "../lib/time";
 interface AgentTabProps {
   vmId: string;
   agentType: "codex" | "opencode";
+  vmName?: string;
+  vmStatus?: string;
+  /** True when a session is being auto-created in the backend (e.g. VM created with initial prompt) */
+  pendingSession?: boolean;
 }
 
 interface PendingApproval {
@@ -20,16 +26,38 @@ interface PendingApproval {
   responded: boolean;
 }
 
-export function AgentTab({ vmId, agentType }: AgentTabProps) {
-  const [sessions, setSessions] = useState<AgentSession[]>([]);
+interface PendingQuestion {
+  id: string;
+  questions: { question: string; header: string; options: { label: string; description: string }[]; multiple?: boolean; custom?: boolean }[];
+  responded: boolean;
+}
+
+export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: AgentTabProps) {
+  const [sessions, setSessionsRaw] = useState<AgentSession[]>([]);
+  /** Wrapper that deduplicates sessions by ID (prevents duplicates from racing sources) */
+  const setSessions: typeof setSessionsRaw = useCallback((update) => {
+    setSessionsRaw((prev) => {
+      const next = typeof update === "function" ? update(prev) : update;
+      const seen = new Set<string>();
+      return next.filter((s) => {
+        if (seen.has(s.id)) return false;
+        seen.add(s.id);
+        return true;
+      });
+    });
+  }, []);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [reasoningText, setReasoningText] = useState("");
+  const [runningTools, setRunningTools] = useState<{ tool: string; partId?: string; input?: unknown }[]>([]);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [questions, setQuestions] = useState<PendingQuestion[]>([]);
+  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
   const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [initProgress, setInitProgress] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sessionStatus, setSessionStatus] = useState<string>("idle");
   const [modelInfo, setModelInfo] = useState<{ model?: string; provider?: string } | null>(null);
@@ -39,7 +67,11 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
   const [selectedOpenCodeModel, setSelectedOpenCodeModel] = useState("");
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState("");
-  const [sessionCwd, setSessionCwd] = useState<string>("/home/dev");
+  const [sessionCwd, setSessionCwd] = useState<string>(() => {
+    if (!vmName) return "/home/dev";
+    const safe = vmName.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "workspace";
+    return `/home/dev/${safe}`;
+  });
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [folderPath, setFolderPath] = useState("/home/dev");
   const [folderEntries, setFolderEntries] = useState<FileEntry[]>([]);
@@ -59,53 +91,77 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
     authError?: string;
   }>({ checked: false, authenticated: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const initTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const { toast } = useToast();
   const { isOpen: paletteOpen, open: openPalette, close: closePalette } = useCommandPalette();
 
   const { connected, addListener } = useAgentSocket(vmId);
 
-  // Check Codex auth status on mount
+  // Check Codex auth status once VM is running
   useEffect(() => {
     if (agentType !== "codex") {
       setCodexAuth({ checked: true, authenticated: true });
       return;
     }
+    if (vmStatus && vmStatus !== "running") return;
     api.getCodexAuthStatus(vmId).then((data) => {
       setCodexAuth({ checked: true, authenticated: data.authenticated });
     }).catch(() => {
       setCodexAuth({ checked: true, authenticated: false });
     });
-  }, [vmId, agentType]);
+  }, [vmId, agentType, vmStatus]);
 
-  // Fetch Codex models when authenticated
+  // Fetch Codex models when authenticated and VM is running
   useEffect(() => {
     if (agentType !== "codex" || !codexAuth.authenticated) return;
+    if (vmStatus && vmStatus !== "running") return;
     api.getCodexModels(vmId).then((data) => {
       setCodexModels(data.models || []);
     }).catch(() => {});
-  }, [vmId, agentType, codexAuth.authenticated]);
+  }, [vmId, agentType, codexAuth.authenticated, vmStatus]);
 
-  // Fetch OpenCode providers on mount
+  // Fetch OpenCode providers once VM is running
   useEffect(() => {
     if (agentType !== "opencode") return;
+    if (vmStatus && vmStatus !== "running") return;
     api.getOpenCodeProviders(vmId).then((data) => {
       setOpenCodeProviders(data.connected || []);
       setOpenCodePopular(data.popular || []);
     }).catch(() => {});
-  }, [vmId, agentType]);
+  }, [vmId, agentType, vmStatus]);
 
-  // Load sessions on mount
+  // Track whether we're waiting for a backend-created session
+  const [awaitingSession, setAwaitingSession] = useState(!!pendingSession);
+
+  // Load sessions on mount. Poll when a pending session is expected but hasn't appeared yet.
   useEffect(() => {
-    api
-      .listAgentSessions(vmId, agentType)
-      .then((data) => {
-        setSessions(data.sessions);
-        if (data.sessions.length > 0) {
-          setActiveSessionId(data.sessions[0].id);
-        }
-      })
-      .catch(() => {});
-  }, [vmId, agentType]);
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+
+    const fetchSessions = () => {
+      api
+        .listAgentSessions(vmId, agentType)
+        .then((data) => {
+          if (cancelled) return;
+          setSessions(data.sessions);
+          if (data.sessions.length > 0) {
+            setActiveSessionId((prev) => prev || data.sessions[0].id);
+            setAwaitingSession(false);
+          } else if (awaitingSession) {
+            // Session not yet created — poll again
+            pollTimer = setTimeout(fetchSessions, 3000);
+          }
+        })
+        .catch(() => {
+          if (!cancelled && awaitingSession) {
+            pollTimer = setTimeout(fetchSessions, 3000);
+          }
+        });
+    };
+    fetchSessions();
+
+    return () => { cancelled = true; clearTimeout(pollTimer); };
+  }, [vmId, agentType, connected, awaitingSession]);
 
   // Load messages when active session changes
   useEffect(() => {
@@ -120,10 +176,76 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
         setMessages(data.messages);
         setSessionStatus(data.session.status);
         if (data.session.cwd) setSessionCwd(data.session.cwd);
+        // If session is busy with no assistant messages yet, it's still initializing
+        // (e.g. auto-created session where bridge is starting up)
+        const hasAssistantMsg = data.messages.some((m: any) => m.role === "assistant" || m.role === "tool");
+        if (data.session.status === "busy" && !hasAssistantMsg) {
+          setCreating(true);
+          setInitProgress("Initializing...");
+        } else {
+          setCreating(false);
+          setInitProgress(null);
+        }
+        // Restore pending approvals/questions from OpenCode API
+        if (data.pendingApprovals?.length) {
+          setApprovals(data.pendingApprovals.map((a) => ({ ...a, responded: false })));
+        } else {
+          setApprovals([]);
+        }
+        if (data.pendingQuestions?.length) {
+          setQuestions(data.pendingQuestions.map((q) => ({ ...q, responded: false })));
+        } else {
+          setQuestions([]);
+        }
+        setTodoItems(data.todos || []);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [vmId, activeSessionId]);
+
+  // Listen for backend-created sessions (e.g. auto-created with initial prompt during VM creation)
+  // This handles sessions created by the backend (e.g. VM created with initial prompt).
+  // Sessions created via handleCreateSession are already in the list — use a ref to track them.
+  const clientCreatedSessionsRef = useRef(new Set<string>());
+  useEffect(() => {
+    return addListener((event: AgentEvent) => {
+      if (event.type !== "session.created") return;
+      const e = event as any;
+      // Only pick up sessions for our agent type
+      if (e.agentType && e.agentType !== agentType) return;
+      const newSessionId = event.sessionId;
+      if (!newSessionId) return;
+      // Skip if this session was already created by the client (handleCreateSession)
+      if (clientCreatedSessionsRef.current.has(newSessionId)) return;
+      setSessions((prev) => [{
+        id: newSessionId,
+        vm_id: vmId,
+        agent_type: agentType,
+        thread_id: null,
+        title: null,
+        cwd: e.cwd || null,
+        status: "idle",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, ...prev]);
+      setActiveSessionId(newSessionId);
+      setAwaitingSession(false);
+      setCreating(true);
+      setInitProgress("Initializing...");
+      setSessionStatus("initializing");
+      // Show user message optimistically if prompt was included
+      if (e.prompt) {
+        setMessages([{
+          id: `user-${Date.now()}`,
+          session_id: newSessionId,
+          role: "user",
+          content: e.prompt,
+          metadata: null,
+          created_at: new Date().toISOString(),
+        }]);
+      }
+    });
+  }, [addListener, agentType, vmId, setSessions]);
 
   // Listen for WebSocket events
   useEffect(() => {
@@ -176,7 +298,18 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
           }
           break;
 
+        case "tool.started":
+          setRunningTools((prev) => [...prev, { tool: event.tool || "tool", partId: event.partId, input: event.input }]);
+          break;
+
         case "tool.completed":
+          setRunningTools((prev) => {
+            // Remove by partId for precise matching, fall back to tool name
+            const idx = event.partId
+              ? prev.findIndex((t) => t.partId === event.partId)
+              : prev.findIndex((t) => t.tool === (event.tool || "tool"));
+            return idx >= 0 ? [...prev.slice(0, idx), ...prev.slice(idx + 1)] : prev;
+          });
           setMessages((prev) => [
             ...prev,
             {
@@ -184,7 +317,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
               session_id: activeSessionId!,
               role: "tool",
               content: typeof event.result === "string" ? event.result : JSON.stringify(event.result),
-              metadata: JSON.stringify({ tool: event.tool }),
+              metadata: JSON.stringify({ tool: event.tool, input: event.input }),
               created_at: new Date().toISOString(),
             },
           ]);
@@ -198,6 +331,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
           setSessionStatus("idle");
           setStreamingText("");
           setReasoningText("");
+          setRunningTools([]);
           break;
 
         case "approval.requested":
@@ -212,11 +346,44 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
           ]);
           break;
 
+        case "question.asked":
+          setQuestions((prev) => [
+            ...prev,
+            {
+              id: event.id || "",
+              questions: (event as any).questions || [],
+              responded: false,
+            },
+          ]);
+          break;
+
+        case "todo.updated":
+          setTodoItems((event as any).items || []);
+          break;
+
+        case "session.progress":
+          if (event.step === "ready") {
+            initTimeoutsRef.current.forEach(clearTimeout);
+            initTimeoutsRef.current = [];
+            setCreating(false);
+            setInitProgress(null);
+            setSessionStatus("idle");
+          } else {
+            setInitProgress(event.message || event.step || "Initializing...");
+          }
+          break;
+
         case "session.info":
           setModelInfo({ model: event.model, provider: event.provider });
           break;
 
         case "error":
+          if (event.code === "init_error") {
+            initTimeoutsRef.current.forEach(clearTimeout);
+            initTimeoutsRef.current = [];
+            setCreating(false);
+            setInitProgress(null);
+          }
           setSessionStatus("error");
           break;
       }
@@ -226,11 +393,16 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText, reasoningText, approvals]);
+  }, [messages, streamingText, reasoningText, runningTools, approvals, questions, initProgress]);
 
-  const handleCreateSession = async () => {
+  const handleCreateSession = async (promptOverride?: string) => {
     setCreating(true);
+    setInitProgress("Initializing...");
     try {
+      // Use override prompt (from auto-create) or capture from input
+      const prompt = promptOverride?.trim() || inputText.trim() || undefined;
+      if (prompt) setInputText("");
+
       // Parse OpenCode model selection (format: "providerID:modelID")
       let providerID: string | undefined;
       let modelID: string | undefined;
@@ -247,19 +419,54 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
         effort: selectedEffort || undefined,
         approvalPolicy: agentType === "codex" ? approvalPolicy : undefined,
         sandboxPolicy: agentType === "codex" ? sandboxPolicy : undefined,
+        prompt,
       });
+      clientCreatedSessionsRef.current.add(session.id);
       setSessions((prev) => [session, ...prev]);
       setActiveSessionId(session.id);
-      setMessages([]);
       setStreamingText("");
       setReasoningText("");
+      setRunningTools([]);
       setApprovals([]);
-      setSessionStatus("idle");
+      setQuestions([]);
+      setTodoItems([]);
+      setSessionStatus("initializing");
       setModelInfo(null);
+
+      // Add optimistic user message if prompt was provided
+      if (prompt) {
+        setMessages([{
+          id: `user-${Date.now()}`,
+          session_id: session.id,
+          role: "user",
+          content: prompt,
+          metadata: null,
+          created_at: new Date().toISOString(),
+        }]);
+      } else {
+        setMessages([]);
+      }
+
+      // Client-side timeout for initialization
+      initTimeoutsRef.current.forEach(clearTimeout);
+      const timeoutId = setTimeout(() => {
+        setInitProgress((prev) => prev ? "Taking longer than expected..." : prev);
+      }, 20000);
+      const errorTimeoutId = setTimeout(() => {
+        setCreating((prev) => {
+          if (prev) {
+            setInitProgress(null);
+            setSessionStatus("error");
+            toast("Session initialization timed out", "error");
+          }
+          return false;
+        });
+      }, 30000);
+      initTimeoutsRef.current = [timeoutId, errorTimeoutId];
     } catch (err: any) {
       toast(`Failed to create session: ${err.message}`, "error");
-    } finally {
       setCreating(false);
+      setInitProgress(null);
     }
   };
 
@@ -320,6 +527,32 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
     [vmId, activeSessionId]
   );
 
+  const handleQuestionAnswer = useCallback(
+    async (questionId: string, answers: string[][]) => {
+      if (!activeSessionId) return;
+      try {
+        await api.respondToQuestion(vmId, activeSessionId, questionId, answers);
+        setQuestions((prev) =>
+          prev.map((q) => (q.id === questionId ? { ...q, responded: true } : q))
+        );
+      } catch {}
+    },
+    [vmId, activeSessionId]
+  );
+
+  const handleQuestionReject = useCallback(
+    async (questionId: string) => {
+      if (!activeSessionId) return;
+      try {
+        await api.rejectQuestion(vmId, activeSessionId, questionId);
+        setQuestions((prev) =>
+          prev.map((q) => (q.id === questionId ? { ...q, responded: true } : q))
+        );
+      } catch {}
+    },
+    [vmId, activeSessionId]
+  );
+
   const handleUndo = async () => {
     if (!activeSessionId) return;
     try {
@@ -348,7 +581,11 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (activeSessionId) {
+        handleSend();
+      } else if (inputText.trim() && !creating) {
+        handleCreateSession();
+      }
     }
   };
 
@@ -653,7 +890,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
             cwd: {sessionCwd.replace("/home/dev/", "~/")}
           </button>
           <button
-            onClick={handleCreateSession}
+            onClick={() => handleCreateSession()}
             disabled={creating}
             className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1 whitespace-nowrap shrink-0 md:w-full"
           >
@@ -672,7 +909,15 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
                 onClick={() => {
                   setActiveSessionId(s.id);
                   setStreamingText("");
+                  setReasoningText("");
+                  setRunningTools([]);
                   setApprovals([]);
+                  setQuestions([]);
+                  setTodoItems([]);
+                  setCreating(false);
+                  setInitProgress(null);
+                  setSessionStatus("idle");
+                  setModelInfo(null);
                 }}
                 className={`text-left px-3 py-2 md:py-2.5 text-xs border-r md:border-r-0 md:border-b border-neutral-100 transition-opacity cursor-pointer shrink-0 ${
                   s.id === activeSessionId
@@ -700,7 +945,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
             <span className="text-xs font-semibold">{agentLabel}</span>
             <span
               className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                sessionStatus === "busy"
+                sessionStatus === "busy" || sessionStatus === "initializing"
                   ? "bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]"
                   : sessionStatus === "error"
                     ? "bg-red-500"
@@ -709,7 +954,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
                       : "bg-neutral-400"
               }`}
             />
-            <span className="text-xs text-neutral-500 hidden sm:inline">{sessionStatus}</span>
+            <span className="text-xs text-neutral-500 hidden sm:inline">{initProgress || sessionStatus}</span>
             {modelInfo?.model && (
               <span className="text-xs text-neutral-500 ml-2 hidden sm:inline">{modelInfo.model}</span>
             )}
@@ -751,11 +996,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-3 sm:py-4">
-          {creating ? (
-            <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
-              Initializing {agentLabel}...
-            </div>
-          ) : !activeSessionId ? (
+          {!activeSessionId ? (
             <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Create or select a session to start
             </div>
@@ -763,7 +1004,12 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
             <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Loading messages...
             </div>
-          ) : messages.length === 0 && !streamingText && !reasoningText ? (
+          ) : awaitingSession ? (
+            <div className="h-full flex flex-col items-center justify-center text-neutral-500 text-xs gap-2">
+              <div className="animate-pulse">Setting up OpenCode...</div>
+              <div className="text-[10px] text-neutral-400">Booting VM and initializing session</div>
+            </div>
+          ) : messages.length === 0 && !streamingText && !reasoningText && !creating ? (
             <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Send a message to start the conversation
             </div>
@@ -774,6 +1020,22 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
               ))}
               {reasoningText && <StreamingReasoning text={reasoningText} />}
               {streamingText && <StreamingMessage text={streamingText} />}
+              {runningTools.filter((t) => t.tool !== "question").length > 0 && (
+                <div className="mb-3 ml-2">
+                  {runningTools.filter((t) => t.tool !== "question").map((entry, i) => {
+                    const inp = entry.input as Record<string, unknown> | undefined;
+                    const summary = inp
+                      ? (inp.command || inp.pattern || inp.file_path || inp.path || inp.query || null)
+                      : null;
+                    return (
+                      <div key={`running-${i}`} className="flex items-center gap-2 px-3 py-2 text-xs text-neutral-500 border border-neutral-200 mb-1">
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]" />
+                        Running: {entry.tool}{summary ? `: ${String(summary)}` : ""}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               {approvals
                 .filter((a) => !a.responded)
                 .map((a) => (
@@ -786,52 +1048,76 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
                     agentType={agentType}
                   />
                 ))}
+              {questions
+                .filter((q) => !q.responded)
+                .map((q) => (
+                  <QuestionCard
+                    key={q.id}
+                    questionId={q.id}
+                    questions={q.questions}
+                    onAnswer={handleQuestionAnswer}
+                    onReject={handleQuestionReject}
+                  />
+                ))}
+              {creating && initProgress && (
+                <div className="mb-3 ml-2">
+                  <div className="flex items-center gap-2 px-3 py-2 text-xs text-neutral-500 border border-neutral-200">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]" />
+                    {initProgress}
+                  </div>
+                </div>
+              )}
               <div ref={messagesEndRef} />
             </>
           )}
         </div>
 
-        {/* Input */}
-        {activeSessionId && (
-          <div className="px-3 sm:px-4 py-2 sm:py-3 border-t border-neutral-200">
-            <div className="flex gap-2 sm:gap-3 items-end">
-              <textarea
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={`Message ${agentLabel}...`}
-                rows={1}
-                className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none resize-none min-h-[28px] max-h-32"
-              />
-              <button
-                onClick={handleSend}
-                disabled={!inputText.trim() || sending || sessionStatus === "busy"}
-                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer shrink-0 pb-1"
-              >
-                Send
-              </button>
-            </div>
-            <div className="flex items-center gap-3 mt-1.5">
-              <p className="text-[10px] text-neutral-500 hidden sm:block">
-                Shift+Enter for new line
-              </p>
-              {agentType === "opencode" && (
-                <select
-                  value={selectedAgent}
-                  onChange={(e) => setSelectedAgent(e.target.value)}
-                  className="border-0 border-b border-neutral-200 bg-transparent px-0 py-0 text-[10px] text-neutral-500 focus:border-foreground focus:outline-none cursor-pointer"
-                >
-                  <option value="">build</option>
-                  <option value="plan">plan</option>
-                  <option value="general">general</option>
-                </select>
-              )}
-              {agentType === "codex" && selectedEffort && (
-                <span className="text-[10px] text-neutral-400">effort: {selectedEffort}</span>
-              )}
-            </div>
+        {/* Todo list */}
+        {todoItems.length > 0 && (
+          <div className="px-3 sm:px-4 pt-2">
+            <TodoList items={todoItems} />
           </div>
         )}
+
+        {/* Input — always visible so users can type a prompt before creating a session */}
+        <div className="px-3 sm:px-4 py-2 sm:py-3 border-t border-neutral-200">
+          <div className="flex gap-2 sm:gap-3 items-end">
+            <textarea
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={activeSessionId ? `Message ${agentLabel}...` : `Start a new ${agentLabel} session...`}
+              rows={1}
+              className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none resize-none min-h-[28px] max-h-32"
+            />
+            <button
+              onClick={activeSessionId ? handleSend : () => handleCreateSession()}
+              disabled={!inputText.trim() || sending || creating || sessionStatus === "busy"}
+              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer shrink-0 pb-1"
+            >
+              {activeSessionId ? "Send" : "New Session"}
+            </button>
+          </div>
+          <div className="flex items-center gap-3 mt-1.5">
+            <p className="text-[10px] text-neutral-500 hidden sm:block">
+              {activeSessionId ? "Shift+Enter for new line" : "Enter to create session with prompt"}
+            </p>
+            {agentType === "opencode" && (
+              <select
+                value={selectedAgent}
+                onChange={(e) => setSelectedAgent(e.target.value)}
+                className="border-0 border-b border-neutral-200 bg-transparent px-0 py-0 text-[10px] text-neutral-500 focus:border-foreground focus:outline-none cursor-pointer"
+              >
+                <option value="">build</option>
+                <option value="plan">plan</option>
+                <option value="general">general</option>
+              </select>
+            )}
+            {agentType === "codex" && selectedEffort && (
+              <span className="text-[10px] text-neutral-400">effort: {selectedEffort}</span>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Command Palette */}
@@ -848,7 +1134,7 @@ export function AgentTab({ vmId, agentType }: AgentTabProps) {
         isAuthenticated={codexAuth.authenticated}
         onSelectModel={(id) => setSelectedModel(id)}
         onSelectEffort={(e) => setSelectedEffort(e)}
-        onNewSession={handleCreateSession}
+        onNewSession={() => handleCreateSession()}
         onSwitchSession={(id) => {
           setActiveSessionId(id);
           setStreamingText("");
