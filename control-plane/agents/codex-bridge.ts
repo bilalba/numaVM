@@ -302,6 +302,7 @@ export class CodexBridge implements AgentBridge {
           this.emit({
             type: "tool.completed",
             tool: "shell",
+            input: { command: item.command || "" },
             result: { exitCode: item.exitCode, stdout: item.stdout, stderr: item.stderr },
           });
         } else if (item.type === "fileChange") {

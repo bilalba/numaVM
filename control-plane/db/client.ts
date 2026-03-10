@@ -135,6 +135,12 @@ if (!vmCols5.some((c) => c.name === "image")) {
   db.exec("ALTER TABLE vms ADD COLUMN image_version INTEGER NOT NULL DEFAULT 1");
 }
 
+// Migrate: add is_public column to vms
+const vmCols6 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols6.some((c) => c.name === "is_public")) {
+  db.exec("ALTER TABLE vms ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0");
+}
+
 // Migrate: add owner_id to vm_traffic so data usage survives VM deletion
 const trafficCols = db.pragma("table_info(vm_traffic)") as { name: string }[];
 if (!trafficCols.some((c) => c.name === "owner_id")) {
@@ -160,6 +166,27 @@ try { db.exec("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT"); } catch {
 const agentSessionCols = db.pragma("table_info(agent_sessions)") as { name: string }[];
 if (!agentSessionCols.some((c) => c.name === "cwd")) {
   db.exec("ALTER TABLE agent_sessions ADD COLUMN cwd TEXT");
+}
+
+// Migrate: add 'reasoning' to agent_messages role CHECK constraint
+const msgSchema = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_messages'").get() as { sql: string } | undefined);
+if (msgSchema && !msgSchema.sql.includes("reasoning")) {
+  db.pragma("foreign_keys = OFF");
+  db.exec(`
+    CREATE TABLE agent_messages_new (
+      id          TEXT PRIMARY KEY,
+      session_id  TEXT NOT NULL REFERENCES agent_sessions(id),
+      role        TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool', 'reasoning')),
+      content     TEXT NOT NULL,
+      metadata    TEXT,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO agent_messages_new SELECT * FROM agent_messages;
+    DROP TABLE agent_messages;
+    ALTER TABLE agent_messages_new RENAME TO agent_messages;
+    CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id);
+  `);
+  db.pragma("foreign_keys = ON");
 }
 
 export { db };
@@ -188,6 +215,7 @@ export interface VM {
   disk_size_gib: number;
   image: string;
   image_version: number;
+  is_public?: number;
 }
 
 export interface VMWithRole extends VM {
@@ -281,6 +309,11 @@ export function updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: n
 const updateVMSnapshotPathStmt = db.prepare("UPDATE vms SET snapshot_path = ? WHERE id = ?");
 export function updateVMSnapshotPath(id: string, snapshotPath: string | null): void {
   updateVMSnapshotPathStmt.run(snapshotPath, id);
+}
+
+const updateVMPublicStmt = db.prepare("UPDATE vms SET is_public = ? WHERE id = ?");
+export function updateVMPublic(id: string, isPublic: boolean): void {
+  updateVMPublicStmt.run(isPublic ? 1 : 0, id);
 }
 
 // --- RAM quota ---
@@ -544,7 +577,7 @@ export interface AgentSession {
 export interface AgentMessage {
   id: string;
   session_id: string;
-  role: "user" | "assistant" | "system" | "tool";
+  role: "user" | "assistant" | "system" | "tool" | "reasoning";
   content: string;
   metadata: string | null;
   created_at: string;
@@ -615,6 +648,17 @@ const deleteAgentSessionStmt = db.prepare(
 export function deleteAgentSession(id: string): void {
   deleteAgentMessagesBySessionStmt.run(id);
   deleteAgentSessionStmt.run(id);
+}
+
+const deleteAgentMessagesByVMStmt = db.prepare(
+  "DELETE FROM agent_messages WHERE session_id IN (SELECT id FROM agent_sessions WHERE vm_id = ?)"
+);
+const deleteAgentSessionsByVMStmt = db.prepare(
+  "DELETE FROM agent_sessions WHERE vm_id = ?"
+);
+export function deleteAgentSessionsByVM(vmId: string): void {
+  deleteAgentMessagesByVMStmt.run(vmId);
+  deleteAgentSessionsByVMStmt.run(vmId);
 }
 
 // --- Stripe helpers ---

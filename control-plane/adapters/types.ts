@@ -22,6 +22,7 @@ export interface VM {
   disk_size_gib: number;
   image: string;
   image_version: number;
+  is_public?: number;
 }
 
 export interface VMWithRole extends VM {
@@ -72,7 +73,7 @@ export interface AgentSession {
 export interface AgentMessage {
   id: string;
   session_id: string;
-  role: "user" | "assistant" | "system" | "tool";
+  role: "user" | "assistant" | "system" | "tool" | "reasoning";
   content: string;
   metadata: string | null;
   created_at: string;

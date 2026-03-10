@@ -55,12 +55,13 @@ class AgentManager {
     return bridge.listThreads(options);
   }
 
-  async createSession(vmId: string, agentType: AgentType, options?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<AgentSession> {
+  async createSession(vmId: string, agentType: AgentType, options?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy; prompt?: string }): Promise<AgentSession> {
     const vm = getDatabase().findVMById(vmId);
     if (!vm) throw new Error("VM not found");
     if (vm.status !== "running") throw new Error("VM is not running");
 
     const sessionId = nanoid();
+    const prompt = options?.prompt?.trim() || undefined;
 
     // Create the bridge
     let bridge: AgentBridge;
@@ -70,7 +71,7 @@ class AgentManager {
       bridge = new OpenCodeBridge(vm.id, vm.opencode_port, vm.opencode_password || "");
     }
 
-    // Insert DB record early
+    // Insert DB record — return immediately, background task handles bridge startup
     getDatabase().insertAgentSession({
       id: sessionId,
       vm_id: vmId,
@@ -78,8 +79,29 @@ class AgentManager {
       thread_id: null,
       title: null,
       cwd: options?.cwd || null,
-      status: "idle",
+      status: prompt ? "busy" : "idle",
     });
+
+    // If prompt provided, persist user message immediately so it's visible in the UI
+    // (before bridge starts — avoids the gap where the session exists but has no messages)
+    if (prompt) {
+      getDatabase().insertAgentMessage({
+        id: nanoid(),
+        session_id: sessionId,
+        role: "user",
+        content: prompt,
+        metadata: null,
+      });
+    }
+
+    // Notify connected dashboards that a new session was created
+    wsHub.broadcast(vmId, sessionId, {
+      type: "session.created",
+      sessionId,
+      agentType,
+      cwd: options?.cwd || null,
+      prompt: prompt || null,
+    } as any);
 
     // Wire up events
     const active: ActiveSession = { bridge, vmId, pendingText: "" };
@@ -89,32 +111,68 @@ class AgentManager {
       this.handleEvent(sessionId, active, event);
     });
 
-    // Start the bridge (spawns process / connects SSE)
-    // Codex bridge needs VM IP, OpenCode bridge uses its own HTTP port
-    try {
-      const startArg = vm.id;
-      const threadId = await bridge.start(startArg, options);
-      if (threadId) {
-        getDatabase().updateAgentSessionThreadId(sessionId, threadId);
+    // Background: start bridge, broadcast progress, send prompt
+    const startOptions = {
+      ...options,
+      onProgress: (step: string, message: string) => {
+        wsHub.broadcast(vmId, sessionId, {
+          type: "session.progress",
+          sessionId,
+          step,
+          message,
+        });
+      },
+    };
+
+    (async () => {
+      try {
+        const startArg = vm.id;
+        const threadId = await bridge.start(startArg, startOptions);
+        if (threadId) {
+          getDatabase().updateAgentSessionThreadId(sessionId, threadId);
+        }
+        getDatabase().updateAgentSessionStatus(sessionId, "idle");
+        wsHub.broadcast(vmId, sessionId, {
+          type: "session.progress",
+          sessionId,
+          step: "ready",
+          message: "Ready",
+        });
+
+        // If a prompt was provided, write AGENTS.md and send it to the agent
+        // (user message already persisted above — call bridge directly to avoid duplicate)
+        if (prompt) {
+          if (bridge instanceof OpenCodeBridge) {
+            await (bridge as OpenCodeBridge).writeAgentsMd(options?.cwd, vmId).catch(() => {});
+          }
+          getDatabase().updateAgentSessionStatus(sessionId, "busy");
+          active.pendingText = "";
+          wsHub.broadcast(vmId, sessionId, {
+            type: "message.completed",
+            text: prompt,
+            role: "system",
+          });
+          await bridge.sendMessage(prompt, options);
+        }
+      } catch (err: any) {
+        getDatabase().updateAgentSessionStatus(sessionId, "error");
+        wsHub.broadcast(vmId, sessionId, {
+          type: "error",
+          message: `Failed to start ${agentType}: ${err.message}`,
+          code: "init_error",
+        });
+        this.activeSessions.delete(sessionId);
       }
-    } catch (err: any) {
-      getDatabase().updateAgentSessionStatus(sessionId, "error");
-      this.activeSessions.delete(sessionId);
-      throw new Error(`Failed to start ${agentType}: ${err.message}`);
-    }
+    })();
 
     return getDatabase().findAgentSession(sessionId)!;
   }
 
   async sendMessage(sessionId: string, text: string, options?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }): Promise<void> {
-    const active = this.activeSessions.get(sessionId);
+    let active = this.activeSessions.get(sessionId);
     if (!active) {
-      // Try to reconnect if session exists in DB but bridge is gone
-      const session = getDatabase().findAgentSession(sessionId);
-      if (!session || session.status === "archived") {
-        throw new Error("Session not found or archived");
-      }
-      throw new Error("Session bridge is not active — create a new session");
+      // Try to reconnect if session exists in DB but bridge is gone (e.g. after control plane restart)
+      active = await this.tryReconnect(sessionId);
     }
 
     // Persist user message
@@ -167,6 +225,20 @@ class AgentManager {
     }
   }
 
+  async respondToQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void> {
+    const active = this.activeSessions.get(sessionId);
+    if (!active) throw new Error("Session not active");
+    if (!(active.bridge instanceof OpenCodeBridge)) throw new Error("Questions are only supported for OpenCode");
+    await (active.bridge as OpenCodeBridge).respondToQuestion(questionId, answers);
+  }
+
+  async rejectQuestion(sessionId: string, questionId: string): Promise<void> {
+    const active = this.activeSessions.get(sessionId);
+    if (!active) throw new Error("Session not active");
+    if (!(active.bridge instanceof OpenCodeBridge)) throw new Error("Questions are only supported for OpenCode");
+    await (active.bridge as OpenCodeBridge).rejectQuestion(questionId);
+  }
+
   async revert(sessionId: string, messageId?: string): Promise<any> {
     const active = this.activeSessions.get(sessionId);
     if (!active) throw new Error("Session not active");
@@ -192,6 +264,42 @@ class AgentManager {
     return { session, messages };
   }
 
+  async getTodos(sessionId: string): Promise<{ id: string; content: string; status: string; priority: string }[]> {
+    const active = this.activeSessions.get(sessionId);
+    if (!active || !(active.bridge instanceof OpenCodeBridge)) return [];
+    return (active.bridge as OpenCodeBridge).getTodos();
+  }
+
+  async getPendingItems(sessionId: string): Promise<{ approvals: any[]; questions: any[] }> {
+    const active = this.activeSessions.get(sessionId);
+    if (!active || !(active.bridge instanceof OpenCodeBridge)) {
+      return { approvals: [], questions: [] };
+    }
+    const bridge = active.bridge as OpenCodeBridge;
+    try {
+      const [permissions, questions] = await Promise.all([
+        bridge.listPendingPermissions(),
+        bridge.listPendingQuestions(),
+      ]);
+      const approvals = permissions.map((p: any) => ({
+        id: p.id,
+        action: p.permission || "permission",
+        detail: {
+          permission: p.permission,
+          patterns: p.patterns,
+          metadata: p.metadata,
+        },
+      }));
+      const mappedQuestions = questions.map((q: any) => ({
+        id: q.id,
+        questions: q.questions || [],
+      }));
+      return { approvals, questions: mappedQuestions };
+    } catch {
+      return { approvals: [], questions: [] };
+    }
+  }
+
   deleteSession(sessionId: string): void {
     const active = this.activeSessions.get(sessionId);
     if (active) {
@@ -210,6 +318,35 @@ class AgentManager {
       active.bridge.destroy().catch(() => {});
     }
     this.activeSessions.clear();
+  }
+
+  /** Attempt to reconnect a bridge for a session that exists in DB but lost its in-memory bridge */
+  private async tryReconnect(sessionId: string): Promise<ActiveSession> {
+    const session = getDatabase().findAgentSession(sessionId);
+    if (!session || session.status === "archived") {
+      throw new Error("Session not found or archived");
+    }
+    if (!session.thread_id) {
+      throw new Error("Session bridge is not active — create a new session");
+    }
+
+    const vm = getDatabase().findVMById(session.vm_id);
+    if (!vm) throw new Error("VM not found");
+
+    if (session.agent_type === "opencode") {
+      const bridge = new OpenCodeBridge(vm.id, vm.opencode_port, vm.opencode_password || "");
+      const active: ActiveSession = { bridge, vmId: session.vm_id, pendingText: "" };
+      this.activeSessions.set(sessionId, active);
+
+      bridge.onEvent((event: AgentEvent) => {
+        this.handleEvent(sessionId, active, event);
+      });
+
+      await bridge.reconnect(session.thread_id, { cwd: session.cwd || undefined });
+      return active;
+    }
+
+    throw new Error("Session bridge is not active — create a new session");
   }
 
   private handleEvent(sessionId: string, active: ActiveSession, event: AgentEvent): void {
@@ -235,13 +372,25 @@ class AgentManager {
         this.maybeSetTitle(sessionId, event.text);
         break;
 
+      case "reasoning.completed":
+        if (event.text) {
+          getDatabase().insertAgentMessage({
+            id: nanoid(),
+            session_id: sessionId,
+            role: "reasoning",
+            content: event.text,
+            metadata: null,
+          });
+        }
+        break;
+
       case "tool.completed":
         getDatabase().insertAgentMessage({
           id: nanoid(),
           session_id: sessionId,
           role: "tool",
           content: typeof event.result === "string" ? event.result : JSON.stringify(event.result),
-          metadata: JSON.stringify({ tool: event.tool }),
+          metadata: JSON.stringify({ tool: event.tool, input: event.input }),
         });
         break;
 

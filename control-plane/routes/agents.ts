@@ -34,7 +34,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(503).send({ error: "VM is not available. Please try again." });
     }
 
-    const body = request.body as { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy } | undefined;
+    const body = request.body as { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy; prompt?: string } | undefined;
     const model = body?.model?.trim() || undefined;
     const providerID = body?.providerID?.trim() || undefined;
     const modelID = body?.modelID?.trim() || undefined;
@@ -42,9 +42,10 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const effort = body?.effort || undefined;
     const approvalPolicy = body?.approvalPolicy || undefined;
     const sandboxPolicy = body?.sandboxPolicy || undefined;
+    const prompt = body?.prompt?.trim() || undefined;
 
     try {
-      const session = await agentManager.createSession(id, type as AgentType, { model, providerID, modelID, cwd, effort, approvalPolicy, sandboxPolicy });
+      const session = await agentManager.createSession(id, type as AgentType, { model, providerID, modelID, cwd, effort, approvalPolicy, sandboxPolicy, prompt });
       getDatabase().emitAdminEvent("agent.session_created", id, request.userId, { agentType: type, sessionId: session.id });
       return reply.status(201).send(session);
     } catch (err: any) {
@@ -88,7 +89,14 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "Session does not belong to this VM" });
     }
 
-    return result;
+    // Fetch pending approvals/questions and todos from OpenCode so the dashboard
+    // can restore them when navigating back to a busy session.
+    const [pending, todos] = await Promise.all([
+      agentManager.getPendingItems(sid),
+      agentManager.getTodos(sid),
+    ]);
+
+    return { ...result, pendingApprovals: pending.approvals, pendingQuestions: pending.questions, todos };
   });
 
   // POST /vms/:id/sessions/:sid/message — Send message to agent
@@ -193,6 +201,32 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
     try {
       await agentManager.respondToApproval(sid, body.approvalId, body.decision as ApprovalDecision);
+      return { ok: true };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
+  // POST /vms/:id/sessions/:sid/question — Respond to a question from OpenCode
+  app.post("/vms/:id/sessions/:sid/question", async (request, reply) => {
+    const { id, sid } = request.params as { id: string; sid: string };
+    const body = request.body as { questionId?: string; answers?: string[][]; reject?: boolean };
+
+    if (!body.questionId) {
+      return reply.status(400).send({ error: "questionId is required" });
+    }
+
+    const role = getDatabase().checkAccess(id, request.userId);
+    if (!role || role === "viewer") {
+      return reply.status(403).send({ error: "Editor or owner access required" });
+    }
+
+    try {
+      if (body.reject) {
+        await agentManager.rejectQuestion(sid, body.questionId);
+      } else {
+        await agentManager.respondToQuestion(sid, body.questionId, body.answers || []);
+      }
       return { ok: true };
     } catch (err: any) {
       return reply.status(500).send({ error: err.message });

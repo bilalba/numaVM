@@ -16,6 +16,7 @@ export interface IVMStore {
   updateVMContainerId(id: string, containerId: string): void;
   updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: number, vmPid: number | null): void;
   updateVMSnapshotPath(id: string, snapshotPath: string | null): void;
+  updateVMPublic(id: string, isPublic: boolean): void;
   findVMBySshPort(port: number): VM | undefined;
   getAuthorizedUsersForVM(vmId: string): { id: string; ssh_public_keys: string | null; github_username: string | null }[];
 }
@@ -54,6 +55,7 @@ export interface IAgentStore {
   insertAgentMessage(m: Pick<AgentMessage, "id" | "session_id" | "role" | "content" | "metadata">): void;
   findMessagesBySession(sessionId: string): AgentMessage[];
   deleteAgentSession(id: string): void;
+  deleteAgentSessionsByVM(vmId: string): void;
 }
 
 export interface IInfraStore {

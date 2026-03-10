@@ -13,6 +13,7 @@ import {
   updateVMContainerId as _updateVMContainerId,
   updateVMInfo as _updateVMInfo,
   updateVMSnapshotPath as _updateVMSnapshotPath,
+  updateVMPublic as _updateVMPublic,
   findVMBySshPort as _findVMBySshPort,
   getAuthorizedUsersForVM as _getAuthorizedUsersForVM,
   grantAccess as _grantAccess,
@@ -42,6 +43,7 @@ import {
   insertAgentMessage as _insertAgentMessage,
   findMessagesBySession as _findMessagesBySession,
   deleteAgentSession as _deleteAgentSession,
+  deleteAgentSessionsByVM as _deleteAgentSessionsByVM,
   getUsedPorts as _getUsedPorts,
   getUsedCids as _getUsedCids,
   insertTrafficRecord as _insertTrafficRecord,
@@ -67,6 +69,7 @@ export class SqliteDatabase implements IDatabase {
   updateVMContainerId(id: string, containerId: string): void { _updateVMContainerId(id, containerId); }
   updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: number, vmPid: number | null): void { _updateVMInfo(id, vmId, vmIp, vsockCid, vmPid); }
   updateVMSnapshotPath(id: string, snapshotPath: string | null): void { _updateVMSnapshotPath(id, snapshotPath); }
+  updateVMPublic(id: string, isPublic: boolean): void { _updateVMPublic(id, isPublic); }
   findVMBySshPort(port: number): VM | undefined { return _findVMBySshPort(port); }
   getAuthorizedUsersForVM(vmId: string): { id: string; ssh_public_keys: string | null; github_username: string | null }[] { return _getAuthorizedUsersForVM(vmId); }
 
@@ -102,6 +105,7 @@ export class SqliteDatabase implements IDatabase {
   insertAgentMessage(m: Pick<AgentMessage, "id" | "session_id" | "role" | "content" | "metadata">): void { _insertAgentMessage(m); }
   findMessagesBySession(sessionId: string): AgentMessage[] { return _findMessagesBySession(sessionId); }
   deleteAgentSession(id: string): void { _deleteAgentSession(id); }
+  deleteAgentSessionsByVM(vmId: string): void { _deleteAgentSessionsByVM(vmId); }
 
   // --- IInfraStore ---
   getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[] { return _getUsedPorts(); }

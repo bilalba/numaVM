@@ -5,6 +5,7 @@ import { customAlphabet } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
 import { fetchSshKeys } from "../services/github.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
+import { agentManager } from "../agents/manager.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
@@ -15,7 +16,7 @@ const DEFAULT_DISK_SIZE = 1;
 export function registerVMRoutes(app: FastifyInstance) {
   // Create VM
   app.post("/vms", async (request, reply) => {
-    const body = request.body as { name?: string; gh_repo?: string; private?: boolean; mem_size_mib?: number; disk_size_gib?: number; image?: string };
+    const body = request.body as { name?: string; gh_repo?: string; private?: boolean; mem_size_mib?: number; disk_size_gib?: number; image?: string; initial_prompt?: string };
 
     if (!body.name || typeof body.name !== "string" || body.name.length < 1 || body.name.length > 64) {
       return reply.status(400).send({ error: "name is required (1-64 chars)" });
@@ -186,6 +187,16 @@ export function registerVMRoutes(app: FastifyInstance) {
 
         getDatabase().emitAdminEvent("vm.created", slug, userId, { name: body.name, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib, ...(repoFullName ? { repo: repoFullName } : {}) });
 
+        // Auto-create OpenCode session with initial prompt if provided
+        const initialPrompt = body.initial_prompt?.trim();
+        if (initialPrompt) {
+          const safeName = (body.name || "workspace").toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "workspace";
+          const cwd = `/home/dev/${safeName}`;
+          agentManager.createSession(slug, "opencode", { cwd, prompt: initialPrompt }).catch((err) => {
+            console.error(`[vm] Failed to auto-create OpenCode session for ${slug}:`, err);
+          });
+        }
+
         // Poll VM init progress in background (non-blocking) for dashboard status_detail
         const progressLabels: Record<string, string> = {
           cloning: "Cloning repository",
@@ -247,6 +258,7 @@ export function registerVMRoutes(app: FastifyInstance) {
         disk_size_gib: e.disk_size_gib,
         image: e.image,
         image_version: e.image_version,
+        is_public: !!e.is_public,
       })),
     };
   });
@@ -336,6 +348,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       disk_size_gib: vm.disk_size_gib,
       image: vm.image,
       image_version: vm.image_version,
+      is_public: !!vm.is_public,
       ...(quotaError ? { quota_error: quotaError } : {}),
       ...(diskQuotaError ? { disk_quota_error: diskQuotaError } : {}),
       ...(dataQuotaError ? { data_quota_error: dataQuotaError } : {}),
@@ -369,7 +382,8 @@ export function registerVMRoutes(app: FastifyInstance) {
     // Cleanup Caddy route (best-effort)
     try { await getReverseProxy().removeRoute(id); } catch { /* may not exist */ }
 
-    // Cleanup DB
+    // Cleanup DB (order matters: messages → sessions → access → VM)
+    getDatabase().deleteAgentSessionsByVM(id);
     getDatabase().revokeAllAccess(id);
     getDatabase().deleteVM(id);
 

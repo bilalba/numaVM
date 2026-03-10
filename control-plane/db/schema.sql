@@ -27,7 +27,7 @@ CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
 -- Agent sessions (Codex + OpenCode)
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id          TEXT PRIMARY KEY,
-  vm_id       TEXT NOT NULL REFERENCES vms(id),
+  vm_id       TEXT NOT NULL REFERENCES vms(id) ON DELETE CASCADE,
   agent_type  TEXT NOT NULL CHECK(agent_type IN ('codex', 'opencode')),
   thread_id   TEXT,
   title       TEXT,
@@ -43,8 +43,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_sessions_vm ON agent_sessions(vm_id);
 -- Agent messages (conversation history)
 CREATE TABLE IF NOT EXISTS agent_messages (
   id          TEXT PRIMARY KEY,
-  session_id  TEXT NOT NULL REFERENCES agent_sessions(id),
-  role        TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+  session_id  TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+  role        TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool', 'reasoning')),
   content     TEXT NOT NULL,
   metadata    TEXT,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
