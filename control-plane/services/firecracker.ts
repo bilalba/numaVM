@@ -721,21 +721,28 @@ export async function snapshotVM(vmId: string): Promise<void> {
   // 4. Kill Firecracker process
   killVmProcess(vm, vmId);
 
-  // 5. Clean up TAP device and DNAT rules (caller handles DNAT)
+  // 5. Clean up TAP device and DNAT rules (re-added on restore)
   destroyTap(vm.tapDev);
 
-  // 5b. Clean up IPv6 NAT + firewall rules (will be re-added on restore)
+  // 5b. Remove IPv4 DNAT + IPv6 NAT/firewall (re-added on restore)
   try {
     const { findVMById } = await import("../db/client.js");
     const { cidToVmIpv6 } = await import("./port-allocator.js");
     const vmRecord = findVMById(vmId);
-    const ula = cidToVmIpv6(vm.vsockCid);
-    if (vmRecord?.vm_ipv6 && ula && vmRecord.vm_ipv6 !== ula) {
-      removeIpv6Nat(vmRecord.vm_ipv6, ula);
+    if (vmRecord) {
+      // IPv4 DNAT — must be removed so wake-proxy can intercept while snapshotted
+      removeDnat(vmRecord.app_port, vm.vmIp, 3000);
+      removeDnat(vmRecord.opencode_port, vm.vmIp, 5000);
+
+      // IPv6 NAT + firewall
+      const ula = cidToVmIpv6(vm.vsockCid);
+      if (vmRecord.vm_ipv6 && ula && vmRecord.vm_ipv6 !== ula) {
+        removeIpv6Nat(vmRecord.vm_ipv6, ula);
+      }
+      removeIpv6FirewallRules(vmId, ula || vmRecord.vm_ipv6);
     }
-    removeIpv6FirewallRules(vmId, ula || vmRecord?.vm_ipv6);
   } catch (err) {
-    console.error(`[firecracker] Failed to clean up IPv6 rules on snapshot for ${vmId}:`, err);
+    console.error(`[firecracker] Failed to clean up NAT/firewall on snapshot for ${vmId}:`, err);
   }
 
   // 6. Clean up sockets

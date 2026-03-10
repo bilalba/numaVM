@@ -5,7 +5,7 @@ import { customAlphabet } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
 import { fetchSshKeys } from "../services/github.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
-import { bindWakeProxy, unbindWakeProxy } from "../services/wake-proxy.js";
+import { bindWakeProxy, unbindWakeProxy, bindAppWakeProxy, unbindAppWakeProxy } from "../services/wake-proxy.js";
 import { agentManager } from "../agents/manager.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
@@ -137,10 +137,11 @@ export function registerVMRoutes(app: FastifyInstance) {
     // Grant owner access (used by auth verify for subdomain gating)
     getDatabase().grantAccess(slug, request.userId, "owner");
 
-    // Bind wake-on-connect proxy for IPv6 (port 22 always, plus any future firewall rules)
+    // Bind wake-on-connect proxies (IPv6 + app ports)
     if (vmIpv6) {
       bindWakeProxy(slug, vmIpv6, []);
     }
+    bindAppWakeProxy(slug, appPort, opencodePort);
 
     // Return immediately — VM creation happens in the background.
     // Dashboard polls GET /vms/:id for status + status_detail.
@@ -378,8 +379,9 @@ export function registerVMRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "Only the owner can delete a VM" });
     }
 
-    // Tear down wake-on-connect proxy
+    // Tear down wake-on-connect proxies
     unbindWakeProxy(id);
+    unbindAppWakeProxy(id);
 
     // Cleanup VM (best-effort) — includes TAP, iptables DNAT, IPv6 firewall + NAT
     try {
@@ -435,7 +437,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       getDatabase().updateVMSnapshotPath(id, snapshotPath);
       getDatabase().updateVMStatus(id, "snapshotted");
 
-      try { await getReverseProxy().removeRoute(id); } catch { /* ok */ }
+      // Caddy route stays — wake-proxy on appPort handles connections while snapshotted
 
       getDatabase().emitAdminEvent("vm.paused", id, request.userId);
 
@@ -558,10 +560,11 @@ export function registerVMRoutes(app: FastifyInstance) {
     });
     getDatabase().grantAccess(slug, request.userId, "owner");
 
-    // Bind wake-on-connect proxy for IPv6
+    // Bind wake-on-connect proxies (IPv6 + app ports)
     if (vmIpv6) {
       bindWakeProxy(slug, vmIpv6, []);
     }
+    bindAppWakeProxy(slug, appPort, opencodePort);
 
     // Boot new VM from copied disks (createAndStartVM skips rootfs/data creation if files exist)
     try {
@@ -667,11 +670,15 @@ export function registerVMRoutes(app: FastifyInstance) {
         statusMessage = "loading";
     }
 
-    // If snapshotted, trigger a wake (check quota first)
+    // If snapshotted, trigger a wake and redirect back to the VM's subdomain
     let isQuotaError = false;
     if (vm && (status === "snapshotted" || status === "paused")) {
       try {
         await ensureVMRunning(id);
+        // VM is now running — redirect back so Caddy proxies to the actual app
+        const baseDomain = getBaseDomain();
+        const scheme = baseDomain === "localhost" ? "http" : "https";
+        return reply.redirect(`${scheme}://${id}.${baseDomain}/`);
       } catch (err: any) {
         if (err instanceof QuotaExceededError) {
           isQuotaError = true;
@@ -688,8 +695,8 @@ export function registerVMRoutes(app: FastifyInstance) {
       }
     }
 
-    // Only auto-refresh for states that will resolve (waking/creating), not for errors/quota
-    const shouldAutoRefresh = !isQuotaError && (status === "snapshotted" || status === "paused" || status === "creating");
+    // Auto-refresh only for "creating" (snapshotted/paused now redirect after wake)
+    const shouldAutoRefresh = !isQuotaError && status === "creating";
 
     const html = `<!DOCTYPE html>
 <html>

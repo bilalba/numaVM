@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
+import { agentManager } from "../agents/manager.js";
 
 /**
  * Network Idle Monitor
@@ -96,6 +97,10 @@ async function pollOnce(): Promise<void> {
 
       snapshottingSet.add(vm.id);
       try {
+        // Tear down agent bridges before snapshot so SSE disconnects
+        // don't falsely mark idle sessions as "error"
+        agentManager.destroyBridgesForVM(vm.id);
+
         // Snapshot the VM
         await engine.snapshotVM(vm.id);
 
@@ -104,10 +109,7 @@ async function pollOnce(): Promise<void> {
         db.updateVMSnapshotPath(vm.id, snapshotPath);
         db.updateVMStatus(vm.id, "snapshotted");
 
-        // Remove Caddy route (requests will hit status page / trigger wake)
-        try {
-          await proxy.removeRoute(vm.id);
-        } catch { /* ok */ }
+        // Caddy route stays — wake-proxy on appPort handles connections while snapshotted
 
         // Clean up traffic tracking
         trafficMap.delete(vm.id);
@@ -175,11 +177,12 @@ async function pollOnce(): Promise<void> {
         if (snapshottingSet.has(vmId)) continue;
         snapshottingSet.add(vmId);
         try {
+          agentManager.destroyBridgesForVM(vmId);
           await engine.snapshotVM(vmId);
           const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${vmId}/snapshot`;
           db.updateVMSnapshotPath(vmId, snapshotPath);
           db.updateVMStatus(vmId, "snapshotted");
-          try { await proxy.removeRoute(vmId); } catch { /* ok */ }
+          // Caddy route stays — wake-proxy handles connections
           trafficMap.delete(vmId);
           db.emitAdminEvent("vm.data_limit_paused", vmId, userId, { usedBytes: usage, maxBytes: plan.max_data_bytes });
           console.log(`[idle-monitor] VM ${vmId} paused (data limit)`);

@@ -109,10 +109,12 @@ ${scheme}admin.${domain} {${tlsDirective}
         }
     }`;
 
-    if (vm.status === "running") {
-      // Running: proxy to VM with error fallback to status page
+    if (vm.status === "running" || vm.status === "snapshotted" || vm.status === "paused") {
+      // Running or snapshotted/paused: proxy to app port.
+      // When snapshotted, the wake-proxy on appPort catches the connection,
+      // wakes the VM, and bridges through — so the client gets the actual page.
       config += `
-# VM: ${vm.id}${vm.is_public ? " (public)" : ""}
+# VM: ${vm.id}${vm.status !== "running" ? ` (${vm.status})` : ""}${vm.is_public ? " (public)" : ""}
 ${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
     handle_errors {
         rewrite * /vms/${vm.id}/status-page
@@ -122,7 +124,7 @@ ${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
 }
 `;
     } else {
-      // Not running: auth-gate then always show status page (triggers wake)
+      // Creating/error: show status page
       config += `
 # VM: ${vm.id} (${vm.status}${vm.is_public ? ", public" : ""})
 ${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
