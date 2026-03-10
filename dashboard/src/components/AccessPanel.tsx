@@ -7,14 +7,18 @@ interface AccessPanelProps {
   vmId: string;
   currentUserRole: string;
   sshCommand?: string;
+  isPublic: boolean;
+  vmUrl: string;
+  onPublicChange: (isPublic: boolean) => void;
 }
 
-export function AccessPanel({ vmId, currentUserRole, sshCommand }: AccessPanelProps) {
+export function AccessPanel({ vmId, currentUserRole, sshCommand, isPublic, vmUrl, onPublicChange }: AccessPanelProps) {
   const [access, setAccess] = useState<AccessEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("editor");
   const [submitting, setSubmitting] = useState(false);
+  const [togglingPublic, setTogglingPublic] = useState(false);
   const { toast } = useToast();
   const isOwner = currentUserRole === "owner";
 
@@ -68,8 +72,61 @@ export function AccessPanel({ vmId, currentUserRole, sshCommand }: AccessPanelPr
     return <div className="text-neutral-500 text-xs py-8 text-center">Loading access list...</div>;
   }
 
+  const handleTogglePublic = async () => {
+    setTogglingPublic(true);
+    try {
+      await api.setVMPublic(vmId, !isPublic);
+      onPublicChange(!isPublic);
+      toast(isPublic ? "VM is now private" : "VM is now public", "success");
+    } catch (err: any) {
+      toast(err.message, "error");
+    } finally {
+      setTogglingPublic(false);
+    }
+  };
+
   return (
     <div className="max-w-2xl">
+      {/* Public URL toggle (owner only) */}
+      {isOwner && (
+        <div className="mb-6 bg-panel-chat border border-neutral-200 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-xs font-semibold">Public URL</h3>
+              <p className="text-[10px] text-neutral-500 mt-1">
+                {isPublic
+                  ? "Anyone with the link can access this VM's URL without signing in."
+                  : "Only invited collaborators can access this VM's URL."}
+              </p>
+            </div>
+            <button
+              onClick={handleTogglePublic}
+              disabled={togglingPublic}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border transition-colors duration-200 focus:outline-none disabled:opacity-50 ${
+                isPublic ? "bg-foreground border-foreground" : "bg-neutral-200 border-neutral-300"
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform duration-200 ${
+                  isPublic ? "translate-x-4" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </div>
+          {isPublic && (
+            <div className="mt-3 flex items-center gap-2">
+              <code className="text-[10px] bg-neutral-100 border border-neutral-200 px-2 py-1 flex-1 truncate">{vmUrl.replace(/^http:/, "https:")}</code>
+              <button
+                onClick={() => { navigator.clipboard.writeText(vmUrl.replace(/^http:/, "https:")); toast("URL copied", "success"); }}
+                className="text-[10px] underline underline-offset-4 opacity-60 hover:opacity-80 cursor-pointer shrink-0"
+              >
+                Copy
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* SSH access */}
       <div className="mb-6">
         <SshKeysPanel vmId={vmId} sshCommand={sshCommand} />

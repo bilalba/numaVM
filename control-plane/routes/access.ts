@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { getDatabase } from "../adapters/providers.js";
+import { getDatabase, getReverseProxy } from "../adapters/providers.js";
 
 export function registerAccessRoutes(app: FastifyInstance) {
   // Grant or revoke access
@@ -43,6 +43,39 @@ export function registerAccessRoutes(app: FastifyInstance) {
 
     getDatabase().grantAccess(id, targetUser.id, body.role);
     return { ok: true, message: `${body.role} access granted to ${body.email}` };
+  });
+
+  // Toggle public visibility
+  app.post("/vms/:id/public", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { is_public?: boolean };
+
+    if (typeof body.is_public !== "boolean") {
+      return reply.status(400).send({ error: "is_public (boolean) is required" });
+    }
+
+    const vm = getDatabase().findVMById(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const callerRole = getDatabase().checkAccess(id, request.userId);
+    if (callerRole !== "owner") {
+      return reply.status(403).send({ error: "Only the owner can change public visibility" });
+    }
+
+    getDatabase().updateVMPublic(id, body.is_public);
+
+    // Reload Caddy so the forward_auth directive is added/removed
+    try {
+      await getReverseProxy().reloadConfig();
+    } catch (err: any) {
+      console.error(`[access] Failed to reload Caddy after toggling public for ${id}:`, err);
+    }
+
+    getDatabase().emitAdminEvent("vm.public_changed", id, request.userId, { is_public: body.is_public });
+
+    return { ok: true, is_public: body.is_public };
   });
 
   // List users with access

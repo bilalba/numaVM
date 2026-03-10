@@ -22,10 +22,11 @@ interface VMRoute {
   id: string;
   app_port: number;
   status: string;
+  is_public: number;
 }
 
 function getAllVMs(): VMRoute[] {
-  return getDatabase().raw<VMRoute>("SELECT id, app_port, status FROM vms WHERE status NOT IN ('error')");
+  return getDatabase().raw<VMRoute>("SELECT id, app_port, status, is_public FROM vms WHERE status NOT IN ('error')");
 }
 
 function generateCaddyfile(vms: VMRoute[]): string {
@@ -98,7 +99,7 @@ ${scheme}admin.${domain} {${tlsDirective}
 
   // Dynamic VM routes — ALL VMs get routes (not just running) so auth + status page work
   for (const vm of vms) {
-    const forwardAuth = `
+    const forwardAuth = vm.is_public ? "" : `
     forward_auth localhost:${authPort} {
         uri /verify
         copy_headers X-User-Id X-User-Email
@@ -111,7 +112,7 @@ ${scheme}admin.${domain} {${tlsDirective}
     if (vm.status === "running") {
       // Running: proxy to VM with error fallback to status page
       config += `
-# VM: ${vm.id}
+# VM: ${vm.id}${vm.is_public ? " (public)" : ""}
 ${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
     handle_errors {
         rewrite * /vms/${vm.id}/status-page
@@ -123,7 +124,7 @@ ${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
     } else {
       // Not running: auth-gate then always show status page (triggers wake)
       config += `
-# VM: ${vm.id} (${vm.status})
+# VM: ${vm.id} (${vm.status}${vm.is_public ? ", public" : ""})
 ${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
     rewrite * /vms/${vm.id}/status-page
     reverse_proxy localhost:${cpPort}
