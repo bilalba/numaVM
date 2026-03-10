@@ -239,8 +239,8 @@ export function VMList() {
     setSelectedRepo(null);
     setNewRepoName("");
     setNewRepoPrivate(true);
-    setMemSizeMib(512);
-    setDiskSizeGib(5);
+    setMemSizeMib(ramQuota?.valid_mem_sizes?.[0] ?? 256);
+    setDiskSizeGib(ramQuota?.valid_disk_sizes?.[0] ?? 1);
     setSelectedImage("alpine");
     setShowAdvanced(false);
   };
