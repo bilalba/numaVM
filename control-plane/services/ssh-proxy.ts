@@ -319,8 +319,15 @@ function handleConnection(client: Connection, _info: ClientInfo) {
 
         wakePromise
           .then(() => {
-            const internalKeyPath = getVMEngine().getInternalSshKeyPath();
-            const internalKey = readFileSync(internalKeyPath);
+            const engine = getVMEngine();
+            let internalKey: Buffer;
+            if (engine.connectToVM) {
+              // Multi-node: get cached private key from remote engine
+              internalKey = (engine as any).getInternalSshPrivateKey(vm.id);
+            } else {
+              const internalKeyPath = engine.getInternalSshKeyPath();
+              internalKey = readFileSync(internalKeyPath);
+            }
 
             const upstream = new Client();
 
