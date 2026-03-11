@@ -245,7 +245,7 @@ fi
 
 # Write AGENTS.md into project directory (gives AI agents context about the environment)
 if [ -f /etc/numavm/BASE_AGENTS.md ] && [ -d "${WORK_DIR}" ]; then
-  cp /etc/numavm/BASE_AGENTS.md "${WORK_DIR}/AGENTS.md"
+  sed "s/{{VM_NAME}}/${ENV_NAME:-workspace}/g" /etc/numavm/BASE_AGENTS.md > "${WORK_DIR}/AGENTS.md"
   chown dev:dev "${WORK_DIR}/AGENTS.md"
 fi
 

@@ -4,7 +4,7 @@ You are running inside a cloud VM managed by numavm.com. This is an isolated dev
 
 ## Web Preview
 
-Port **3000** is exposed and accessible to the user via a public URL: **https://{{VM_SLUG}}.numavm.com**
+Port **3000** is exposed and accessible to the user via a public URL: **https://{{VM_NAME}}.numavm.com**
 
 Anything you serve on port 3000 will be immediately visible at that URL. Use this to show off what you build — the user can see it in real time.
 

@@ -143,7 +143,7 @@ class AgentManager {
         // (user message already persisted above — call bridge directly to avoid duplicate)
         if (prompt) {
           if (bridge instanceof OpenCodeBridge) {
-            await (bridge as OpenCodeBridge).writeAgentsMd(options?.cwd, vmId).catch(() => {});
+            await (bridge as OpenCodeBridge).writeAgentsMd(options?.cwd, vm.name).catch(() => {});
           }
           getDatabase().updateAgentSessionStatus(sessionId, "busy");
           active.pendingText = "";

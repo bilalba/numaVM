@@ -143,7 +143,7 @@ export class OpenCodeBridge implements AgentBridge {
   }
 
   /** Write AGENTS.md into the project directory if it doesn't already exist */
-  async writeAgentsMd(cwd?: string, vmSlug?: string): Promise<void> {
+  async writeAgentsMd(cwd?: string, vmName?: string): Promise<void> {
     if (!cwd) return;
     try {
       // Read the base template from the repo's vm/ directory
@@ -152,8 +152,8 @@ export class OpenCodeBridge implements AgentBridge {
       let content = readFileSync(basePath, "utf-8");
 
       // Inject the VM's public URL
-      if (vmSlug) {
-        content = content.replace("{{VM_SLUG}}", vmSlug);
+      if (vmName) {
+        content = content.replace("{{VM_NAME}}", vmName);
       }
 
       // Write to the VM via SSH exec (only if it doesn't already exist)
