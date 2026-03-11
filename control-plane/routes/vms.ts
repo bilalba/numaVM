@@ -305,12 +305,15 @@ export function registerVMRoutes(app: FastifyInstance) {
     return { available: true };
   });
 
-  // Get user's quota usage (RAM + data transfer)
+  // Get user's quota usage (RAM + data transfer + LLM)
   app.get("/vms/quota", async (request) => {
     const userPlan = getDatabase().getUserPlan(request.userId);
     const currentRam = getDatabase().getUserProvisionedRam(request.userId);
     const currentDisk = getDatabase().getUserProvisionedDisk(request.userId);
     const dataUsage = getDatabase().getUserMonthlyDataUsage(request.userId);
+
+    const llmUsage = await getLifecycleHook().getLLMUsage?.(request.userId) ?? null;
+
     return {
       used_mib: currentRam,
       max_mib: userPlan.max_ram_mib,
@@ -327,6 +330,11 @@ export function registerVMRoutes(app: FastifyInstance) {
       valid_mem_sizes: userPlan.valid_mem_sizes,
       trial_active: userPlan.trial_active,
       trial_expires_at: userPlan.trial_expires_at,
+      ...(llmUsage ? {
+        llm_spend: llmUsage.spend,
+        llm_budget: llmUsage.budget,
+        llm_used_pct: Math.round((llmUsage.spend / llmUsage.budget) * 100),
+      } : {}),
     };
   });
 

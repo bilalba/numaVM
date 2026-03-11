@@ -52,6 +52,9 @@ export interface Quota {
   valid_mem_sizes: number[];
   trial_active: boolean;
   trial_expires_at: string | null;
+  llm_spend?: number;
+  llm_budget?: number;
+  llm_used_pct?: number;
 }
 
 /** @deprecated Use Quota instead */

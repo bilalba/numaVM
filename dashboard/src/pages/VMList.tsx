@@ -807,6 +807,21 @@ export function VMList() {
 
       )}
 
+      {/* LLM credits — shown when lifecycle hook provides usage */}
+      {ramQuota && vms.length > 0 && ramQuota.llm_budget != null && (
+        (ramQuota.llm_used_pct ?? 0) >= 80 ? (
+          <div className={`mt-4 px-4 py-2.5 border text-[11px] ${(ramQuota.llm_used_pct ?? 0) >= 100 ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+            {(ramQuota.llm_used_pct ?? 0) >= 100
+              ? `LLM credit limit reached ($${(ramQuota.llm_spend ?? 0).toFixed(2)} / $${ramQuota.llm_budget.toFixed(2)}).`
+              : `$${(ramQuota.llm_spend ?? 0).toFixed(2)} / $${ramQuota.llm_budget.toFixed(2)} LLM credits used.`}
+          </div>
+        ) : (
+          <p className="mt-4 text-[10px] text-neutral-400 text-right">
+            LLM: ${(ramQuota.llm_spend ?? 0).toFixed(2)} / ${ramQuota.llm_budget.toFixed(2)}
+          </p>
+        )
+      )}
+
       {/* Data transfer — subtle inline, only prominent when near/over limit */}
       {ramQuota && vms.length > 0 && ramQuota.data_max_bytes > 0 && (
         ramQuota.data_used_pct >= 80 ? (

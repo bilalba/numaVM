@@ -155,6 +155,24 @@ export function Usage() {
         </section>
       )}
 
+      {/* LLM Credits */}
+      {quota.llm_budget != null && (
+        <section className="mb-8">
+          <div className="flex items-baseline justify-between mb-2">
+            <span className="text-foreground font-medium">LLM Credits</span>
+            <span className="text-neutral-400">
+              ${(quota.llm_spend ?? 0).toFixed(2)} / ${quota.llm_budget.toFixed(2)} ({quota.llm_used_pct ?? 0}%)
+            </span>
+          </div>
+          <div className="w-full h-1.5 bg-neutral-200 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${barColor(quota.llm_used_pct ?? 0)}`}
+              style={{ width: `${Math.min(quota.llm_used_pct ?? 0, 100)}%` }}
+            />
+          </div>
+        </section>
+      )}
+
       {/* Plan */}
       <section className="border border-neutral-200 rounded p-4">
         <div className="flex items-center justify-between">
