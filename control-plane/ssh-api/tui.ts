@@ -600,11 +600,11 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
   const successItems: MenuItem[] = [
     {
       label: "Connect now",
-      description: `ssh ${slug}@ssh.${baseDomain}`,
+      description: `ssh ${name}@ssh.${baseDomain}`,
       action: () => {
         // Exit TUI and show connection info
         channel.write(SHOW_CURSOR + ALT_SCREEN_OFF);
-        channel.write(`\r\nConnect with: ${CYAN}ssh ${slug}@ssh.${baseDomain}${RESET}\r\n`);
+        channel.write(`\r\nConnect with: ${CYAN}ssh ${name}@ssh.${baseDomain}${RESET}\r\n`);
         channel.exit(0);
         channel.close();
       },
@@ -620,8 +620,8 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     `VM Created`,
     ``,
     `  ${GREEN}✓${RESET} ${BOLD}${name}${RESET} ${DIM}(${slug})${RESET}`,
-    `  URL:  ${CYAN}https://${slug}.${baseDomain}${RESET}`,
-    `  SSH:  ${CYAN}ssh ${slug}@ssh.${baseDomain}${RESET}`,
+    `  URL:  ${CYAN}https://${name}.${baseDomain}${RESET}`,
+    `  SSH:  ${CYAN}ssh ${name}@ssh.${baseDomain}${RESET}`,
   ].join("\n");
 
   await showMenu(channel, title, successItems, () => showAuthenticatedTui(channel, user, false));
@@ -640,8 +640,8 @@ async function showVMDetail(channel: ServerChannel, user: SshUser, vmId: string)
     `  Status:  ${statusBadge(vm.status)}`,
     `  Role:    ${vm.role}`,
     `  RAM:     ${vm.mem_size_mib} MiB`,
-    `  URL:     ${CYAN}https://${vm.id}.${getBaseDomain()}${RESET}`,
-    `  SSH:     ${CYAN}ssh ${vm.id}@ssh.${getBaseDomain()}${RESET}`,
+    `  URL:     ${CYAN}https://${vm.name}.${getBaseDomain()}${RESET}`,
+    `  SSH:     ${CYAN}ssh ${vm.name}@ssh.${getBaseDomain()}${RESET}`,
     "",
     `  ${DIM}Press any key to go back...${RESET}`,
   ];

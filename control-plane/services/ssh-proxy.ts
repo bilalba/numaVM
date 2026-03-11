@@ -530,7 +530,7 @@ export async function startSshProxy(): Promise<void> {
   });
 
   server.listen(port, "0.0.0.0", () => {
-    console.log(`[ssh-proxy] Listening on port ${port} (username = VM slug)`);
+    console.log(`[ssh-proxy] Listening on port ${port} (username = VM name)`);
   });
 
   sshServer = server;
