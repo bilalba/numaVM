@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { customAlphabet } from "nanoid";
-import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
+import { getDatabase, getVMEngine, getReverseProxy, getLifecycleHook } from "../adapters/providers.js";
 import { fetchSshKeys } from "../services/github.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
 import { bindWakeProxy, unbindWakeProxy, bindAppWakeProxy, unbindAppWakeProxy } from "../services/wake-proxy.js";
@@ -159,6 +159,14 @@ export function registerVMRoutes(app: FastifyInstance) {
     const userId = request.userId;
     (async () => {
       try {
+        // Call lifecycle hook for extra kernel args (e.g. LiteLLM config injection)
+        let extraKernelArgs: string[] = [];
+        try {
+          extraKernelArgs = await getLifecycleHook().getExtraKernelArgs?.({ vmId: slug, userId }) ?? [];
+        } catch (err) {
+          console.error(`[vm] Lifecycle hook getExtraKernelArgs failed for ${slug}:`, err);
+        }
+
         const vmId = await getVMEngine().createAndStartVM({
           slug,
           name: body.name,
@@ -179,6 +187,7 @@ export function registerVMRoutes(app: FastifyInstance) {
           memSizeMib: memSizeMib,
           diskSizeGib: diskSizeGib,
           image,
+          extraKernelArgs,
           onProgress: (detail: string) => {
             getDatabase().updateVMStatusDetail(slug, detail);
           },
@@ -377,6 +386,13 @@ export function registerVMRoutes(app: FastifyInstance) {
     const role = getDatabase().checkAccess(id, request.userId);
     if (role !== "owner") {
       return reply.status(403).send({ error: "Only the owner can delete a VM" });
+    }
+
+    // Call lifecycle hook before destroy (e.g. cleanup external resources)
+    try {
+      await getLifecycleHook().onVMDestroy?.({ vmId: id, userId: request.userId });
+    } catch (err) {
+      console.error(`[vm] Lifecycle hook onVMDestroy failed for ${id}:`, err);
     }
 
     // Tear down wake-on-connect proxies

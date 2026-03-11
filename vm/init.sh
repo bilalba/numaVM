@@ -221,6 +221,28 @@ fi
 
 chown dev:dev /home/dev/.env /home/dev/.bashrc /home/dev/.ssh/environment
 
+# --- Write extra init files (generic hook for injecting config at boot) ---
+if [ -n "${DM_init_files:-}" ]; then
+  # DM_init_files is a base64-encoded JSON object: {"path": "base64_content", ...}
+  echo "${DM_init_files}" | base64 -d | python3 -c "
+import json, sys, os, base64
+data = json.load(sys.stdin)
+for path, content_b64 in data.items():
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(base64.b64decode(content_b64).decode())
+    if path.startswith('/home/dev'):
+        os.system(f'chown dev:dev \"{path}\"')
+" 2>/dev/null || true
+fi
+
+# --- Append extra env vars ---
+if [ -n "${DM_extra_env:-}" ]; then
+  echo "${DM_extra_env}" | base64 -d >> /home/dev/.env
+  # Also append to .ssh/environment (without 'export ' prefix)
+  echo "${DM_extra_env}" | base64 -d | sed 's/^export //' >> /home/dev/.ssh/environment
+fi
+
 # Write AGENTS.md into project directory (gives AI agents context about the environment)
 if [ -f /etc/numavm/BASE_AGENTS.md ] && [ -d "${WORK_DIR}" ]; then
   cp /etc/numavm/BASE_AGENTS.md "${WORK_DIR}/AGENTS.md"

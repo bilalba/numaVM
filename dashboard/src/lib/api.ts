@@ -117,6 +117,8 @@ export interface AgentSession {
   thread_id: string | null;
   title: string | null;
   cwd: string | null;
+  model: string | null;
+  provider: string | null;
   status: string;
   created_at: string;
   updated_at: string;

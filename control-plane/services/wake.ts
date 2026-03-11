@@ -1,4 +1,4 @@
-import { getDatabase, getVMEngine, getReverseProxy, getIdleMonitor } from "../adapters/providers.js";
+import { getDatabase, getVMEngine, getReverseProxy, getIdleMonitor, getLifecycleHook } from "../adapters/providers.js";
 import type { VM } from "../adapters/types.js";
 import { cidToVmIpv6 } from "./port-allocator.js";
 
@@ -205,6 +205,14 @@ async function createFreshVM(vmId: string, vm: VM): Promise<void> {
   // Read VM config from the saved env.json (delegated to engine)
   const vmConfig = engine.getVMConfig(vmId);
 
+  // Call lifecycle hook for extra kernel args (e.g. LiteLLM config injection)
+  let extraKernelArgs: string[] = [];
+  try {
+    extraKernelArgs = await getLifecycleHook().getExtraKernelArgs?.({ vmId, userId: vm.owner_id }) ?? [];
+  } catch (err) {
+    console.error(`[wake] Lifecycle hook getExtraKernelArgs failed for ${vmId}:`, err);
+  }
+
   const vmIpv6Internal = cidToVmIpv6(vm.vsock_cid!);
   await engine.createAndStartVM({
     slug: vmId,
@@ -223,5 +231,6 @@ async function createFreshVM(vmId: string, vm: VM): Promise<void> {
     vmIpv6: vm.vm_ipv6,
     vmIpv6Internal,
     memSizeMib: vm.mem_size_mib,
+    extraKernelArgs,
   });
 }

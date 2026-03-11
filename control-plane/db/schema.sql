@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   thread_id   TEXT,
   title       TEXT,
   cwd         TEXT,
+  model       TEXT,
+  provider    TEXT,
   status      TEXT NOT NULL DEFAULT 'idle'
               CHECK(status IN ('idle', 'busy', 'error', 'archived')),
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,

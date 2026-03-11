@@ -428,6 +428,21 @@ class AgentManager {
         break;
       }
 
+      case "session.info": {
+        const model = (event as any).model || null;
+        const provider = (event as any).provider || null;
+        if (model || provider) {
+          // Merge with existing — don't overwrite model with null
+          const existing = getDatabase().findAgentSession(sessionId);
+          getDatabase().updateAgentSessionModel(
+            sessionId,
+            model || existing?.model || null,
+            provider || existing?.provider || null,
+          );
+        }
+        break;
+      }
+
       case "error": {
         // Skip transient errors that the agent recovers from automatically.
         // "retry" = LLM provider retry (OpenCode keeps working after)

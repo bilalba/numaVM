@@ -180,6 +180,13 @@ if (!agentSessionCols.some((c) => c.name === "cwd")) {
   db.exec("ALTER TABLE agent_sessions ADD COLUMN cwd TEXT");
 }
 
+// Migrate: add model + provider columns to agent_sessions
+const agentSessionCols2 = db.pragma("table_info(agent_sessions)") as { name: string }[];
+if (!agentSessionCols2.some((c) => c.name === "model")) {
+  db.exec("ALTER TABLE agent_sessions ADD COLUMN model TEXT");
+  db.exec("ALTER TABLE agent_sessions ADD COLUMN provider TEXT");
+}
+
 // Migrate: add 'reasoning' to agent_messages role CHECK constraint
 const msgSchema = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_messages'").get() as { sql: string } | undefined);
 if (msgSchema && !msgSchema.sql.includes("reasoning")) {
@@ -618,6 +625,8 @@ export interface AgentSession {
   thread_id: string | null;
   title: string | null;
   cwd: string | null;
+  model: string | null;
+  provider: string | null;
   status: "idle" | "busy" | "error" | "archived";
   created_at: string;
   updated_at: string;
@@ -638,6 +647,13 @@ const insertAgentSessionStmt = db.prepare(`
 `);
 export function insertAgentSession(s: Pick<AgentSession, "id" | "vm_id" | "agent_type" | "thread_id" | "title" | "cwd" | "status">): void {
   insertAgentSessionStmt.run(s.id, s.vm_id, s.agent_type, s.thread_id, s.title, s.cwd, s.status);
+}
+
+const updateAgentSessionModelStmt = db.prepare(
+  "UPDATE agent_sessions SET model = ?, provider = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+);
+export function updateAgentSessionModel(id: string, model: string | null, provider: string | null): void {
+  updateAgentSessionModelStmt.run(model, provider, id);
 }
 
 const findAgentSessionStmt = db.prepare("SELECT * FROM agent_sessions WHERE id = ?");

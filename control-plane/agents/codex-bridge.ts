@@ -90,10 +90,12 @@ export class CodexBridge implements AgentBridge {
 
     this.threadId = threadResult?.thread?.id || null;
 
-    // Emit session.info with model from thread/start response
-    const threadModel = threadResult?.thread?.model || options?.model;
-    if (threadModel) {
-      this.emit({ type: "session.info", model: threadModel });
+    // Emit session.info with model from thread/start response or explicit selection
+    const threadModel = threadResult?.thread?.model || threadResult?.thread?.modelId || options?.model;
+    const threadProvider = threadResult?.thread?.modelProvider || undefined;
+
+    if (threadModel || threadProvider) {
+      this.emit({ type: "session.info", model: threadModel, provider: threadProvider });
     }
 
     return this.threadId || "";

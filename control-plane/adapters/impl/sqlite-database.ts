@@ -42,6 +42,7 @@ import {
   updateAgentSessionStatus as _updateAgentSessionStatus,
   updateAgentSessionTitle as _updateAgentSessionTitle,
   updateAgentSessionThreadId as _updateAgentSessionThreadId,
+  updateAgentSessionModel as _updateAgentSessionModel,
   insertAgentMessage as _insertAgentMessage,
   findMessagesBySession as _findMessagesBySession,
   deleteAgentSession as _deleteAgentSession,
@@ -107,6 +108,7 @@ export class SqliteDatabase implements IDatabase {
   updateAgentSessionStatus(id: string, status: string): void { _updateAgentSessionStatus(id, status); }
   updateAgentSessionTitle(id: string, title: string): void { _updateAgentSessionTitle(id, title); }
   updateAgentSessionThreadId(id: string, threadId: string): void { _updateAgentSessionThreadId(id, threadId); }
+  updateAgentSessionModel(id: string, model: string | null, provider: string | null): void { _updateAgentSessionModel(id, model, provider); }
   insertAgentMessage(m: Pick<AgentMessage, "id" | "session_id" | "role" | "content" | "metadata">): void { _insertAgentMessage(m); }
   findMessagesBySession(sessionId: string): AgentMessage[] { return _findMessagesBySession(sessionId); }
   deleteAgentSession(id: string): void { _deleteAgentSession(id); }

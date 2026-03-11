@@ -29,6 +29,7 @@ export interface CreateVMParams {
   memSizeMib?: number;
   diskSizeGib?: number;
   image?: string;
+  extraKernelArgs?: string[];
   onProgress?: (detail: string) => void;
 }
 

@@ -176,6 +176,10 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
         setMessages(data.messages);
         setSessionStatus(data.session.status);
         if (data.session.cwd) setSessionCwd(data.session.cwd);
+        // Restore model info from persisted session data
+        if (data.session.model || data.session.provider) {
+          setModelInfo({ model: data.session.model || undefined, provider: data.session.provider || undefined });
+        }
         // If session is busy with no assistant messages yet, it's still initializing
         // (e.g. auto-created session where bridge is starting up)
         const hasAssistantMsg = data.messages.some((m: any) => m.role === "assistant" || m.role === "tool");
@@ -224,6 +228,8 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
         thread_id: null,
         title: null,
         cwd: e.cwd || null,
+        model: null,
+        provider: null,
         status: "idle",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -374,7 +380,18 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
           break;
 
         case "session.info":
-          setModelInfo({ model: event.model, provider: event.provider });
+          // Merge — don't let subsequent events (e.g. account/updated) overwrite model with undefined
+          setModelInfo((prev) => ({
+            model: event.model || prev?.model,
+            provider: event.provider || prev?.provider,
+          }));
+          if (event.model || event.provider) {
+            setSessions((prev) => prev.map((s) =>
+              s.id === activeSessionId
+                ? { ...s, model: event.model || s.model, provider: event.provider || s.provider }
+                : s
+            ));
+          }
           break;
 
         case "error":
@@ -928,7 +945,8 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
                   setCreating(false);
                   setInitProgress(null);
                   setSessionStatus("idle");
-                  setModelInfo(null);
+                  setModelInfo(s.model || s.provider ? { model: s.model || undefined, provider: s.provider || undefined } : null);
+                  if (s.cwd) setSessionCwd(s.cwd);
                 }}
                 className={`text-left px-3 py-2 md:py-2.5 text-xs border-r md:border-r-0 md:border-b border-neutral-100 transition-opacity cursor-pointer shrink-0 ${
                   s.id === activeSessionId
@@ -939,9 +957,15 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
                 <div className="truncate max-w-[150px] md:max-w-none">
                   {s.title || `Session ${s.id.slice(0, 8)}`}
                 </div>
-                <div className="text-[10px] text-neutral-500 mt-0.5">
-                  {relativeTime(s.updated_at || s.created_at)}
+                <div className="text-[10px] text-neutral-500 mt-0.5 flex items-center gap-1.5">
+                  <span>{relativeTime(s.updated_at || s.created_at)}</span>
+                  {s.model && <span className="opacity-70">{s.model}</span>}
                 </div>
+                {s.cwd && (
+                  <div className="text-[10px] text-neutral-400 mt-0.5 truncate max-w-[150px] md:max-w-none" title={s.cwd}>
+                    {s.cwd.replace(/^\/home\/dev\/?/, "~/")}
+                  </div>
+                )}
               </button>
             ))
           )}
@@ -968,6 +992,11 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
             <span className="text-xs text-neutral-500 hidden sm:inline">{initProgress || sessionStatus}</span>
             {modelInfo?.model && (
               <span className="text-xs text-neutral-500 ml-2 hidden sm:inline">{modelInfo.model}</span>
+            )}
+            {sessionCwd && (
+              <span className="text-xs text-neutral-400 ml-2 hidden sm:inline truncate max-w-[200px]" title={sessionCwd}>
+                {sessionCwd.replace(/^\/home\/dev\/?/, "~/")}
+              </span>
             )}
           </div>
           <div className="flex items-center gap-2 sm:gap-3">

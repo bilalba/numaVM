@@ -56,6 +56,7 @@ export interface IAgentStore {
   updateAgentSessionStatus(id: string, status: string): void;
   updateAgentSessionTitle(id: string, title: string): void;
   updateAgentSessionThreadId(id: string, threadId: string): void;
+  updateAgentSessionModel(id: string, model: string | null, provider: string | null): void;
   insertAgentMessage(m: Pick<AgentMessage, "id" | "session_id" | "role" | "content" | "metadata">): void;
   findMessagesBySession(sessionId: string): AgentMessage[];
   deleteAgentSession(id: string): void;

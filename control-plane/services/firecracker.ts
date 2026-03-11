@@ -100,6 +100,7 @@ export interface CreateVMParams {
   memSizeMib?: number;
   diskSizeGib?: number;
   image?: string;
+  extraKernelArgs?: string[];
   onProgress?: (detail: string) => void;
 }
 
@@ -344,6 +345,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     memSizeMib = getDefaultMem(),
     diskSizeGib = 5,
     image,
+    extraKernelArgs,
     onProgress,
   } = params;
 
@@ -394,6 +396,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     `dm.anthropic_api_key=${anthropicApiKey || ""}`,
     `dm.env_name=${envNameB64}`,
     ...((vmIpv6Internal || vmIpv6) ? [`dm.ipv6=${vmIpv6Internal || vmIpv6}`, `dm.ipv6_prefix_len=64`] : []),
+    ...(extraKernelArgs || []),
   ].join(" ");
 
   progress("Starting Firecracker");
