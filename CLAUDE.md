@@ -260,6 +260,17 @@ GET    /admin/traffic/:id/history        Time-series traffic for VM (?hours=)
 GET    /admin/sessions                   All agent sessions (?limit=)
 GET    /admin/events                     Admin events (?limit=, ?type=)
 GET    /admin/health                     Extended health + resources
+
+# Multi-node admin (commercial, require is_admin, MULTI_NODE=true)
+GET    /admin/nodes                      List nodes with status + load
+POST   /admin/nodes                      Register node { name, endpoint, public_ip }
+DELETE /admin/nodes/:id                  Remove node (only if no VMs)
+POST   /admin/nodes/:id/drain           Set status=draining
+POST   /admin/nodes/:id/activate        Reactivate drained node
+
+# Multi-node internal (X-Node-Secret auth, MULTI_NODE=true)
+POST   /internal/vms/:id/wake           Wake snapshotted VM (node agent callback)
+POST   /internal/heartbeat              Node heartbeat { nodeId }
 ```
 
 ## Database Tables
@@ -269,7 +280,8 @@ GET    /admin/health                     Extended health + resources
 | `users` | auth | User accounts. Columns added at runtime: `is_admin`, `plan`, `ssh_public_keys`, `github_token`, `stripe_customer_id`, `trial_started_at` |
 | `sessions` | auth | JWT session records (defined but not actively used — JWT is cookie-based) |
 | `vm_access` | auth (schema), control-plane (writes) | Role-based access: owner/editor/viewer per VM per user |
-| `vms` | control-plane | VM records: id, name, owner_id, ports, vm_ip, vsock_cid, snapshot_path, gh_repo, status, mem_size_mib |
+| `vms` | control-plane | VM records: id, name, owner_id, ports, vm_ip, vsock_cid, snapshot_path, gh_repo, status, mem_size_mib, host_id (multi-node) |
+| `nodes` | commercial | Compute nodes for multi-node: id, name, endpoint, public_ip, status, capacity. Created by `commercial/node-registry.ts` |
 | `agent_sessions` | control-plane | Agent session records: vm_id, agent_type (codex/opencode), thread_id, title, cwd, status |
 | `agent_messages` | control-plane | Conversation history: role, content, metadata per session |
 | `admin_events` | control-plane | Audit log: VM lifecycle events, agent events, user activity |
@@ -318,14 +330,14 @@ Plans and billing are pluggable via the provider/adapter pattern (`IPlanRegistry
 1. Validate body (`name` required, optional `gh_repo`, `mem_size_mib`)
 2. Check RAM quota (only running/creating VMs count)
 3. Generate slug: `vm-` + 6 random alphanumeric chars
-4. Allocate ports + vsock CID + VM IP from DB
+4. `await allocateResources()` — allocates ports + vsock CID + VM IP. In multi-node mode, the scheduler picks a node and allocates on it; returns `hostId`.
 5. Create GitHub repo via Octokit (or use provided `gh_repo`). Without `GH_PAT` or `gh_repo`, returns 400.
 6. Fetch user's SSH keys (GitHub + custom)
-7. Insert VM record (status: `creating`) + grant owner access
-8. Background: create + start Firecracker VM (rootfs, TAP, vsock, iptables DNAT)
+7. Insert VM record (status: `creating`, `host_id` from step 4) + grant owner access
+8. Background: create + start Firecracker VM (rootfs, TAP, vsock, iptables DNAT). In multi-node mode, this is a `POST /vms` call to the node agent.
    - Waits for SSH readiness via TCP to VM bridge IP (up to 30s)
    - On failure: rolls back DB records + deletes data directory
-9. Register Caddy route (non-fatal)
+9. Register Caddy route (non-fatal). In multi-node, routes to `node_public_ip:appPort`.
 10. Update status to `running`
 
 ## VM Init Behavior
@@ -342,7 +354,7 @@ The init script (`vm/init.sh`, PID 1 via `/sbin/numavm-init`) is fault-tolerant:
 
 ## Idle Shutdown + Wake-on-Request
 
-- **Idle Monitor** (`idle-monitor.ts`): Polls TAP traffic every 30s. If < 20KB transferred in 2min (configurable via `IDLE_TIMEOUT_MS`, `IDLE_THRESHOLD_BYTES`), snapshots the VM.
+- **Idle Monitor** (`idle-monitor.ts`): Polls TAP traffic every 30s. If < 20KB transferred in 2min (configurable via `IDLE_TIMEOUT_MS`, `IDLE_THRESHOLD_BYTES`), snapshots the VM. In multi-node mode, `RemoteIdleMonitor` polls traffic from node agents via HTTP.
 - **Wake Service** (`wake.ts`): `ensureVMRunning(vmId)` restores from snapshot. Called by terminal, agent, file, and VM detail routes. Coalesces concurrent requests. Checks RAM quota before restoring.
 - **Status Page**: When a request hits a snapshotted VM via Caddy, triggers wake and auto-refreshes. Shows quota error if applicable.
 - **Dashboard**: Shows status badges on VM cards. Pause navigates to list immediately (fire-and-forget API call) to prevent WebSocket/terminal connections from re-waking the VM.
