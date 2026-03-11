@@ -56,6 +56,7 @@ export interface AllocatedResources {
   vmIp: string;
   vmIpv6: string | null;
   vmIpv6Internal: string | null;
+  hostId?: string;
 }
 
 export interface IVMEngine {
@@ -106,7 +107,7 @@ export interface IVMEngine {
   // --- Resource management (enterprise: per-node allocation) ---
 
   /** Allocate ports, CID, and IP for a new VM. */
-  allocateResources(): AllocatedResources;
+  allocateResources(): AllocatedResources | Promise<AllocatedResources>;
 
   // --- Disk operations (enterprise: delegated to node agents) ---
 
@@ -129,4 +130,7 @@ export interface IVMEngine {
 
   /** Get live network traffic counters for a VM. */
   getLiveTraffic(vmId: string): { rxBytes: number; txBytes: number };
+
+  /** Open a duplex stream to the VM's SSH port (used by SSH proxy for remote VMs). */
+  connectToVM?(vmId: string): Promise<import("node:stream").Duplex>;
 }

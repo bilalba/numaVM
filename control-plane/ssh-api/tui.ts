@@ -514,7 +514,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
   writeFrame(channel, creatingLines);
 
   const slug = `vm-${generateSlug()}`;
-  const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal } = getVMEngine().allocateResources();
+  const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal, hostId } = await getVMEngine().allocateResources();
 
   // Fetch SSH keys
   const keyParts: string[] = [];
@@ -551,6 +551,7 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
     image: "alpine",
     image_version: 1,
     vm_ipv6: vmIpv6,
+    host_id: hostId,
   });
   getDatabase().grantAccess(slug, user.userId, "owner");
 

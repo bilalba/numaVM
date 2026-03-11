@@ -153,6 +153,12 @@ if (!vmCols8.some((c) => c.name === "firewall_rules")) {
   db.exec("ALTER TABLE vms ADD COLUMN firewall_rules TEXT DEFAULT '[]'");
 }
 
+// Migrate: add host_id column to vms (multi-node support)
+const vmCols9 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols9.some((c) => c.name === "host_id")) {
+  db.exec("ALTER TABLE vms ADD COLUMN host_id TEXT");
+}
+
 // Migrate: add unique index on name (for custom VM names as addresses)
 const nameIndexExists = (db.prepare(
   "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_vms_name'"
@@ -262,6 +268,7 @@ export interface VM {
   is_public?: number;
   vm_ipv6: string | null;
   firewall_rules?: string | null;
+  host_id?: string | null;
 }
 
 export interface VMWithRole extends VM {
@@ -304,8 +311,8 @@ export function clearUserGithubToken(userId: string): void {
 const DEFAULT_FIREWALL_RULES = JSON.stringify([{ proto: "tcp", port: 22, source: "::/0" }]);
 
 const insertVMStmt = db.prepare(`
-  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib, disk_size_gib, image, image_version, vm_ipv6, firewall_rules)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO vms (id, name, owner_id, gh_repo, gh_token, container_id, vm_ip, vsock_cid, vm_pid, snapshot_path, app_port, ssh_port, opencode_port, opencode_password, status, mem_size_mib, disk_size_gib, image, image_version, vm_ipv6, firewall_rules, host_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 export function insertVM(vm: Omit<VM, "created_at">): void {
   insertVMStmt.run(
@@ -313,7 +320,8 @@ export function insertVM(vm: Omit<VM, "created_at">): void {
     vm.container_id, vm.vm_ip, vm.vsock_cid, vm.vm_pid, vm.snapshot_path,
     vm.app_port, vm.ssh_port, vm.opencode_port,
     vm.opencode_password, vm.status, vm.mem_size_mib, vm.disk_size_gib,
-    vm.image, vm.image_version, vm.vm_ipv6, DEFAULT_FIREWALL_RULES
+    vm.image, vm.image_version, vm.vm_ipv6, DEFAULT_FIREWALL_RULES,
+    vm.host_id ?? null
   );
 }
 

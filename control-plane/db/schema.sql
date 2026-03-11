@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS vms (
   mem_size_mib      INTEGER NOT NULL DEFAULT 512,
   disk_size_gib     INTEGER NOT NULL DEFAULT 10,
   vm_ipv6           TEXT,
-  firewall_rules    TEXT DEFAULT '[]'
+  firewall_rules    TEXT DEFAULT '[]',
+  host_id           TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);

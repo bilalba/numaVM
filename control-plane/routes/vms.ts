@@ -93,7 +93,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     const slug = `vm-${generateSlug()}`;
-    const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal } = getVMEngine().allocateResources();
+    const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal, hostId } = await getVMEngine().allocateResources();
 
     // GitHub repo is optional — if provided, VM will clone it
     const repoFullName = body.gh_repo || null;
@@ -141,6 +141,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       image,
       image_version: imageVersion,
       vm_ipv6: vmIpv6,
+      host_id: hostId,
     });
 
     // Grant owner access (used by auth verify for subdomain gating)
@@ -565,7 +566,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     const slug = `vm-${generateSlug()}`;
-    const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal } = getVMEngine().allocateResources();
+    const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal, hostId: cloneHostId } = await getVMEngine().allocateResources();
 
     // Fetch cloning user's SSH keys (not source's)
     const user = getDatabase().findUserById(request.userId);
@@ -613,6 +614,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       image: sourceVM.image,
       image_version: sourceVM.image_version,
       vm_ipv6: vmIpv6,
+      host_id: cloneHostId,
     });
     getDatabase().grantAccess(slug, request.userId, "owner");
 

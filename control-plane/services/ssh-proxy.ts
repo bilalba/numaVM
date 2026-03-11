@@ -422,14 +422,31 @@ function handleConnection(client: Connection, _info: ClientInfo) {
               clientChan.close();
             });
 
-            upstream.connect({
-              host: vmIp,
-              port: 22,
-              username: "dev",
-              privateKey: internalKey,
-              readyTimeout: 10000,
-              hostVerifier: () => true,
-            } as any);
+            // If the engine supports connectToVM (multi-node), use it to tunnel
+            const connectFn = getVMEngine().connectToVM;
+            if (connectFn) {
+              connectFn(vm.id).then((socket) => {
+                upstream.connect({
+                  sock: socket as any,
+                  username: "dev",
+                  privateKey: internalKey,
+                  readyTimeout: 10000,
+                  hostVerifier: () => true,
+                } as any);
+              }).catch((err) => {
+                clientChan.stderr.write(`Tunnel error: ${err.message}\r\n`);
+                clientChan.close();
+              });
+            } else {
+              upstream.connect({
+                host: vmIp,
+                port: 22,
+                username: "dev",
+                privateKey: internalKey,
+                readyTimeout: 10000,
+                hostVerifier: () => true,
+              } as any);
+            }
           })
           .catch((err) => {
             if (err instanceof QuotaExceededError) {
