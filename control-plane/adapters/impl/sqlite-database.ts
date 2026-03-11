@@ -5,6 +5,7 @@ import {
   db,
   insertVM as _insertVM,
   findVMById as _findVMById,
+  findVMByName as _findVMByName,
   findVMsByUser as _findVMsByUser,
   findAllVMs as _findAllVMs,
   deleteVM as _deleteVM,
@@ -65,6 +66,7 @@ export class SqliteDatabase implements IDatabase {
   // --- IVMStore ---
   insertVM(vm: Omit<VM, "created_at">): void { _insertVM(vm); }
   findVMById(id: string): VM | undefined { return _findVMById(id); }
+  findVMByName(name: string): VM | undefined { return _findVMByName(name); }
   findVMsByUser(userId: string): VMWithRole[] { return _findVMsByUser(userId); }
   findAllVMs(): VM[] { return _findAllVMs(); }
   deleteVM(id: string): void { _deleteVM(id); }

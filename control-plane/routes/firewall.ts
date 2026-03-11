@@ -20,17 +20,17 @@ export function registerFirewallRoutes(app: FastifyInstance) {
   // Get firewall rules for a VM
   app.get("/vms/:id/firewall", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const rules = getDatabase().getVMFirewallRules(id);
+    const rules = getDatabase().getVMFirewallRules(vm.id);
     return { rules, vm_ipv6: vm.vm_ipv6 || null };
   });
 
@@ -39,12 +39,12 @@ export function registerFirewallRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const body = request.body as { rules?: FirewallRule[] };
 
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (role !== "owner") {
       return reply.status(403).send({ error: "Only the owner can manage firewall rules" });
     }
@@ -70,26 +70,26 @@ export function registerFirewallRoutes(app: FastifyInstance) {
     }
 
     // Save to DB
-    getDatabase().updateVMFirewallRules(id, body.rules);
+    getDatabase().updateVMFirewallRules(vm.id, body.rules);
 
     // Apply live if VM is running and has an IPv6 address
     // Use ULA address for FORWARD chain (post-DNAT destination)
     const firewallTarget = (vm.vsock_cid ? cidToVmIpv6(vm.vsock_cid) : null) || vm.vm_ipv6;
-    if (firewallTarget && getVMEngine().isVmRunning(id)) {
+    if (firewallTarget && getVMEngine().isVmRunning(vm.id)) {
       try {
-        applyIpv6FirewallRules(id, firewallTarget, body.rules);
+        applyIpv6FirewallRules(vm.id, firewallTarget, body.rules);
       } catch (err: any) {
-        console.error(`[firewall] Failed to apply ip6tables rules for ${id}:`, err);
+        console.error(`[firewall] Failed to apply ip6tables rules for ${vm.id}:`, err);
         // Rules are saved to DB — they'll be applied on next start/restore
       }
     }
 
     // Rebind wake proxy with updated ports (no-op when VM is running — DNAT masks it)
     if (vm.vm_ipv6) {
-      bindWakeProxy(id, vm.vm_ipv6, body.rules);
+      bindWakeProxy(vm.id, vm.vm_ipv6, body.rules);
     }
 
-    getDatabase().emitAdminEvent("vm.firewall_updated", id, request.userId, {
+    getDatabase().emitAdminEvent("vm.firewall_updated", vm.id, request.userId, {
       rule_count: body.rules.length,
     });
 

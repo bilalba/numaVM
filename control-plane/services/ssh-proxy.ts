@@ -116,14 +116,15 @@ function handleConnection(client: Connection, _info: ClientInfo) {
     const username = ctx.username;
     const pkCtx = ctx as PublicKeyAuthContext;
 
-    // Determine mode: VM slug (starts with "vm-") → VM proxy, anything else → API mode
-    if (username.startsWith("vm-")) {
+    // Determine mode: VM name/slug → VM proxy, bare SSH (no VM) → API mode
+    // Try lookup by name first, then by id (vm-xxx), otherwise API mode
+    const vmByName = getDatabase().findVMByName(username);
+    const vmById = !vmByName && username.startsWith("vm-") ? getDatabase().findVMById(username) : undefined;
+    const resolvedVM = vmByName || vmById;
+
+    if (resolvedVM) {
       // --- VM proxy mode ---
-      vm = getDatabase().findVMById(username);
-      if (!vm) {
-        console.warn(`[ssh-proxy] No VM found for slug "${username}"`);
-        return ctx.reject(["publickey"]);
-      }
+      vm = resolvedVM;
 
       const authorizedKeys = getAuthorizedKeys(vm.id);
       if (!isKeyAuthorized(pkCtx.key, authorizedKeys)) {

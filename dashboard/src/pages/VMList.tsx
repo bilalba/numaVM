@@ -143,6 +143,8 @@ export function VMList() {
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
+  const [nameStatus, setNameStatus] = useState<"idle" | "checking" | "available" | "taken" | "invalid" | "reserved" | "too_short">("idle");
+  const [nameMessage, setNameMessage] = useState("");
   const [creating, setCreating] = useState(false);
   const [showSshKeys, setShowSshKeys] = useState(false);
   const [githubStatus, setGithubStatus] = useState<{ connected: boolean; username: string | null; dev_mode?: boolean } | null>(null);
@@ -170,6 +172,7 @@ export function VMList() {
   const navigate = useNavigate();
   const location = useLocation();
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nameCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadVMs = () => {
     api
@@ -230,6 +233,60 @@ export function VMList() {
     return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
   }, [repoSearch, repoMode]);
 
+  // Client-side name validation + debounced availability check
+  useEffect(() => {
+    if (nameCheckTimer.current) clearTimeout(nameCheckTimer.current);
+    const name = newName;
+
+    if (!name) {
+      setNameStatus("idle");
+      setNameMessage("");
+      return;
+    }
+
+    // Client-side checks first
+    if (name.length < 4) {
+      setNameStatus("too_short");
+      setNameMessage(`${4 - name.length} more character${4 - name.length === 1 ? "" : "s"} needed`);
+      return;
+    }
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name) || name.includes("--")) {
+      setNameStatus("invalid");
+      setNameMessage("Only lowercase letters, numbers, and hyphens");
+      return;
+    }
+    if (name.length > 40) {
+      setNameStatus("invalid");
+      setNameMessage("Maximum 40 characters");
+      return;
+    }
+
+    setNameStatus("checking");
+    setNameMessage("");
+    nameCheckTimer.current = setTimeout(() => {
+      api.checkNameAvailability(name).then((res) => {
+        // Only update if name hasn't changed
+        if (name !== newName) return;
+        if (res.available) {
+          setNameStatus("available");
+          setNameMessage("");
+        } else if (res.reason === "reserved") {
+          setNameStatus("reserved");
+          setNameMessage("This name is reserved");
+        } else if (res.reason === "taken") {
+          setNameStatus("taken");
+          setNameMessage("Already taken");
+        } else {
+          setNameStatus("invalid");
+          setNameMessage(res.message || "Invalid name");
+        }
+      }).catch(() => {
+        setNameStatus("idle");
+      });
+    }, 300);
+    return () => { if (nameCheckTimer.current) clearTimeout(nameCheckTimer.current); };
+  }, [newName]);
+
   const resetRepoState = () => {
     setRepoMode("none");
     setRepoSearch("");
@@ -243,6 +300,8 @@ export function VMList() {
     setDiskSizeGib(ramQuota?.valid_disk_sizes?.[0] ?? 1);
     setSelectedImage("alpine");
     setShowAdvanced(false);
+    setNameStatus("idle");
+    setNameMessage("");
   };
 
   const handleDelete = async (vm: VMSummary) => {
@@ -293,9 +352,15 @@ export function VMList() {
 
   const canCreate = () => {
     if (!newName.trim()) return false;
+    if (nameStatus !== "available") return false;
     if (repoMode === "existing" && !selectedRepo) return false;
     if (repoMode === "new" && !newRepoName.trim()) return false;
     return true;
+  };
+
+  const handleNameChange = (value: string) => {
+    // Normalize: lowercase, strip invalid chars
+    setNewName(value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
   };
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -397,13 +462,27 @@ export function VMList() {
               <input
                 type="text"
                 value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="VM name"
-                maxLength={64}
+                onChange={(e) => handleNameChange(e.target.value)}
+                placeholder="my-project"
+                maxLength={40}
                 className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none"
+                style={{ textTransform: "lowercase" }}
                 autoFocus
               />
-              <p className="text-[10px] text-neutral-500 mt-1">A unique slug will be auto-generated for your subdomain.</p>
+              <div className="flex items-center justify-between mt-1">
+                <div className="text-[10px]">
+                  {nameStatus === "idle" && <span className="text-neutral-400">Your VM's web address and SSH username</span>}
+                  {nameStatus === "too_short" && <span className="text-neutral-400">{nameMessage}</span>}
+                  {nameStatus === "checking" && <span className="text-neutral-400">Checking...</span>}
+                  {nameStatus === "available" && <span className="text-green-600">Available</span>}
+                  {nameStatus === "taken" && <span className="text-red-500">{nameMessage}</span>}
+                  {nameStatus === "reserved" && <span className="text-red-500">{nameMessage}</span>}
+                  {nameStatus === "invalid" && <span className="text-red-500">{nameMessage}</span>}
+                </div>
+                {newName.length >= 4 && nameStatus !== "invalid" && nameStatus !== "reserved" && (
+                  <span className="text-[10px] text-neutral-400">{newName}.{(import.meta.env.VITE_API_URL || "//api.localhost").replace(/^\/\/api\./, "").replace(/^api\./, "")}</span>
+                )}
+              </div>
             </div>
 
             {/* Initial prompt */}
@@ -709,7 +788,7 @@ export function VMList() {
                   onPause={() => handlePause(vm)}
                 />
               </div>
-              <p className="text-xs text-neutral-500 mb-3">{vm.id}</p>
+              <p className="text-xs text-neutral-500 mb-3 truncate">{new URL(vm.url).hostname}</p>
               <div className="flex items-center justify-between text-xs text-neutral-500">
                 <span className="capitalize">{isPausing ? "Pausing..." : vm.role}</span>
                 <span>

@@ -46,14 +46,14 @@ export function registerFileRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
-    const role = getDatabase().checkAccess(id, request.userId);
-    if (!role) {
-      return reply.status(403).send({ error: "No access to this VM" });
-    }
-
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     const dirPath = sanitizePath(query.path || "/home/dev");
@@ -89,14 +89,14 @@ export function registerFileRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
-    const role = getDatabase().checkAccess(id, request.userId);
-    if (!role) {
-      return reply.status(403).send({ error: "No access to this VM" });
-    }
-
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     if (!query.path) {
@@ -139,14 +139,14 @@ export function registerFileRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { path?: string };
 
-    const role = getDatabase().checkAccess(id, request.userId);
-    if (!role) {
-      return reply.status(403).send({ error: "No access to this VM" });
-    }
-
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     if (!query.path) {
@@ -194,14 +194,14 @@ export function registerFileRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const query = request.query as { limit?: string };
 
-    const role = getDatabase().checkAccess(id, request.userId);
-    if (!role) {
-      return reply.status(403).send({ error: "No access to this VM" });
-    }
-
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     const limit = Math.min(parseInt(query.limit || "20", 10) || 20, 100);

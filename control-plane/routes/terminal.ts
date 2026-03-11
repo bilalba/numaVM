@@ -18,15 +18,15 @@ export function registerTerminalRoutes(app: FastifyInstance) {
     async (socket, request) => {
       const { id } = request.params as { id: string };
 
-      const role = getDatabase().checkAccess(id, request.userId);
-      if (!role) {
-        socket.close(4003, "No access to this VM");
+      const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
+      if (!vm || !vm.vm_ip) {
+        socket.close(4004, "VM not found");
         return;
       }
 
-      const vm = getDatabase().findVMById(id);
-      if (!vm || !vm.vm_ip) {
-        socket.close(4004, "VM not found");
+      const role = getDatabase().checkAccess(vm.id, request.userId);
+      if (!role) {
+        socket.close(4003, "No access to this VM");
         return;
       }
 
@@ -77,14 +77,14 @@ export function registerTerminalRoutes(app: FastifyInstance) {
   app.get("/vms/:id/terminal/sessions", async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const role = getDatabase().checkAccess(id, request.userId);
-    if (!role) {
-      return reply.status(403).send({ error: "No access to this VM" });
-    }
-
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     try {
@@ -119,16 +119,16 @@ export function registerTerminalRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id, name } = request.params as { id: string; name: string };
 
-      const role = getDatabase().checkAccess(id, request.userId);
+      const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
+      if (!vm || !vm.vm_ip) {
+        return reply.status(404).send({ error: "VM not found" });
+      }
+
+      const role = getDatabase().checkAccess(vm.id, request.userId);
       if (!role) {
         return reply
           .status(403)
           .send({ error: "No access to this VM" });
-      }
-
-      const vm = getDatabase().findVMById(id);
-      if (!vm || !vm.vm_ip) {
-        return reply.status(404).send({ error: "VM not found" });
       }
 
       // Validate session name to prevent injection

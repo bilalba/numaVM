@@ -252,6 +252,9 @@ export interface GitHubRepo {
 }
 
 export const api = {
+  checkNameAvailability: (name: string) =>
+    apiFetch<{ available: boolean; reason?: string; message?: string }>(`/vms/check-name/${encodeURIComponent(name)}`),
+
   getUser: () => apiFetch<User>("/me"),
 
   listVMs: () => apiFetch<{ vms: VMSummary[] }>("/vms"),

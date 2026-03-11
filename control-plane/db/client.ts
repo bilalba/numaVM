@@ -153,6 +153,30 @@ if (!vmCols8.some((c) => c.name === "firewall_rules")) {
   db.exec("ALTER TABLE vms ADD COLUMN firewall_rules TEXT DEFAULT '[]'");
 }
 
+// Migrate: add unique index on name (for custom VM names as addresses)
+const nameIndexExists = (db.prepare(
+  "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_vms_name'"
+).get() as any);
+if (!nameIndexExists) {
+  // Ensure existing VMs have unique names before creating the index.
+  // Duplicate names get their id appended to disambiguate.
+  const dupes = db.prepare(`
+    SELECT id, name FROM vms WHERE name IN (
+      SELECT name FROM vms GROUP BY name HAVING COUNT(*) > 1
+    ) ORDER BY name, created_at
+  `).all() as { id: string; name: string }[];
+  const seen = new Map<string, number>();
+  for (const row of dupes) {
+    const count = seen.get(row.name) || 0;
+    if (count > 0) {
+      // Append id to make unique: "myvm" → "myvm-vm-abc123"
+      db.prepare("UPDATE vms SET name = ? WHERE id = ?").run(`${row.name}-${row.id}`, row.id);
+    }
+    seen.set(row.name, count + 1);
+  }
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_name ON vms(name)");
+}
+
 // Migrate: add owner_id to vm_traffic so data usage survives VM deletion
 const trafficCols = db.pragma("table_info(vm_traffic)") as { name: string }[];
 if (!trafficCols.some((c) => c.name === "owner_id")) {
@@ -173,6 +197,7 @@ db.exec("UPDATE users SET trial_started_at = created_at WHERE trial_started_at I
 
 // Migrate: add stripe_customer_id to users
 try { db.exec("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT"); } catch { /* already exists */ }
+
 
 // Migrate: add cwd column to agent_sessions
 const agentSessionCols = db.pragma("table_info(agent_sessions)") as { name: string }[];
@@ -295,6 +320,11 @@ export function insertVM(vm: Omit<VM, "created_at">): void {
 const findVMByIdStmt = db.prepare("SELECT * FROM vms WHERE id = ?");
 export function findVMById(id: string): VM | undefined {
   return findVMByIdStmt.get(id) as VM | undefined;
+}
+
+const findVMByNameStmt = db.prepare("SELECT * FROM vms WHERE name = ?");
+export function findVMByName(name: string): VM | undefined {
+  return findVMByNameStmt.get(name) as VM | undefined;
 }
 
 const findVMsByUserStmt = db.prepare(`
@@ -748,3 +778,4 @@ const findUserByStripeCustomerIdStmt = db.prepare(
 export function findUserByStripeCustomerId(customerId: string): User | undefined {
   return findUserByStripeCustomerIdStmt.get(customerId) as User | undefined;
 }
+

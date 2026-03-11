@@ -47,6 +47,8 @@ export interface IAuthDatabase {
 
   // Access control
   checkVMAccess(vmId: string, userId: string): Promise<string | undefined>;
+  /** Resolve a VM name to its internal id. Returns undefined if not found. */
+  findVMIdByName(name: string): Promise<string | undefined>;
 
   // Init
   runMigrations(): void;

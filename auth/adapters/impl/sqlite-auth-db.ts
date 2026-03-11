@@ -23,6 +23,7 @@ export class SqliteAuthDatabase implements IAuthDatabase {
   private updateUserGithubTokenStmt!: Stmt;
   private updateUserSshKeysStmt!: Stmt;
   private checkVMAccessStmt!: Stmt;
+  private findVMIdByNameStmt!: Stmt;
 
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? join(__dirname, "..", "..", "..", "platform.db");
@@ -88,6 +89,7 @@ export class SqliteAuthDatabase implements IAuthDatabase {
     this.updateUserGithubTokenStmt = this.db.prepare("UPDATE users SET github_token = ? WHERE id = ?");
     this.updateUserSshKeysStmt = this.db.prepare("UPDATE users SET ssh_public_keys = ? WHERE id = ?");
     this.checkVMAccessStmt = this.db.prepare("SELECT role FROM vm_access WHERE vm_id = ? AND user_id = ?");
+    this.findVMIdByNameStmt = this.db.prepare("SELECT id FROM vms WHERE name = ?");
   }
 
   async findUserById(id: string): Promise<User | undefined> {
@@ -157,5 +159,10 @@ export class SqliteAuthDatabase implements IAuthDatabase {
   async checkVMAccess(vmId: string, userId: string): Promise<string | undefined> {
     const row = this.checkVMAccessStmt.get(vmId, userId) as { role: string } | undefined;
     return row?.role;
+  }
+
+  async findVMIdByName(name: string): Promise<string | undefined> {
+    const row = this.findVMIdByNameStmt.get(name) as { id: string } | undefined;
+    return row?.id;
   }
 }

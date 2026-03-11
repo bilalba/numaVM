@@ -44,6 +44,8 @@ export function Deploy() {
   const [deployLogs, setDeployLogs] = useState<string[]>([]);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [vmName, setVMName] = useState("");
+  const [nameStatus, setNameStatus] = useState<"idle" | "checking" | "available" | "taken" | "invalid" | "reserved" | "too_short">("idle");
+  const [nameMessage, setNameMessage] = useState("");
   const [vmId, setVMId] = useState<string | null>(null);
   const [vmReady, setVMReady] = useState(false);
   const [appUrl, setAppUrl] = useState<string | null>(null);
@@ -52,6 +54,7 @@ export function Deploy() {
   const [memSizeMib, setMemSizeMib] = useState<number>(256);
   const [diskSizeGib, setDiskSizeGib] = useState<number>(1);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const nameCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Fetch quota on mount
   useEffect(() => {
@@ -73,6 +76,61 @@ export function Deploy() {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
+
+  // Client-side name validation + debounced availability check
+  useEffect(() => {
+    if (nameCheckTimer.current) clearTimeout(nameCheckTimer.current);
+    const name = vmName;
+
+    if (!name) {
+      setNameStatus("idle");
+      setNameMessage("");
+      return;
+    }
+    if (name.length < 4) {
+      setNameStatus("too_short");
+      setNameMessage(`${4 - name.length} more character${4 - name.length === 1 ? "" : "s"} needed`);
+      return;
+    }
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name) || name.includes("--")) {
+      setNameStatus("invalid");
+      setNameMessage("Only lowercase letters, numbers, and hyphens");
+      return;
+    }
+    if (name.length > 40) {
+      setNameStatus("invalid");
+      setNameMessage("Maximum 40 characters");
+      return;
+    }
+
+    setNameStatus("checking");
+    setNameMessage("");
+    nameCheckTimer.current = setTimeout(() => {
+      api.checkNameAvailability(name).then((res) => {
+        if (name !== vmName) return;
+        if (res.available) {
+          setNameStatus("available");
+          setNameMessage("");
+        } else if (res.reason === "reserved") {
+          setNameStatus("reserved");
+          setNameMessage("This name is reserved");
+        } else if (res.reason === "taken") {
+          setNameStatus("taken");
+          setNameMessage("Already taken");
+        } else {
+          setNameStatus("invalid");
+          setNameMessage(res.message || "Invalid name");
+        }
+      }).catch(() => {
+        setNameStatus("idle");
+      });
+    }, 300);
+    return () => { if (nameCheckTimer.current) clearTimeout(nameCheckTimer.current); };
+  }, [vmName]);
+
+  const handleNameChange = (value: string) => {
+    setVMName(value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+  };
 
   const fetchRepo = useCallback((raw: string) => {
     const parsed = parseRepo(raw);
@@ -98,7 +156,8 @@ export function Deploy() {
           return;
         }
         setRepoInfo(data);
-        setVMName(data.name);
+        // Normalize repo name for VM name (lowercase, valid chars only)
+        setVMName(data.name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, ""));
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -246,11 +305,27 @@ export function Deploy() {
             <input
               type="text"
               value={vmName}
-              onChange={(e) => setVMName(e.target.value)}
-              maxLength={64}
+              onChange={(e) => handleNameChange(e.target.value)}
+              placeholder="my-project"
+              maxLength={40}
               disabled={deploying}
               className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none disabled:opacity-50"
+              style={{ textTransform: "lowercase" }}
             />
+            <div className="flex items-center justify-between mt-1">
+              <div className="text-[10px]">
+                {nameStatus === "idle" && <span className="text-neutral-400">Your VM's web address and SSH username</span>}
+                {nameStatus === "too_short" && <span className="text-neutral-400">{nameMessage}</span>}
+                {nameStatus === "checking" && <span className="text-neutral-400">Checking...</span>}
+                {nameStatus === "available" && <span className="text-green-600">Available</span>}
+                {nameStatus === "taken" && <span className="text-red-500">{nameMessage}</span>}
+                {nameStatus === "reserved" && <span className="text-red-500">{nameMessage}</span>}
+                {nameStatus === "invalid" && <span className="text-red-500">{nameMessage}</span>}
+              </div>
+              {vmName.length >= 4 && nameStatus !== "invalid" && nameStatus !== "reserved" && (
+                <span className="text-[10px] text-neutral-400">{vmName}.{(import.meta.env.VITE_API_URL || "//api.localhost").replace(/^\/\/api\./, "").replace(/^api\./, "")}</span>
+              )}
+            </div>
           </div>
 
           {/* Advanced options */}
@@ -305,7 +380,7 @@ export function Deploy() {
           {!vmId && (
             <button
               onClick={handleDeploy}
-              disabled={deploying || !vmName.trim()}
+              disabled={deploying || nameStatus !== "available"}
               className="w-full py-2 bg-foreground text-background rounded hover:opacity-80 disabled:opacity-50 cursor-pointer text-xs"
             >
               {deploying ? "Launching..." : "Launch VM"}

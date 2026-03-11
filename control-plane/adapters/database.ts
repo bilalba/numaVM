@@ -10,6 +10,7 @@ export type { FirewallRule } from "../db/client.js";
 export interface IVMStore {
   insertVM(vm: Omit<VM, "created_at">): void;
   findVMById(id: string): VM | undefined;
+  findVMByName(name: string): VM | undefined;
   findVMsByUser(userId: string): VMWithRole[];
   findAllVMs(): VM[];
   deleteVM(id: string): void;

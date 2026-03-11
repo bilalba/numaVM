@@ -12,14 +12,14 @@ export function registerClaudeRoutes(app: FastifyInstance) {
   app.get("/vms/:id/claude/sessions", async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const role = getDatabase().checkAccess(id, request.userId);
-    if (!role) {
-      return reply.status(403).send({ error: "No access to this VM" });
-    }
-
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm || !vm.vm_ip) {
       return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
     }
 
     try {

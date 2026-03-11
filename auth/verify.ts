@@ -21,13 +21,29 @@ export function registerVerifyRoute(app: FastifyInstance) {
       (request.headers.host as string) ||
       "";
 
-    // Check if this is a VM-specific subdomain (matches vm-xxx and vm-xxx-pages)
-    const vmMatch = forwardedHost.match(/^(vm-[a-z0-9]+)\./)
-    if (vmMatch) {
-      const vmId = vmMatch[1];
-      const role = await db.checkVMAccess(vmId, user.id);
-      if (!role) {
-        return reply.status(403).send("No access to this VM");
+    // Check if this is a VM-specific subdomain.
+    // Extract the subdomain (everything before the first dot of the base domain).
+    // Skip known system subdomains (app, api, auth, admin, ssh).
+    const subdomainMatch = forwardedHost.match(/^([a-z0-9][a-z0-9-]*[a-z0-9]|[a-z0-9]+)\./);
+    if (subdomainMatch) {
+      const subdomain = subdomainMatch[1];
+      const systemSubdomains = new Set(["app", "api", "auth", "admin", "ssh", "www"]);
+      if (!systemSubdomains.has(subdomain)) {
+        // Try by id first (vm-xxx), then by name
+        let vmId: string | undefined;
+        if (subdomain.startsWith("vm-")) {
+          vmId = subdomain; // legacy id-based subdomain
+        }
+        // Always try name lookup (custom names are the primary path)
+        const idByName = await db.findVMIdByName(subdomain);
+        if (idByName) vmId = idByName;
+
+        if (vmId) {
+          const role = await db.checkVMAccess(vmId, user.id);
+          if (!role) {
+            return reply.status(403).send("No access to this VM");
+          }
+        }
       }
     }
 

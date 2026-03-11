@@ -11,12 +11,12 @@ export function registerAccessRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "email is required" });
     }
 
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const callerRole = getDatabase().checkAccess(id, request.userId);
+    const callerRole = getDatabase().checkAccess(vm.id, request.userId);
     if (callerRole !== "owner") {
       return reply.status(403).send({ error: "Only the owner can manage access" });
     }
@@ -27,13 +27,13 @@ export function registerAccessRoutes(app: FastifyInstance) {
     }
 
     // Prevent revoking owner access
-    const targetRole = getDatabase().checkAccess(id, targetUser.id);
+    const targetRole = getDatabase().checkAccess(vm.id, targetUser.id);
     if (targetRole === "owner" && (body.role === null || body.role === undefined)) {
       return reply.status(400).send({ error: "Cannot revoke owner access" });
     }
 
     if (body.role === null || body.role === undefined) {
-      getDatabase().revokeAccess(id, targetUser.id);
+      getDatabase().revokeAccess(vm.id, targetUser.id);
       return { ok: true, message: `Access revoked for ${body.email}` };
     }
 
@@ -41,7 +41,7 @@ export function registerAccessRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "role must be 'editor' or 'viewer'" });
     }
 
-    getDatabase().grantAccess(id, targetUser.id, body.role);
+    getDatabase().grantAccess(vm.id, targetUser.id, body.role);
     return { ok: true, message: `${body.role} access granted to ${body.email}` };
   });
 
@@ -54,26 +54,26 @@ export function registerAccessRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "is_public (boolean) is required" });
     }
 
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const callerRole = getDatabase().checkAccess(id, request.userId);
+    const callerRole = getDatabase().checkAccess(vm.id, request.userId);
     if (callerRole !== "owner") {
       return reply.status(403).send({ error: "Only the owner can change public visibility" });
     }
 
-    getDatabase().updateVMPublic(id, body.is_public);
+    getDatabase().updateVMPublic(vm.id, body.is_public);
 
     // Reload Caddy so the forward_auth directive is added/removed
     try {
       await getReverseProxy().reloadConfig();
     } catch (err: any) {
-      console.error(`[access] Failed to reload Caddy after toggling public for ${id}:`, err);
+      console.error(`[access] Failed to reload Caddy after toggling public for ${vm.id}:`, err);
     }
 
-    getDatabase().emitAdminEvent("vm.public_changed", id, request.userId, { is_public: body.is_public });
+    getDatabase().emitAdminEvent("vm.public_changed", vm.id, request.userId, { is_public: body.is_public });
 
     return { ok: true, is_public: body.is_public };
   });
@@ -82,17 +82,17 @@ export function registerAccessRoutes(app: FastifyInstance) {
   app.get("/vms/:id/access", async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    const access = getDatabase().getVMAccess(id);
+    const access = getDatabase().getVMAccess(vm.id);
     return { access };
   });
 }

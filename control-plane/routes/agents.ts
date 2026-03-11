@@ -9,10 +9,21 @@ import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 
 const VALID_AGENT_TYPES = new Set(["codex", "opencode"]);
 
+/** Resolve a VM identifier (id or name) to the internal VM id. */
+function resolveVMId(idOrName: string): string {
+  const db = getDatabase();
+  const vm = db.findVMById(idOrName);
+  if (vm) return vm.id;
+  const byName = db.findVMByName(idOrName);
+  if (byName) return byName.id;
+  return idOrName; // fallback — let checkAccess/ensureVMRunning handle not-found
+}
+
 export function registerAgentRoutes(app: FastifyInstance) {
   // POST /vms/:id/agents/:type/sessions — Start new agent session
   app.post("/vms/:id/agents/:type/sessions", async (request, reply) => {
-    const { id, type } = request.params as { id: string; type: string };
+    let { id, type } = request.params as { id: string; type: string };
+    id = resolveVMId(id);
 
     if (!VALID_AGENT_TYPES.has(type)) {
       return reply.status(400).send({ error: "Invalid agent type. Must be 'codex' or 'opencode'" });
@@ -56,7 +67,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // GET /vms/:id/agents/:type/sessions — List sessions for agent type
   app.get("/vms/:id/agents/:type/sessions", async (request, reply) => {
-    const { id, type } = request.params as { id: string; type: string };
+    let { id, type } = request.params as { id: string; type: string };
+    id = resolveVMId(id);
 
     if (!VALID_AGENT_TYPES.has(type)) {
       return reply.status(400).send({ error: "Invalid agent type" });
@@ -73,7 +85,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // GET /vms/:id/sessions/:sid — Get session with message history
   app.get("/vms/:id/sessions/:sid", async (request, reply) => {
-    const { id, sid } = request.params as { id: string; sid: string };
+    let { id, sid } = request.params as { id: string; sid: string };
+    id = resolveVMId(id);
 
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role) {
@@ -101,7 +114,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // POST /vms/:id/sessions/:sid/message — Send message to agent
   app.post("/vms/:id/sessions/:sid/message", async (request, reply) => {
-    const { id, sid } = request.params as { id: string; sid: string };
+    let { id, sid } = request.params as { id: string; sid: string };
+    id = resolveVMId(id);
     const body = request.body as { text?: string; agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy };
 
     if (!body.text || typeof body.text !== "string" || !body.text.trim()) {
@@ -146,7 +160,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // POST /vms/:id/sessions/:sid/stop — Interrupt agent
   app.post("/vms/:id/sessions/:sid/stop", async (request, reply) => {
-    const { id, sid } = request.params as { id: string; sid: string };
+    let { id, sid } = request.params as { id: string; sid: string };
+    id = resolveVMId(id);
 
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
@@ -168,7 +183,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // DELETE /vms/:id/sessions/:sid — Archive/delete session
   app.delete("/vms/:id/sessions/:sid", async (request, reply) => {
-    const { id, sid } = request.params as { id: string; sid: string };
+    let { id, sid } = request.params as { id: string; sid: string };
+    id = resolveVMId(id);
 
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
@@ -186,7 +202,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // POST /vms/:id/sessions/:sid/approval — Respond to approval request
   app.post("/vms/:id/sessions/:sid/approval", async (request, reply) => {
-    const { id, sid } = request.params as { id: string; sid: string };
+    let { id, sid } = request.params as { id: string; sid: string };
+    id = resolveVMId(id);
     const body = request.body as { approvalId?: string; decision?: string };
 
     const validDecisions = ["accept", "acceptForSession", "always", "decline"];
@@ -209,7 +226,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // POST /vms/:id/sessions/:sid/question — Respond to a question from OpenCode
   app.post("/vms/:id/sessions/:sid/question", async (request, reply) => {
-    const { id, sid } = request.params as { id: string; sid: string };
+    let { id, sid } = request.params as { id: string; sid: string };
+    id = resolveVMId(id);
     const body = request.body as { questionId?: string; answers?: string[][]; reject?: boolean };
 
     if (!body.questionId) {
@@ -235,7 +253,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // POST /vms/:id/sessions/:sid/revert — Revert file changes from a message (OpenCode only)
   app.post("/vms/:id/sessions/:sid/revert", async (request, reply) => {
-    const { id, sid } = request.params as { id: string; sid: string };
+    let { id, sid } = request.params as { id: string; sid: string };
+    id = resolveVMId(id);
     const body = request.body as { messageId?: string } | undefined;
 
     const role = getDatabase().checkAccess(id, request.userId);
@@ -258,7 +277,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // POST /vms/:id/sessions/:sid/unrevert — Restore reverted changes (OpenCode only)
   app.post("/vms/:id/sessions/:sid/unrevert", async (request, reply) => {
-    const { id, sid } = request.params as { id: string; sid: string };
+    let { id, sid } = request.params as { id: string; sid: string };
+    id = resolveVMId(id);
 
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
@@ -280,15 +300,16 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // GET /vms/:id/opencode/providers — List available providers/models from OpenCode
   app.get("/vms/:id/opencode/providers", async (request, reply) => {
-    const { id } = request.params as { id: string };
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
+    if (!vm) return reply.status(404).send({ error: "VM not found" });
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
-
-    const vm = getDatabase().findVMById(id);
-    if (!vm) return reply.status(404).send({ error: "VM not found" });
     try {
       const bridge = new OpenCodeBridge(vm.id, vm.opencode_port, vm.opencode_password || "");
       const raw = await bridge.listProviders();
@@ -324,7 +345,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // GET /vms/:id/codex/models — List available Codex models via app-server
   app.get("/vms/:id/codex/models", async (request, reply) => {
-    const { id } = request.params as { id: string };
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
     const query = request.query as { includeHidden?: string };
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
@@ -340,7 +362,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // GET /vms/:id/codex/threads — List Codex threads via app-server
   app.get("/vms/:id/codex/threads", async (request, reply) => {
-    const { id } = request.params as { id: string };
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
     const query = request.query as { cursor?: string; limit?: string };
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
@@ -358,7 +381,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
   // GET /vms/:id/codex/auth/status — Check Codex auth via app-server
   // Pass ?refresh=true to destroy and recreate the bridge (use after login to pick up new creds)
   app.get("/vms/:id/codex/auth/status", async (request, reply) => {
-    const { id } = request.params as { id: string };
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
     const query = request.query as { refresh?: string };
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
@@ -384,7 +408,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // POST /vms/:id/codex/auth/login — Start login
   app.post("/vms/:id/codex/auth/login", async (request, reply) => {
-    const { id } = request.params as { id: string };
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
     const body = request.body as { mode?: string; apiKey?: string };
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") return reply.status(403).send({ error: "Editor or owner access required" });
@@ -398,7 +423,7 @@ export function registerAgentRoutes(app: FastifyInstance) {
       }
 
       // ChatGPT login via device code (CLI-based, since app-server OAuth needs localhost redirect)
-      const vm = getDatabase().findVMById(id);
+      const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
       if (!vm) return reply.status(500).send({ error: "VM not available" });
 
       return new Promise<void>((resolve) => {
@@ -448,7 +473,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
 
   // POST /vms/:id/codex/auth/logout — Logout via app-server
   app.post("/vms/:id/codex/auth/logout", async (request, reply) => {
-    const { id } = request.params as { id: string };
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") return reply.status(403).send({ error: "Editor or owner access required" });
 
@@ -466,7 +492,8 @@ export function registerAgentRoutes(app: FastifyInstance) {
     "/vms/:id/ws",
     { websocket: true },
     async (socket, request) => {
-      const { id } = request.params as { id: string };
+      let { id } = request.params as { id: string };
+    id = resolveVMId(id);
 
       const role = getDatabase().checkAccess(id, request.userId);
       if (!role) {

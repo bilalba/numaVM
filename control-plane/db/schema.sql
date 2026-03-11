@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS vms (
 
 CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);
 CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
+-- idx_vms_name unique index is created by migration in client.ts (deduplicates first)
 
 -- Agent sessions (Codex + OpenCode)
 CREATE TABLE IF NOT EXISTS agent_sessions (

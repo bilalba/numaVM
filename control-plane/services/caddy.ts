@@ -20,13 +20,14 @@ function getAdminPort(): string {
 
 interface VMRoute {
   id: string;
+  name: string;
   app_port: number;
   status: string;
   is_public: number;
 }
 
 function getAllVMs(): VMRoute[] {
-  return getDatabase().raw<VMRoute>("SELECT id, app_port, status, is_public FROM vms WHERE status NOT IN ('error')");
+  return getDatabase().raw<VMRoute>("SELECT id, name, app_port, status, is_public FROM vms WHERE status NOT IN ('error')");
 }
 
 function generateCaddyfile(vms: VMRoute[]): string {
@@ -98,6 +99,7 @@ ${scheme}admin.${domain} {${tlsDirective}
 `;
 
   // Dynamic VM routes — ALL VMs get routes (not just running) so auth + status page work
+  // Routes use vm.name as the subdomain (user-chosen address)
   for (const vm of vms) {
     const forwardAuth = vm.is_public ? "" : `
     forward_auth localhost:${authPort} {
@@ -105,17 +107,14 @@ ${scheme}admin.${domain} {${tlsDirective}
         copy_headers X-User-Id X-User-Email
         @unauthorized status 401 403
         handle_response @unauthorized {
-            redir ${authLoginUrl}?redirect=${scheme}${vm.id}.${domain}{http.request.uri}
+            redir ${authLoginUrl}?redirect=${scheme}${vm.name}.${domain}{http.request.uri}
         }
     }`;
 
     if (vm.status === "running" || vm.status === "snapshotted" || vm.status === "paused") {
-      // Running or snapshotted/paused: proxy to app port.
-      // When snapshotted, the wake-proxy on appPort catches the connection,
-      // wakes the VM, and bridges through — so the client gets the actual page.
       config += `
-# VM: ${vm.id}${vm.status !== "running" ? ` (${vm.status})` : ""}${vm.is_public ? " (public)" : ""}
-${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
+# VM: ${vm.name} (${vm.id})${vm.status !== "running" ? ` (${vm.status})` : ""}${vm.is_public ? " (public)" : ""}
+${scheme}${vm.name}.${domain} {${tlsDirective}${forwardAuth}
     handle_errors {
         rewrite * /vms/${vm.id}/status-page
         reverse_proxy localhost:${cpPort}
@@ -124,10 +123,9 @@ ${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
 }
 `;
     } else {
-      // Creating/error: show status page
       config += `
-# VM: ${vm.id} (${vm.status}${vm.is_public ? ", public" : ""})
-${scheme}${vm.id}.${domain} {${tlsDirective}${forwardAuth}
+# VM: ${vm.name} (${vm.id}, ${vm.status}${vm.is_public ? ", public" : ""})
+${scheme}${vm.name}.${domain} {${tlsDirective}${forwardAuth}
     rewrite * /vms/${vm.id}/status-page
     reverse_proxy localhost:${cpPort}
 }

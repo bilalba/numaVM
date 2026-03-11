@@ -7,6 +7,7 @@ import { fetchSshKeys } from "../services/github.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
 import { bindWakeProxy, unbindWakeProxy, bindAppWakeProxy, unbindAppWakeProxy } from "../services/wake-proxy.js";
 import { agentManager } from "../agents/manager.js";
+import { validateVMName } from "../utils/validation.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
@@ -19,8 +20,16 @@ export function registerVMRoutes(app: FastifyInstance) {
   app.post("/vms", async (request, reply) => {
     const body = request.body as { name?: string; gh_repo?: string; private?: boolean; mem_size_mib?: number; disk_size_gib?: number; image?: string; initial_prompt?: string };
 
-    if (!body.name || typeof body.name !== "string" || body.name.length < 1 || body.name.length > 64) {
-      return reply.status(400).send({ error: "name is required (1-64 chars)" });
+    if (!body.name || typeof body.name !== "string") {
+      return reply.status(400).send({ error: "name is required" });
+    }
+    const nameValidation = validateVMName(body.name);
+    if (!nameValidation.valid) {
+      return reply.status(400).send({ error: nameValidation.message });
+    }
+    // Check uniqueness
+    if (getDatabase().findVMByName(body.name)) {
+      return reply.status(409).send({ error: "Name already taken" });
     }
 
     const userPlan = getDatabase().getUserPlan(request.userId);
@@ -148,9 +157,9 @@ export function registerVMRoutes(app: FastifyInstance) {
     reply.status(201).send({
       id: slug,
       name: body.name,
-      url: `http://${slug}.${getBaseDomain()}`,
+      url: `http://${body.name}.${getBaseDomain()}`,
       ...(repoFullName ? { repo_url: `https://github.com/${repoFullName}` } : {}),
-      ssh_command: `ssh ${slug}@ssh.${getBaseDomain()}`,
+      ssh_command: `ssh ${body.name}@ssh.${getBaseDomain()}`,
       ssh_port: sshPort,
       status: "creating",
     });
@@ -270,7 +279,7 @@ export function registerVMRoutes(app: FastifyInstance) {
         name: e.name,
         status: e.status,
         role: e.role,
-        url: `http://${e.id}.${getBaseDomain()}`,
+        url: `http://${e.name}.${getBaseDomain()}`,
         ...(e.gh_repo ? { repo_url: `https://github.com/${e.gh_repo}` } : {}),
         created_at: e.created_at,
         mem_size_mib: e.mem_size_mib,
@@ -280,6 +289,20 @@ export function registerVMRoutes(app: FastifyInstance) {
         is_public: !!e.is_public,
       })),
     };
+  });
+
+  // Check name availability
+  app.get("/vms/check-name/:name", async (request) => {
+    const { name } = request.params as { name: string };
+    const validation = validateVMName(name);
+    if (!validation.valid) {
+      return { available: false, reason: validation.reason === "reserved" ? "reserved" : "invalid", message: validation.message };
+    }
+    const existing = getDatabase().findVMByName(name);
+    if (existing) {
+      return { available: false, reason: "taken", message: "Already taken" };
+    }
+    return { available: true };
   });
 
   // Get user's quota usage (RAM + data transfer)
@@ -310,12 +333,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Get VM details
   app.get("/vms/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
@@ -354,9 +377,9 @@ export function registerVMRoutes(app: FastifyInstance) {
       name: vm.name,
       status: vm.status,
       status_detail: vm.status_detail,
-      url: `http://${vm.id}.${getBaseDomain()}`,
+      url: `http://${vm.name}.${getBaseDomain()}`,
       ...(vm.gh_repo ? { repo_url: `https://github.com/${vm.gh_repo}` } : {}),
-      ssh_command: `ssh ${vm.id}@ssh.${getBaseDomain()}`,
+      ssh_command: `ssh ${vm.name}@ssh.${getBaseDomain()}`,
       ssh_port: vm.ssh_port,
       app_port: vm.app_port,
       opencode_port: vm.opencode_port,
@@ -378,12 +401,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Destroy VM (owner only)
   app.delete("/vms/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (role !== "owner") {
       return reply.status(403).send({ error: "Only the owner can delete a VM" });
     }
@@ -433,12 +456,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Pause (snapshot) VM
   app.post("/vms/:id/pause", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (role !== "owner") {
       return reply.status(403).send({ error: "Only the owner can pause a VM" });
     }
@@ -468,12 +491,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   app.post("/vms/:id/clone", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { name?: string } || {};
-    const sourceVM = getDatabase().findVMById(id);
+    const sourceVM = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!sourceVM) {
       return reply.status(404).send({ error: "Source VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(sourceVM.id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
@@ -523,7 +546,16 @@ export function registerVMRoutes(app: FastifyInstance) {
       });
     }
 
-    const cloneName = body.name || `${sourceVM.name} (copy)`;
+    // Require a valid name for the clone
+    const cloneName = body.name || `${sourceVM.name}-copy`;
+    const cloneNameValidation = validateVMName(cloneName);
+    if (!cloneNameValidation.valid) {
+      return reply.status(400).send({ error: cloneNameValidation.message });
+    }
+    if (getDatabase().findVMByName(cloneName)) {
+      return reply.status(409).send({ error: "Name already taken" });
+    }
+
     const slug = `vm-${generateSlug()}`;
     const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal } = getVMEngine().allocateResources();
 
@@ -625,9 +657,9 @@ export function registerVMRoutes(app: FastifyInstance) {
     return reply.status(201).send({
       id: slug,
       name: cloneName,
-      url: `http://${slug}.${getBaseDomain()}`,
+      url: `http://${cloneName}.${getBaseDomain()}`,
       ...(sourceVM.gh_repo ? { repo_url: `https://github.com/${sourceVM.gh_repo}` } : {}),
-      ssh_command: `ssh ${slug}@ssh.${getBaseDomain()}`,
+      ssh_command: `ssh ${cloneName}@ssh.${getBaseDomain()}`,
       ssh_port: sshPort,
       status: "running",
     });
@@ -636,7 +668,7 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Status page (Caddy fallback for 502/503)
   app.get("/vms/:id/status-page", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
 
     const status = vm?.status || "unknown";
     const name = vm?.name || id;
@@ -694,7 +726,7 @@ export function registerVMRoutes(app: FastifyInstance) {
         // VM is now running — redirect back so Caddy proxies to the actual app
         const baseDomain = getBaseDomain();
         const scheme = baseDomain === "localhost" ? "http" : "https";
-        return reply.redirect(`${scheme}://${id}.${baseDomain}/`);
+        return reply.redirect(`${scheme}://${vm!.name}.${baseDomain}/`);
       } catch (err: any) {
         if (err instanceof QuotaExceededError) {
           isQuotaError = true;
@@ -775,12 +807,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Check if SSH keys are already synced to the VM
   app.get("/vms/:id/ssh-keys-status", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
@@ -804,12 +836,12 @@ export function registerVMRoutes(app: FastifyInstance) {
   // Sync SSH keys to a running VM
   app.post("/vms/:id/sync-ssh-keys", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const vm = getDatabase().findVMById(id);
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
       return reply.status(404).send({ error: "VM not found" });
     }
 
-    const role = getDatabase().checkAccess(id, request.userId);
+    const role = getDatabase().checkAccess(vm.id, request.userId);
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
