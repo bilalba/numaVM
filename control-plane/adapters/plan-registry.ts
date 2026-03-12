@@ -7,6 +7,7 @@ export interface PlanLimits {
   max_disk_gib: number;
   valid_disk_sizes: number[];
   label: string;
+  max_llm_budget?: number;
 }
 
 export interface TrialConfig {
