@@ -240,6 +240,10 @@ function destroyTap(tapName: string): void {
 }
 
 function addDnat(hostPort: number, vmIp: string, vmPort: number): void {
+  // Remove any existing rule first to prevent duplicates (iptables -A appends
+  // unconditionally, and iptables -D only removes one instance at a time).
+  removeDnat(hostPort, vmIp, vmPort);
+
   const dnatAdd = process.env.DNAT_ADD || "/opt/firecracker/bin/add-dnat";
   if (existsSync(dnatAdd)) {
     execSync(`"${dnatAdd}" "${hostPort}" "${vmIp}" "${vmPort}"`, { stdio: "pipe" });

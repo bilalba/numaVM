@@ -6,7 +6,7 @@ import { getDatabase, getVMEngine, getReverseProxy, getLifecycleHook } from "../
 import { fetchSshKeys } from "../services/github.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
 import { bindWakeProxy, unbindWakeProxy, bindAppWakeProxy, unbindAppWakeProxy } from "../services/wake-proxy.js";
-import { agentManager } from "../agents/manager.js";
+import { createAgentSession } from "./agents.js";
 import { validateVMName } from "../utils/validation.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
@@ -221,7 +221,7 @@ export function registerVMRoutes(app: FastifyInstance) {
         if (initialPrompt) {
           const safeName = (body.name || "workspace").toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "workspace";
           const cwd = `/home/dev/${safeName}`;
-          agentManager.createSession(slug, "opencode", { cwd, prompt: initialPrompt }).catch((err) => {
+          createAgentSession(slug, "opencode", { cwd, prompt: initialPrompt }).catch((err) => {
             console.error(`[vm] Failed to auto-create OpenCode session for ${slug}:`, err);
           });
         }
@@ -737,7 +737,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     let isQuotaError = false;
     if (vm && (status === "snapshotted" || status === "paused")) {
       try {
-        await ensureVMRunning(id);
+        await ensureVMRunning(vm.id);
         // VM is now running — redirect back so Caddy proxies to the actual app
         const baseDomain = getBaseDomain();
         const scheme = baseDomain === "localhost" ? "http" : "https";

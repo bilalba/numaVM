@@ -29,6 +29,14 @@ export function setRemoteAgentForwarder(forwarder: RemoteAgentForwarder): void {
   remoteForwarder = forwarder;
 }
 
+/** Create an agent session on the correct host (local or remote node). */
+export async function createAgentSession(vmId: string, agentType: AgentType, opts: { cwd?: string; prompt?: string }): Promise<any> {
+  if (isRemoteVM(vmId)) {
+    return remoteForwarder!.forward(vmId, "POST", `/vms/${vmId}/agents/${agentType}/sessions`, opts);
+  }
+  return agentManager.createSession(vmId, agentType, opts);
+}
+
 /** Check if a VM is hosted on a remote node (has host_id). */
 function isRemoteVM(vmId: string): boolean {
   if (!remoteForwarder) return false;

@@ -11,9 +11,6 @@ function getAuthPort(): string {
 function getControlPlanePort(): string {
   return process.env.CONTROL_PLANE_PORT || "4001";
 }
-function getDashboardPort(): string {
-  return process.env.DASHBOARD_PORT || "4002";
-}
 function getAdminPort(): string {
   return process.env.ADMIN_PORT || "4003";
 }
@@ -34,7 +31,6 @@ function generateCaddyfile(vms: VMRoute[]): string {
   const domain = getBaseDomain();
   const authPort = getAuthPort();
   const cpPort = getControlPlanePort();
-  const dashPort = getDashboardPort();
   const adminPort = getAdminPort();
   const isLocal = domain === "localhost";
   // Caddy auto-provisions TLS for real domains; use http:// only for localhost
@@ -62,6 +58,10 @@ ${scheme}api.${domain} {${tlsDirective}
     handle @webhook {
         reverse_proxy localhost:${cpPort}
     }
+    @internal path /internal/*
+    handle @internal {
+        reverse_proxy localhost:${cpPort}
+    }
     handle {
         forward_auth localhost:${authPort} {
             uri /verify
@@ -69,19 +69,6 @@ ${scheme}api.${domain} {${tlsDirective}
         }
         reverse_proxy localhost:${cpPort}
     }
-}
-
-# Dashboard — forward_auth, redirects to login on failure
-${scheme}app.${domain} {${tlsDirective}
-    forward_auth localhost:${authPort} {
-        uri /verify
-        copy_headers X-User-Id X-User-Email
-        @unauthorized status 401 403
-        handle_response @unauthorized {
-            redir ${authLoginUrl}?redirect=${scheme}app.${domain}{http.request.uri}
-        }
-    }
-    reverse_proxy localhost:${dashPort}
 }
 
 # Admin dashboard — forward_auth with admin header, redirects to login on failure
