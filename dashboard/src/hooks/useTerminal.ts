@@ -2,13 +2,15 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { terminalWsUrl } from "../lib/api";
+import { terminalWsUrl, api } from "../lib/api";
 
 interface UseTerminalOptions {
   vmId: string;
   containerRef: React.RefObject<HTMLDivElement | null>;
   enabled: boolean;
   session?: string;
+  /** When true, attempt direct node agent connection via connect token. */
+  isRemote?: boolean;
 }
 
 // Filter mouse escape sequences to prevent flooding when an app exits without
@@ -20,7 +22,10 @@ function stripMouseEvents(data: string): string {
   return data.replace(MOUSE_SGR_RE, "").replace(MOUSE_X10_RE, "");
 }
 
-export function useTerminal({ vmId, containerRef, enabled, session }: UseTerminalOptions) {
+/** Token refresh threshold — refresh when less than this many ms remain. */
+const TOKEN_REFRESH_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes before expiry
+
+export function useTerminal({ vmId, containerRef, enabled, session, isRemote }: UseTerminalOptions) {
   const stateRef = useRef<{
     term: Terminal;
     fit: FitAddon;
@@ -28,6 +33,11 @@ export function useTerminal({ vmId, containerRef, enabled, session }: UseTermina
     inputDisposable: { dispose: () => void } | null;
     observer: ResizeObserver | null;
     reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    tokenRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+    // Direct node connection state (multi-node)
+    nodeTerminalUrl: string | null;
+    connectToken: string | null;
+    tokenExpires: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -59,16 +69,57 @@ export function useTerminal({ vmId, containerRef, enabled, session }: UseTermina
       inputDisposable: null,
       observer: null,
       reconnectTimer: undefined,
+      tokenRefreshTimer: undefined,
+      nodeTerminalUrl: null,
+      connectToken: null,
+      tokenExpires: null,
     };
     stateRef.current = state;
 
     let disposed = false;
     let retryDelay = 1000;
 
+    function scheduleTokenRefresh() {
+      if (state.tokenRefreshTimer) clearTimeout(state.tokenRefreshTimer);
+      if (!state.tokenExpires || !state.nodeTerminalUrl) return;
+
+      const expiresAt = new Date(state.tokenExpires).getTime();
+      const refreshIn = Math.max(0, expiresAt - Date.now() - TOKEN_REFRESH_THRESHOLD_MS);
+
+      state.tokenRefreshTimer = setTimeout(async () => {
+        if (disposed) return;
+        try {
+          const result = await api.getTerminalConnectToken(vmId);
+          state.connectToken = result.connectToken;
+          state.tokenExpires = result.expiresAt;
+          if (result.terminalWsUrl) state.nodeTerminalUrl = result.terminalWsUrl;
+          scheduleTokenRefresh();
+        } catch {
+          // Token refresh failed — clear node refs, will fall back to CP on reconnect
+          state.connectToken = null;
+          state.nodeTerminalUrl = null;
+        }
+      }, refreshIn);
+    }
+
+    function buildWsUrl(): string {
+      // If we have a direct node connection, use it
+      if (state.nodeTerminalUrl && state.connectToken) {
+        const base = state.nodeTerminalUrl.replace(/\/+$/, "");
+        let url = `${base}/vms/${vmId}/terminal?token=${encodeURIComponent(state.connectToken)}&cols=${term.cols}&rows=${term.rows}`;
+        if (session) {
+          url += `&session=${encodeURIComponent(session)}`;
+        }
+        return url;
+      }
+      // Fall back to CP terminal WS
+      return terminalWsUrl(vmId, term.cols, term.rows, session);
+    }
+
     function connect() {
       if (disposed) return;
 
-      const url = terminalWsUrl(vmId, term.cols, term.rows, session);
+      const url = buildWsUrl();
       const ws = new WebSocket(url);
       state.ws = ws;
 
@@ -77,6 +128,11 @@ export function useTerminal({ vmId, containerRef, enabled, session }: UseTermina
         // Clear any stale mouse tracking modes left by a killed process
         term.write("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
         term.focus();
+
+        // Schedule token refresh if using direct node connection
+        if (state.nodeTerminalUrl && state.connectToken) {
+          scheduleTokenRefresh();
+        }
       };
 
       ws.onmessage = (event) => {
@@ -95,6 +151,14 @@ export function useTerminal({ vmId, containerRef, enabled, session }: UseTermina
 
         state.reconnectTimer = setTimeout(connect, retryDelay);
         retryDelay = Math.min(retryDelay * 1.5, 10000); // Backoff up to 10s
+      };
+
+      ws.onerror = () => {
+        // If direct node connection failed, clear refs to fall back to CP
+        if (state.nodeTerminalUrl) {
+          state.nodeTerminalUrl = null;
+          state.connectToken = null;
+        }
       };
 
       // Single input listener per connection
@@ -120,16 +184,34 @@ export function useTerminal({ vmId, containerRef, enabled, session }: UseTermina
       state.observer = observer;
     }
 
-    connect();
+    // For remote VMs (multi-node), get a connect token for direct node connection.
+    // For local VMs (OSS / single-node), connect directly to CP.
+    if (isRemote) {
+      api.getTerminalConnectToken(vmId)
+        .then((result) => {
+          if (disposed) return;
+          state.nodeTerminalUrl = result.terminalWsUrl;
+          state.connectToken = result.connectToken;
+          state.tokenExpires = result.expiresAt;
+          connect();
+        })
+        .catch(() => {
+          if (disposed) return;
+          connect();
+        });
+    } else {
+      connect();
+    }
 
     return () => {
       disposed = true;
       clearTimeout(state.reconnectTimer);
+      clearTimeout(state.tokenRefreshTimer);
       state.observer?.disconnect();
       state.inputDisposable?.dispose();
       state.ws?.close(1000);
       term.dispose();
       stateRef.current = null;
     };
-  }, [vmId, enabled, containerRef, session]);
+  }, [vmId, enabled, containerRef, session, isRemote]);
 }

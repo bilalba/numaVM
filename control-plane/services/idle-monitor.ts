@@ -109,7 +109,10 @@ async function pollOnce(): Promise<void> {
         db.updateVMSnapshotPath(vm.id, snapshotPath);
         db.updateVMStatus(vm.id, "snapshotted");
 
-        // Caddy route stays — wake-proxy on appPort handles connections while snapshotted
+        // Update route status (KV, node Caddy) if proxy supports it
+        if (proxy.updateRouteStatus) {
+          try { await proxy.updateRouteStatus(vm.id, "snapshotted", false); } catch { /* best-effort */ }
+        }
 
         // Clean up traffic tracking
         trafficMap.delete(vm.id);
@@ -182,7 +185,10 @@ async function pollOnce(): Promise<void> {
           const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${vmId}/snapshot`;
           db.updateVMSnapshotPath(vmId, snapshotPath);
           db.updateVMStatus(vmId, "snapshotted");
-          // Caddy route stays — wake-proxy handles connections
+          // Update route status (KV, node Caddy) if proxy supports it
+          if (proxy.updateRouteStatus) {
+            try { await proxy.updateRouteStatus(vmId, "snapshotted", false); } catch { /* best-effort */ }
+          }
           trafficMap.delete(vmId);
           db.emitAdminEvent("vm.data_limit_paused", vmId, userId, { usedBytes: usage, maxBytes: plan.max_data_bytes });
           console.log(`[idle-monitor] VM ${vmId} paused (data limit)`);

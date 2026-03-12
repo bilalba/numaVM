@@ -401,6 +401,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       image_version: vm.image_version,
       is_public: !!vm.is_public,
       vm_ipv6: vm.vm_ipv6 || null,
+      host_id: vm.host_id || null,
       ...(quotaError ? { quota_error: quotaError } : {}),
       ...(diskQuotaError ? { disk_quota_error: diskQuotaError } : {}),
       ...(dataQuotaError ? { data_quota_error: dataQuotaError } : {}),
@@ -485,7 +486,11 @@ export function registerVMRoutes(app: FastifyInstance) {
       getDatabase().updateVMSnapshotPath(id, snapshotPath);
       getDatabase().updateVMStatus(id, "snapshotted");
 
-      // Caddy route stays — wake-proxy on appPort handles connections while snapshotted
+      // Update route status (KV, node Caddy) if proxy supports it
+      const proxy = getReverseProxy();
+      if (proxy.updateRouteStatus) {
+        try { await proxy.updateRouteStatus(vm.id, "snapshotted", !!vm.is_public); } catch { /* best-effort */ }
+      }
 
       getDatabase().emitAdminEvent("vm.paused", id, request.userId);
 

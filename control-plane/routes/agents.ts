@@ -9,6 +9,33 @@ import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
 
 const VALID_AGENT_TYPES = new Set(["codex", "opencode"]);
 
+// --- Remote agent forwarder (set by commercial layer for multi-node) ---
+
+interface RemoteAgentForwarder {
+  /** Forward an HTTP request to the node agent hosting this VM. */
+  forward(vmId: string, method: string, path: string, body?: any): Promise<any>;
+  /** Issue a connect token for direct dashboard→node agent WS. */
+  issueConnectToken(userId: string, vmId: string, purpose?: string): Promise<{ token: string; expiresAt: string }>;
+  /** Get the agent WS URL for a VM's node agent. */
+  getAgentWsUrl(vmId: string): string | null;
+  /** Open a WebSocket to the node agent and return it for proxying. */
+  openNodeWs?(vmId: string, path: string): import("ws").WebSocket | null;
+}
+
+let remoteForwarder: RemoteAgentForwarder | null = null;
+
+/** Called by commercial layer to enable multi-node agent forwarding. */
+export function setRemoteAgentForwarder(forwarder: RemoteAgentForwarder): void {
+  remoteForwarder = forwarder;
+}
+
+/** Check if a VM is hosted on a remote node (has host_id). */
+function isRemoteVM(vmId: string): boolean {
+  if (!remoteForwarder) return false;
+  const vm = getDatabase().findVMById(vmId);
+  return !!vm?.host_id;
+}
+
 /** Resolve a VM identifier (id or name) to the internal VM id. */
 function resolveVMId(idOrName: string): string {
   const db = getDatabase();
@@ -46,6 +73,24 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
 
     const body = request.body as { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy; prompt?: string } | undefined;
+
+    // Multi-node: forward to node agent
+    if (isRemoteVM(id)) {
+      try {
+        const session = await remoteForwarder!.forward(id, "POST", `/vms/${id}/agents/${type}/sessions`, body || {});
+        getDatabase().emitAdminEvent("agent.session_created", id, request.userId, { agentType: type, sessionId: session.id });
+
+        // Include connect token + agent WS URL for direct dashboard→node connection
+        const { token: connectToken, expiresAt } = await remoteForwarder!.issueConnectToken(request.userId, id);
+        const agentWsUrl = remoteForwarder!.getAgentWsUrl(id);
+        return reply.status(201).send({ ...session, connectToken, agentWsUrl, connectTokenExpiresAt: expiresAt });
+      } catch (err: any) {
+        request.log.error({ err, vmId: id, agentType: type }, "Failed to create agent session on node");
+        return reply.status(500).send({ error: err.message });
+      }
+    }
+
+    // Local: handle directly
     const model = body?.model?.trim() || undefined;
     const providerID = body?.providerID?.trim() || undefined;
     const modelID = body?.modelID?.trim() || undefined;
@@ -79,6 +124,16 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
+    // Multi-node: session data lives on the node agent's DB
+    if (isRemoteVM(id)) {
+      try {
+        return await remoteForwarder!.forward(id, "GET", `/vms/${id}/agents/${type}/sessions`);
+      } catch (err: any) {
+        request.log.error({ err, vmId: id }, "Failed to list sessions from node agent");
+        return { sessions: [] };
+      }
+    }
+
     const sessions = agentManager.listSessions(id, type as AgentType);
     return { sessions };
   });
@@ -93,6 +148,28 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
+    // Multi-node: session data lives on the node agent's DB, not CP's
+    if (isRemoteVM(id)) {
+      try {
+        const result = await remoteForwarder!.forward(id, "GET", `/vms/${id}/sessions/${sid}`);
+
+        // Include connect token for direct WS connection
+        const { token: connectToken, expiresAt } = await remoteForwarder!.issueConnectToken(request.userId, id);
+        const agentWsUrl = remoteForwarder!.getAgentWsUrl(id);
+
+        return {
+          ...result,
+          connectToken,
+          agentWsUrl,
+          connectTokenExpiresAt: expiresAt,
+        };
+      } catch (err: any) {
+        request.log.error({ err, vmId: id, sid }, "Failed to fetch session from node agent");
+        return reply.status(404).send({ error: "Session not found" });
+      }
+    }
+
+    // Local: read from CP's DB
     const result = agentManager.getSessionWithHistory(sid);
     if (!result) {
       return reply.status(404).send({ error: "Session not found" });
@@ -102,8 +179,6 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "Session does not belong to this VM" });
     }
 
-    // Fetch pending approvals/questions and todos from OpenCode so the dashboard
-    // can restore them when navigating back to a busy session.
     const [pending, todos] = await Promise.all([
       agentManager.getPendingItems(sid),
       agentManager.getTodos(sid),
@@ -121,16 +196,10 @@ export function registerAgentRoutes(app: FastifyInstance) {
     if (!body.text || typeof body.text !== "string" || !body.text.trim()) {
       return reply.status(400).send({ error: "text is required" });
     }
-    const agent = body.agent?.trim() || undefined;
 
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
-    }
-
-    const session = getDatabase().findAgentSession(sid);
-    if (!session || session.vm_id !== id) {
-      return reply.status(404).send({ error: "Session not found" });
     }
 
     // Auto-wake snapshotted VMs before sending message
@@ -144,7 +213,23 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(503).send({ error: "VM is not available. Please try again." });
     }
 
+    // Multi-node: session lives on node agent's DB
+    if (isRemoteVM(id)) {
+      try {
+        await remoteForwarder!.forward(id, "POST", `/vms/${id}/sessions/${sid}/message`, body);
+        return { ok: true };
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
+
+    const session = getDatabase().findAgentSession(sid);
+    if (!session || session.vm_id !== id) {
+      return reply.status(404).send({ error: "Session not found" });
+    }
+
     try {
+      const agent = body.agent?.trim() || undefined;
       await agentManager.sendMessage(sid, body.text.trim(), {
         ...(agent ? { agent } : {}),
         ...(body.effort ? { effort: body.effort } : {}),
@@ -168,6 +253,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
 
+    if (isRemoteVM(id)) {
+      try {
+        await remoteForwarder!.forward(id, "POST", `/vms/${id}/sessions/${sid}/stop`);
+        return { ok: true };
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
+
     const session = getDatabase().findAgentSession(sid);
     if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
@@ -189,6 +283,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
+    }
+
+    if (isRemoteVM(id)) {
+      try {
+        await remoteForwarder!.forward(id, "DELETE", `/vms/${id}/sessions/${sid}`);
+        return { ok: true, message: "Session archived" };
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
     }
 
     const session = getDatabase().findAgentSession(sid);
@@ -216,6 +319,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
 
+    if (isRemoteVM(id)) {
+      try {
+        await remoteForwarder!.forward(id, "POST", `/vms/${id}/sessions/${sid}/approval`, body);
+        return { ok: true };
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
+
     try {
       await agentManager.respondToApproval(sid, body.approvalId, body.decision as ApprovalDecision);
       return { ok: true };
@@ -237,6 +349,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
+    }
+
+    if (isRemoteVM(id)) {
+      try {
+        await remoteForwarder!.forward(id, "POST", `/vms/${id}/sessions/${sid}/question`, body);
+        return { ok: true };
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
     }
 
     try {
@@ -262,6 +383,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "Editor or owner access required" });
     }
 
+    if (isRemoteVM(id)) {
+      try {
+        const result = await remoteForwarder!.forward(id, "POST", `/vms/${id}/sessions/${sid}/revert`, body || {});
+        return { ok: true, session: result.session };
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
+
     const session = getDatabase().findAgentSession(sid);
     if (!session || session.vm_id !== id) {
       return reply.status(404).send({ error: "Session not found" });
@@ -283,6 +413,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") {
       return reply.status(403).send({ error: "Editor or owner access required" });
+    }
+
+    if (isRemoteVM(id)) {
+      try {
+        const result = await remoteForwarder!.forward(id, "POST", `/vms/${id}/sessions/${sid}/unrevert`);
+        return { ok: true, session: result.session };
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
     }
 
     const session = getDatabase().findAgentSession(sid);
@@ -310,6 +449,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
     if (!role) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
+
+    if (isRemoteVM(id)) {
+      try {
+        return await remoteForwarder!.forward(id, "GET", `/vms/${id}/opencode/providers`);
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
+
     try {
       const bridge = new OpenCodeBridge(vm.id, vm.opencode_port, vm.opencode_password || "");
       const raw = await bridge.listProviders();
@@ -351,6 +499,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
 
+    if (isRemoteVM(id)) {
+      try {
+        const qs = query.includeHidden === "true" ? "?includeHidden=true" : "";
+        return await remoteForwarder!.forward(id, "GET", `/vms/${id}/codex/models${qs}`);
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
+
     try {
       const models = await agentManager.listCodexModels(id, query.includeHidden === "true");
       return { models };
@@ -367,6 +524,18 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const query = request.query as { cursor?: string; limit?: string };
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
+
+    if (isRemoteVM(id)) {
+      try {
+        const params = new URLSearchParams();
+        if (query.cursor) params.set("cursor", query.cursor);
+        if (query.limit) params.set("limit", query.limit);
+        const qs = params.toString() ? `?${params.toString()}` : "";
+        return await remoteForwarder!.forward(id, "GET", `/vms/${id}/codex/threads${qs}`);
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
 
     try {
       const limit = query.limit ? parseInt(query.limit, 10) : undefined;
@@ -386,6 +555,15 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const query = request.query as { refresh?: string };
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role) return reply.status(403).send({ error: "No access" });
+
+    if (isRemoteVM(id)) {
+      try {
+        const qs = query.refresh === "true" ? "?refresh=true" : "";
+        return await remoteForwarder!.forward(id, "GET", `/vms/${id}/codex/auth/status${qs}`);
+      } catch (err: any) {
+        return { authenticated: false, error: err.message };
+      }
+    }
 
     try {
       if (query.refresh === "true") {
@@ -413,6 +591,14 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const body = request.body as { mode?: string; apiKey?: string };
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") return reply.status(403).send({ error: "Editor or owner access required" });
+
+    if (isRemoteVM(id)) {
+      try {
+        return await remoteForwarder!.forward(id, "POST", `/vms/${id}/codex/auth/login`, body);
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
 
     try {
       if (body.mode === "apikey" && body.apiKey) {
@@ -478,10 +664,64 @@ export function registerAgentRoutes(app: FastifyInstance) {
     const role = getDatabase().checkAccess(id, request.userId);
     if (!role || role === "viewer") return reply.status(403).send({ error: "Editor or owner access required" });
 
+    if (isRemoteVM(id)) {
+      try {
+        return await remoteForwarder!.forward(id, "POST", `/vms/${id}/codex/auth/logout`);
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message });
+      }
+    }
+
     try {
       const bridge = await agentManager.getCodexAuthBridge(id);
       await bridge.logout();
       return { ok: true };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
+  // POST /vms/:id/agent-connect-token — Get/refresh connect token for direct node WS
+  app.post("/vms/:id/agent-connect-token", async (request, reply) => {
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
+
+    const role = getDatabase().checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
+    }
+
+    if (!isRemoteVM(id)) {
+      return reply.status(400).send({ error: "VM is not on a remote node" });
+    }
+
+    try {
+      const { token: connectToken, expiresAt } = await remoteForwarder!.issueConnectToken(request.userId, id);
+      const agentWsUrl = remoteForwarder!.getAgentWsUrl(id);
+      return { connectToken, agentWsUrl, expiresAt };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
+  // POST /vms/:id/terminal-connect-token — Get connect token for direct node terminal WS
+  app.post("/vms/:id/terminal-connect-token", async (request, reply) => {
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
+
+    const role = getDatabase().checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
+    }
+
+    if (!isRemoteVM(id)) {
+      return reply.status(400).send({ error: "VM is not on a remote node" });
+    }
+
+    try {
+      const { token: connectToken, expiresAt } = await remoteForwarder!.issueConnectToken(request.userId, id, "terminal");
+      const terminalWsUrl = remoteForwarder!.getAgentWsUrl(id);
+      return { connectToken, terminalWsUrl, expiresAt };
     } catch (err: any) {
       return reply.status(500).send({ error: err.message });
     }
@@ -501,6 +741,42 @@ export function registerAgentRoutes(app: FastifyInstance) {
         return;
       }
 
+      // For remote VMs, proxy WebSocket to the node agent's agent-ws endpoint
+      if (isRemoteVM(id) && remoteForwarder?.openNodeWs) {
+        const nodeWs = remoteForwarder.openNodeWs(id, `/vms/${id}/agent-ws`);
+        if (!nodeWs) {
+          socket.close(4004, "Node not found for VM");
+          return;
+        }
+
+        // Bridge: node → dashboard
+        nodeWs.on("message", (data: Buffer | string) => {
+          if (socket.readyState === 1) {
+            socket.send(typeof data === "string" ? data : data.toString());
+          }
+        });
+
+        // Bridge: dashboard → node
+        socket.on("message", (data: Buffer | string) => {
+          if (nodeWs.readyState === 1) {
+            nodeWs.send(typeof data === "string" ? data : data.toString());
+          }
+        });
+
+        // Close propagation
+        nodeWs.on("close", () => {
+          if (socket.readyState === 1) socket.close(1000);
+        });
+        nodeWs.on("error", () => {
+          if (socket.readyState === 1) socket.close(1011, "Node connection error");
+        });
+        socket.on("close", () => {
+          if (nodeWs.readyState <= 1) nodeWs.close();
+        });
+        return;
+      }
+
+      // Local VMs: connect to local wsHub
       wsHub.addConnection(id, socket);
 
       socket.on("message", async (raw: Buffer | string) => {

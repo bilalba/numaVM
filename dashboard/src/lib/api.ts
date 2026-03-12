@@ -21,6 +21,41 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/** Direct node agent connection info (multi-node). */
+export interface NodeConnection {
+  /** HTTP base URL, e.g. "https://node1.numavm.com" */
+  httpUrl: string;
+  /** Connect token JWT for auth */
+  token: string;
+}
+
+/** Fetch directly from a node agent using connect token auth. */
+async function nodeFetch<T>(node: NodeConnection, path: string, options?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    ...options?.headers as Record<string, string>,
+    "Authorization": `Bearer ${node.token}`,
+  };
+  if (options?.body) {
+    headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(`${node.httpUrl}${path}`, {
+    headers,
+    ...options,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || `API error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+/** Convert a WS URL (wss://node1.numavm.com) to HTTP (https://node1.numavm.com). */
+export function wsUrlToHttp(wsUrl: string): string {
+  return wsUrl.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+}
+
 export interface VMSummary {
   id: string;
   name: string;
@@ -84,6 +119,7 @@ export interface VMDetail {
   image_version: number;
   is_public: boolean;
   vm_ipv6?: string | null;
+  host_id?: string | null;
   quota_error?: {
     message: string;
     current_ram_mib: number;
@@ -125,6 +161,10 @@ export interface AgentSession {
   status: string;
   created_at: string;
   updated_at: string;
+  // Multi-node: present when VM is on a remote node
+  connectToken?: string;
+  agentWsUrl?: string;
+  connectTokenExpiresAt?: string;
 }
 
 export interface AgentMessage {
@@ -321,12 +361,13 @@ export const api = {
     apiFetch<{ sessions: AgentSession[] }>(`/vms/${vmId}/agents/${agentType}/sessions`),
 
   getAgentSession: (vmId: string, sessionId: string) =>
-    apiFetch<{ session: AgentSession; messages: AgentMessage[]; pendingApprovals?: { id: string; action: string; detail: unknown }[]; pendingQuestions?: { id: string; questions: { question: string; header: string; options: { label: string; description: string }[]; multiple?: boolean; custom?: boolean }[] }[]; todos?: { id: string; content: string; status: string; priority: string }[] }>(
+    apiFetch<{ session: AgentSession; messages: AgentMessage[]; pendingApprovals?: { id: string; action: string; detail: unknown }[]; pendingQuestions?: { id: string; questions: { question: string; header: string; options: { label: string; description: string }[]; multiple?: boolean; custom?: boolean }[] }[]; todos?: { id: string; content: string; status: string; priority: string }[]; connectToken?: string; agentWsUrl?: string; connectTokenExpiresAt?: string }>(
       `/vms/${vmId}/sessions/${sessionId}`
     ),
 
-  sendAgentMessage: (vmId: string, sessionId: string, text: string, opts?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }) =>
-    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/message`, {
+  sendAgentMessage: (vmId: string, sessionId: string, text: string, opts?: { agent?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy }, node?: NodeConnection) => {
+    const path = `/vms/${vmId}/sessions/${sessionId}/message`;
+    const init = {
       method: "POST",
       body: JSON.stringify({
         text,
@@ -335,48 +376,65 @@ export const api = {
         ...(opts?.approvalPolicy ? { approvalPolicy: opts.approvalPolicy } : {}),
         ...(opts?.sandboxPolicy ? { sandboxPolicy: opts.sandboxPolicy } : {}),
       }),
-    }),
+    };
+    return node ? nodeFetch<{ ok: boolean }>(node, path, init) : apiFetch<{ ok: boolean }>(path, init);
+  },
 
-  stopAgent: (vmId: string, sessionId: string) =>
-    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/stop`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    }),
+  stopAgent: (vmId: string, sessionId: string, node?: NodeConnection) => {
+    const path = `/vms/${vmId}/sessions/${sessionId}/stop`;
+    const init = { method: "POST", body: JSON.stringify({}) };
+    return node ? nodeFetch<{ ok: boolean }>(node, path, init) : apiFetch<{ ok: boolean }>(path, init);
+  },
 
-  deleteAgentSession: (vmId: string, sessionId: string) =>
-    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}`, {
-      method: "DELETE",
-    }),
+  deleteAgentSession: (vmId: string, sessionId: string, node?: NodeConnection) => {
+    const path = `/vms/${vmId}/sessions/${sessionId}`;
+    const init = { method: "DELETE" as const };
+    return node ? nodeFetch<{ ok: boolean }>(node, path, init) : apiFetch<{ ok: boolean }>(path, init);
+  },
 
-  revertMessage: (vmId: string, sessionId: string, messageId?: string) =>
-    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/revert`, {
-      method: "POST",
-      body: JSON.stringify(messageId ? { messageId } : {}),
-    }),
+  revertMessage: (vmId: string, sessionId: string, messageId?: string, node?: NodeConnection) => {
+    const path = `/vms/${vmId}/sessions/${sessionId}/revert`;
+    const init = { method: "POST", body: JSON.stringify(messageId ? { messageId } : {}) };
+    return node ? nodeFetch<{ ok: boolean }>(node, path, init) : apiFetch<{ ok: boolean }>(path, init);
+  },
 
-  unrevertSession: (vmId: string, sessionId: string) =>
-    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/unrevert`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    }),
+  unrevertSession: (vmId: string, sessionId: string, node?: NodeConnection) => {
+    const path = `/vms/${vmId}/sessions/${sessionId}/unrevert`;
+    const init = { method: "POST", body: JSON.stringify({}) };
+    return node ? nodeFetch<{ ok: boolean }>(node, path, init) : apiFetch<{ ok: boolean }>(path, init);
+  },
 
-  respondToApproval: (vmId: string, sessionId: string, approvalId: string, decision: ApprovalDecision) =>
-    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/approval`, {
-      method: "POST",
-      body: JSON.stringify({ approvalId, decision }),
-    }),
+  respondToApproval: (vmId: string, sessionId: string, approvalId: string, decision: ApprovalDecision, node?: NodeConnection) => {
+    const path = `/vms/${vmId}/sessions/${sessionId}/approval`;
+    const init = { method: "POST", body: JSON.stringify({ approvalId, decision }) };
+    return node ? nodeFetch<{ ok: boolean }>(node, path, init) : apiFetch<{ ok: boolean }>(path, init);
+  },
 
-  respondToQuestion: (vmId: string, sessionId: string, questionId: string, answers: string[][]) =>
-    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/question`, {
-      method: "POST",
-      body: JSON.stringify({ questionId, answers }),
-    }),
+  respondToQuestion: (vmId: string, sessionId: string, questionId: string, answers: string[][], node?: NodeConnection) => {
+    const path = `/vms/${vmId}/sessions/${sessionId}/question`;
+    const init = { method: "POST", body: JSON.stringify({ questionId, answers }) };
+    return node ? nodeFetch<{ ok: boolean }>(node, path, init) : apiFetch<{ ok: boolean }>(path, init);
+  },
 
-  rejectQuestion: (vmId: string, sessionId: string, questionId: string) =>
-    apiFetch<{ ok: boolean }>(`/vms/${vmId}/sessions/${sessionId}/question`, {
-      method: "POST",
-      body: JSON.stringify({ questionId, reject: true }),
-    }),
+  rejectQuestion: (vmId: string, sessionId: string, questionId: string, node?: NodeConnection) => {
+    const path = `/vms/${vmId}/sessions/${sessionId}/question`;
+    const init = { method: "POST", body: JSON.stringify({ questionId, reject: true }) };
+    return node ? nodeFetch<{ ok: boolean }>(node, path, init) : apiFetch<{ ok: boolean }>(path, init);
+  },
+
+  // Connect token refresh (multi-node: for direct dashboard→node agent WS)
+  refreshConnectToken: (vmId: string) =>
+    apiFetch<{ connectToken: string; agentWsUrl: string; expiresAt: string }>(
+      `/vms/${vmId}/agent-connect-token`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+
+  // Terminal connect token (multi-node: for direct dashboard→node terminal WS)
+  getTerminalConnectToken: (vmId: string) =>
+    apiFetch<{ connectToken: string; terminalWsUrl: string; expiresAt: string }>(
+      `/vms/${vmId}/terminal-connect-token`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
 
   // Codex models + threads
   getCodexModels: (vmId: string, includeHidden = false) =>

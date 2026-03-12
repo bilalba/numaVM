@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { api, type AgentSession, type AgentMessage, type OpenCodeProvider, type OpenCodePopularProvider, type FileEntry, type CodexModel, type ApprovalDecision, type ReasoningEffort, type ApprovalPolicy, type SandboxPolicy } from "../lib/api";
+import { api, wsUrlToHttp, type AgentSession, type AgentMessage, type OpenCodeProvider, type OpenCodePopularProvider, type FileEntry, type CodexModel, type ApprovalDecision, type ReasoningEffort, type ApprovalPolicy, type SandboxPolicy, type NodeConnection } from "../lib/api";
 import { useAgentSocket, type AgentEvent } from "../hooks/useAgentSocket";
 import { ChatMessage, StreamingMessage, StreamingReasoning } from "./ChatMessage";
 import { ApprovalCard } from "./ApprovalCard";
@@ -95,7 +95,19 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   const { toast } = useToast();
   const { isOpen: paletteOpen, open: openPalette, close: closePalette } = useCommandPalette();
 
-  const { connected, addListener } = useAgentSocket(vmId);
+  // Direct node agent connection (multi-node) — used for all agent HTTP calls
+  const nodeRef = useRef<NodeConnection | null>(null);
+
+  const { connected, addListener, reconnectToNode, connectToCP, getNodeToken } = useAgentSocket(vmId);
+
+  /** Get the current node connection (uses latest token from WS hook). */
+  const getNode = useCallback((): NodeConnection | undefined => {
+    if (!nodeRef.current) return undefined;
+    // Always use the latest token (may have been refreshed by the WS hook)
+    const latestToken = getNodeToken();
+    if (latestToken) nodeRef.current.token = latestToken;
+    return nodeRef.current;
+  }, [getNodeToken]);
 
   // Check Codex auth status once VM is running
   useEffect(() => {
@@ -202,6 +214,15 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
           setQuestions([]);
         }
         setTodoItems(data.todos || []);
+
+        // Connect WS + HTTP: direct to node agent if remote, or CP if local
+        if (data.connectToken && data.agentWsUrl && data.connectTokenExpiresAt) {
+          nodeRef.current = { httpUrl: wsUrlToHttp(data.agentWsUrl), token: data.connectToken };
+          reconnectToNode(data.agentWsUrl, data.connectToken, data.connectTokenExpiresAt);
+        } else {
+          nodeRef.current = null;
+          connectToCP();
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -460,6 +481,15 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
       setSessionStatus("initializing");
       setModelInfo(null);
 
+      // Connect WS + HTTP: direct to node agent if remote, or CP if local
+      if (session.connectToken && session.agentWsUrl && session.connectTokenExpiresAt) {
+        nodeRef.current = { httpUrl: wsUrlToHttp(session.agentWsUrl), token: session.connectToken };
+        reconnectToNode(session.agentWsUrl, session.connectToken, session.connectTokenExpiresAt);
+      } else {
+        nodeRef.current = null;
+        connectToCP();
+      }
+
       // Add optimistic user message if prompt was provided
       if (prompt) {
         setMessages([{
@@ -524,7 +554,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
         effort: agentType === "codex" && selectedEffort ? selectedEffort : undefined,
         approvalPolicy: agentType === "codex" ? approvalPolicy : undefined,
         sandboxPolicy: agentType === "codex" ? sandboxPolicy : undefined,
-      });
+      }, getNode());
     } catch (err: any) {
       setSessionStatus("error");
     } finally {
@@ -535,7 +565,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   const handleStop = async () => {
     if (!activeSessionId) return;
     try {
-      await api.stopAgent(vmId, activeSessionId);
+      await api.stopAgent(vmId, activeSessionId, getNode());
       setSessionStatus("idle");
       setStreamingText("");
     } catch {}
@@ -545,7 +575,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
     async (approvalId: string, decision: ApprovalDecision) => {
       if (!activeSessionId) return;
       try {
-        await api.respondToApproval(vmId, activeSessionId, approvalId, decision);
+        await api.respondToApproval(vmId, activeSessionId, approvalId, decision, getNode());
         setApprovals((prev) =>
           prev.map((a) => (a.id === approvalId ? { ...a, responded: true } : a))
         );
@@ -558,7 +588,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
     async (questionId: string, answers: string[][]) => {
       if (!activeSessionId) return;
       try {
-        await api.respondToQuestion(vmId, activeSessionId, questionId, answers);
+        await api.respondToQuestion(vmId, activeSessionId, questionId, answers, getNode());
         setQuestions((prev) =>
           prev.map((q) => (q.id === questionId ? { ...q, responded: true } : q))
         );
@@ -571,7 +601,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
     async (questionId: string) => {
       if (!activeSessionId) return;
       try {
-        await api.rejectQuestion(vmId, activeSessionId, questionId);
+        await api.rejectQuestion(vmId, activeSessionId, questionId, getNode());
         setQuestions((prev) =>
           prev.map((q) => (q.id === questionId ? { ...q, responded: true } : q))
         );
@@ -583,7 +613,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   const handleUndo = async () => {
     if (!activeSessionId) return;
     try {
-      await api.revertMessage(vmId, activeSessionId);
+      await api.revertMessage(vmId, activeSessionId, undefined, getNode());
       // Reload messages after revert
       const data = await api.getAgentSession(vmId, activeSessionId);
       setMessages(data.messages);
@@ -596,7 +626,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   const handleRedo = async () => {
     if (!activeSessionId) return;
     try {
-      await api.unrevertSession(vmId, activeSessionId);
+      await api.unrevertSession(vmId, activeSessionId, getNode());
       const data = await api.getAgentSession(vmId, activeSessionId);
       setMessages(data.messages);
       toast("Restored reverted changes", "success");
@@ -667,7 +697,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   const handleArchiveSession = async () => {
     if (!activeSessionId) return;
     try {
-      await api.deleteAgentSession(vmId, activeSessionId);
+      await api.deleteAgentSession(vmId, activeSessionId, getNode());
       setSessions((prev) => prev.filter((s) => s.id !== activeSessionId));
       setActiveSessionId(sessions.length > 1 ? sessions.find((s) => s.id !== activeSessionId)?.id || null : null);
       setMessages([]);

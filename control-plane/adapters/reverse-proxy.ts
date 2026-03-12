@@ -13,4 +13,9 @@ export interface IReverseProxy {
 
   /** Remove a route for a specific VM. May trigger a full reload internally. */
   removeRoute(vmId: string): Promise<void>;
+
+  /** Update route status/visibility without adding or removing the route.
+   *  Optional — implementations that manage route metadata (e.g. KV) should implement this.
+   *  Caddy-based proxies can ignore it since they do full reloads. */
+  updateRouteStatus?(vmId: string, status: string, isPublic: boolean): Promise<void>;
 }

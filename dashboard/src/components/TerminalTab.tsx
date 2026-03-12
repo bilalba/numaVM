@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 
 interface TerminalTabProps {
   vmId: string;
+  isRemote?: boolean;
 }
 
 interface Tab {
@@ -15,10 +16,12 @@ function TerminalPane({
   vmId,
   session,
   active,
+  isRemote,
 }: {
   vmId: string;
   session: string;
   active: boolean;
+  isRemote?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -27,6 +30,7 @@ function TerminalPane({
     containerRef,
     enabled: active,
     session,
+    isRemote,
   });
 
   return (
@@ -38,7 +42,7 @@ function TerminalPane({
   );
 }
 
-export function TerminalTab({ vmId }: TerminalTabProps) {
+export function TerminalTab({ vmId, isRemote }: TerminalTabProps) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string>("main");
   const [loading, setLoading] = useState(true);
@@ -177,6 +181,7 @@ export function TerminalTab({ vmId }: TerminalTabProps) {
             vmId={vmId}
             session={tab.name}
             active={activeTab === tab.name}
+            isRemote={isRemote}
           />
         ))}
       </div>

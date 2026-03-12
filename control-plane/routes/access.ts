@@ -73,6 +73,12 @@ export function registerAccessRoutes(app: FastifyInstance) {
       console.error(`[access] Failed to reload Caddy after toggling public for ${vm.id}:`, err);
     }
 
+    // Update route status (KV, node Caddy) if proxy supports it
+    const proxy = getReverseProxy();
+    if (proxy.updateRouteStatus) {
+      try { await proxy.updateRouteStatus(vm.id, vm.status, body.is_public); } catch { /* best-effort */ }
+    }
+
     getDatabase().emitAdminEvent("vm.public_changed", vm.id, request.userId, { is_public: body.is_public });
 
     return { ok: true, is_public: body.is_public };

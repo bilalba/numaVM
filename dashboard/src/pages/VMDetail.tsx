@@ -96,63 +96,60 @@ export function VMDetail() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col h-[calc(100vh-33px)]">
       {/* Header */}
       <div className="mb-4 sm:mb-6">
-        <Link to="/" className="text-xs text-neutral-500 underline underline-offset-4 transition-opacity hover:opacity-60 mb-2 inline-block">
-          &larr; VMs
-        </Link>
-        <div className="flex items-center gap-3 mt-1">
+        <div className="flex items-center gap-3">
+          <Link to="/" className="text-xs text-neutral-500 underline underline-offset-4 transition-opacity hover:opacity-60 shrink-0">
+            &larr; VMs
+          </Link>
           <span
             className={`w-2 h-2 rounded-full shrink-0 ${statusColors[vm.status] || "bg-neutral-400"}`}
           />
           <h1 className="text-xl sm:text-2xl font-semibold truncate">{vm.name}</h1>
-          <span className="text-xs text-neutral-500 hidden sm:inline">{vm.id}</span>
-        </div>
-        <div className="flex items-center gap-2 mt-3 text-xs">
-          <a
-            href={vm.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-4 transition-opacity hover:opacity-60"
-          >
-            Visit
-          </a>
-          {vm.repo_url && (
-            <>
-              <span className="text-neutral-400">|</span>
-              <a
-                href={vm.repo_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline underline-offset-4 transition-opacity hover:opacity-60"
-              >
-                GitHub
-              </a>
-            </>
-          )}
-          <span className="text-neutral-400">|</span>
-          <span className="text-neutral-500 capitalize">
-            {vm.role} &middot; {vm.status} &middot;{" "}
-            {vm.image && vm.image !== "alpine" ? `${vm.image} v${vm.image_version} \u00B7 ` : ""}
-            {vm.mem_size_mib >= 1024
-              ? `${(vm.mem_size_mib / 1024).toFixed(vm.mem_size_mib % 1024 ? 2 : 0)} GB`
-              : `${vm.mem_size_mib} MB`} RAM
-          </span>
-          {vm.status === "running" && vm.role === "owner" && (
-            <>
-              <span className="text-neutral-400">|</span>
-              <button
-                onClick={async () => {
-                  if (!window.confirm(`Pause "${vm.name}"? The VM will be snapshotted and can be resumed later.`)) return;
-                  // Navigate away immediately to tear down WebSocket/terminal/polling
-                  // connections that would otherwise wake the VM right after pausing
-                  navigate("/", { state: { pausingVmId: vm.id, pausingVmName: vm.name } });
-                }}
-                disabled={pausing}
-                className="underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer disabled:opacity-30"
-              >
-                {pausing ? "Pausing..." : "Pause"}
-              </button>
-            </>
-          )}
+          <div className="flex items-center gap-2 text-xs ml-auto shrink-0">
+            <a
+              href={vm.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-4 transition-opacity hover:opacity-60"
+            >
+              Visit
+            </a>
+            {vm.repo_url && (
+              <>
+                <span className="text-neutral-400">|</span>
+                <a
+                  href={vm.repo_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-4 transition-opacity hover:opacity-60"
+                >
+                  GitHub
+                </a>
+              </>
+            )}
+            <span className="text-neutral-400">&middot;</span>
+            <span className="text-neutral-500 capitalize">
+              {vm.status} &middot;{" "}
+              {vm.image && vm.image !== "alpine" ? `${vm.image} v${vm.image_version} \u00B7 ` : ""}
+              {vm.mem_size_mib >= 1024
+                ? `${(vm.mem_size_mib / 1024).toFixed(vm.mem_size_mib % 1024 ? 2 : 0)} GB`
+                : `${vm.mem_size_mib} MB`} RAM
+            </span>
+            {vm.status === "running" && vm.role === "owner" && (
+              <>
+                <span className="text-neutral-400">|</span>
+                <button
+                  onClick={async () => {
+                    if (!window.confirm(`Pause "${vm.name}"? The VM will be snapshotted and can be resumed later.`)) return;
+                    navigate("/", { state: { pausingVmId: vm.id, pausingVmName: vm.name } });
+                  }}
+                  disabled={pausing}
+                  className="underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer disabled:opacity-30"
+                >
+                  {pausing ? "Pausing..." : "Pause"}
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -233,7 +230,7 @@ export function VMDetail() {
       <div className="flex-1 min-h-0">
         {activeTab === "codex" && <AgentTab vmId={vm.id} agentType="codex" vmStatus={vm.status} />}
         {activeTab === "opencode" && <AgentTab vmId={vm.id} agentType="opencode" vmName={vm.name} vmStatus={vm.status} pendingSession={pendingSession} />}
-        {activeTab === "terminal" && <TerminalTab vmId={vm.id} />}
+        {activeTab === "terminal" && <TerminalTab vmId={vm.id} isRemote={!!vm.host_id} />}
         {activeTab === "claude" && (
           <ClaudeCodeTab vmId={vm.id} sshCommand={vm.ssh_command} />
         )}

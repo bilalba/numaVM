@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { agentWsUrl } from "../lib/api";
+import { agentWsUrl, api } from "../lib/api";
 
 export interface AgentEvent {
   sessionId?: string;
@@ -25,25 +25,69 @@ export interface AgentEvent {
   step?: string;
 }
 
+/** Token refresh threshold — refresh when less than this many ms remain. */
+const TOKEN_REFRESH_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes before expiry
+
 export function useAgentSocket(vmId: string) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const tokenRefreshRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [connected, setConnected] = useState(false);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const listenersRef = useRef<((event: AgentEvent) => void)[]>([]);
 
   const retryDelayRef = useRef(1000);
 
+  // Direct node connection state (multi-node)
+  const nodeWsUrlRef = useRef<string | null>(null);
+  const connectTokenRef = useRef<string | null>(null);
+  const connectTokenExpiresRef = useRef<string | null>(null);
+
+  /** Refresh the connect token periodically so reconnections use a valid token. */
+  const scheduleTokenRefresh = useCallback(() => {
+    if (tokenRefreshRef.current) clearTimeout(tokenRefreshRef.current);
+    if (!connectTokenExpiresRef.current || !nodeWsUrlRef.current) return;
+
+    const expiresAt = new Date(connectTokenExpiresRef.current).getTime();
+    const refreshIn = Math.max(0, expiresAt - Date.now() - TOKEN_REFRESH_THRESHOLD_MS);
+
+    tokenRefreshRef.current = setTimeout(async () => {
+      try {
+        const result = await api.refreshConnectToken(vmId);
+        connectTokenRef.current = result.connectToken;
+        connectTokenExpiresRef.current = result.expiresAt;
+        if (result.agentWsUrl) nodeWsUrlRef.current = result.agentWsUrl;
+      } catch {
+        connectTokenRef.current = null;
+        nodeWsUrlRef.current = null;
+      }
+    }, refreshIn);
+  }, [vmId]);
+
   const connect = useCallback(() => {
     if (!vmId) return;
 
-    const url = agentWsUrl(vmId);
+    let url: string;
+
+    // If we have a direct node connection, use it
+    if (nodeWsUrlRef.current && connectTokenRef.current) {
+      const base = nodeWsUrlRef.current.replace(/\/+$/, "");
+      url = `${base}/vms/${vmId}/agent-ws?token=${encodeURIComponent(connectTokenRef.current)}`;
+    } else {
+      // Fall back to CP WebSocket (local VMs)
+      url = agentWsUrl(vmId);
+    }
+
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      retryDelayRef.current = 1000; // Reset backoff on success
+      retryDelayRef.current = 1000;
       setConnected(true);
+
+      if (nodeWsUrlRef.current && connectTokenRef.current) {
+        scheduleTokenRefresh();
+      }
     };
 
     ws.onmessage = (msg) => {
@@ -57,6 +101,9 @@ export function useAgentSocket(vmId: string) {
     };
 
     ws.onclose = (e) => {
+      // Ignore close events from stale WS (e.g. after reconnectToNode replaced it)
+      if (ws !== wsRef.current) return;
+
       setConnected(false);
       // Don't reconnect on normal close or access denied
       if (e.code === 1000 || e.code === 4003) return;
@@ -66,17 +113,24 @@ export function useAgentSocket(vmId: string) {
     };
 
     ws.onerror = () => {
+      // Only clear node refs if this is still the active WS
+      if (ws === wsRef.current && nodeWsUrlRef.current) {
+        nodeWsUrlRef.current = null;
+        connectTokenRef.current = null;
+      }
       ws.close();
     };
-  }, [vmId]);
+  }, [vmId, scheduleTokenRefresh]);
 
+  // Cleanup only — no auto-connect on mount.
+  // Connection is initiated by the caller via connectToCP() or reconnectToNode().
   useEffect(() => {
-    connect();
     return () => {
       clearTimeout(reconnectRef.current);
+      clearTimeout(tokenRefreshRef.current);
       wsRef.current?.close(1000);
     };
-  }, [connect]);
+  }, []);
 
   const sendCommand = useCallback((cmd: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -95,5 +149,39 @@ export function useAgentSocket(vmId: string) {
     };
   }, []);
 
-  return { connected, events, sendCommand, clearEvents, addListener };
+  /** Connect to CP WebSocket (for local VMs without node connection info). */
+  const connectToCP = useCallback(() => {
+    if (wsRef.current) return; // already connected
+    connect();
+  }, [connect]);
+
+  /** Connect (or reconnect) to a node agent's WS endpoint. */
+  const reconnectToNode = useCallback((nodeWsUrl: string, token: string, expiresAt: string) => {
+    // Skip if already connected to this node with this token
+    if (
+      nodeWsUrlRef.current === nodeWsUrl &&
+      connectTokenRef.current === token &&
+      wsRef.current?.readyState === WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    nodeWsUrlRef.current = nodeWsUrl;
+    connectTokenRef.current = token;
+    connectTokenExpiresRef.current = expiresAt;
+
+    // Detach old WS so its onclose/onerror handlers become no-ops (stale check)
+    const oldWs = wsRef.current;
+    wsRef.current = null;
+    oldWs?.close(1000, "switching-to-node");
+    // Connect immediately with new node info
+    connect();
+  }, [connect]);
+
+  /** Get current node connection info (for direct HTTP calls). Returns null for local VMs. */
+  const getNodeToken = useCallback((): string | null => {
+    return connectTokenRef.current;
+  }, []);
+
+  return { connected, events, sendCommand, clearEvents, addListener, connectToCP, reconnectToNode, getNodeToken };
 }
