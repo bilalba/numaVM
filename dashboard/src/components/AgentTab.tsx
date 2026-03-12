@@ -66,6 +66,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   const [openCodePopular, setOpenCodePopular] = useState<OpenCodePopularProvider[]>([]);
   const [selectedOpenCodeModel, setSelectedOpenCodeModel] = useState("");
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState("");
   const [sessionCwd, setSessionCwd] = useState<string>(() => {
     if (!vmName) return "/home/dev";
@@ -859,9 +860,66 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
 
   return (
     <div className="flex flex-col md:flex-row h-full min-h-[400px] gap-0 md:gap-4">
-      {/* Session sidebar — horizontal scrollable strip on mobile, vertical sidebar on desktop */}
-      <div className="md:w-56 shrink-0 bg-panel-sidebar border border-neutral-200 flex flex-col">
-        <div className="p-2 sm:p-3 border-b border-neutral-200 flex md:flex-col items-center md:items-stretch gap-2">
+      {/* History sidebar overlay on mobile */}
+      {showHistory && (
+        <div className="fixed inset-0 z-50 md:hidden" onClick={() => setShowHistory(false)}>
+          <div className="absolute inset-0 bg-black/20" />
+          <div className="absolute right-0 top-0 bottom-0 w-64 bg-panel-sidebar border-l border-neutral-200 flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-3 border-b border-neutral-200 flex items-center justify-between">
+              <span className="text-xs font-semibold">History</span>
+              <button onClick={() => setShowHistory(false)} className="text-xs text-neutral-400 hover:text-foreground cursor-pointer">&times;</button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {sessions.length === 0 ? (
+                <p className="text-xs text-neutral-500 p-3">No sessions yet.</p>
+              ) : (
+                sessions.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => {
+                      setActiveSessionId(s.id);
+                      setStreamingText("");
+                      setReasoningText("");
+                      setRunningTools([]);
+                      setApprovals([]);
+                      setQuestions([]);
+                      setTodoItems([]);
+                      setCreating(false);
+                      setInitProgress(null);
+                      setSessionStatus("idle");
+                      setModelInfo(s.model || s.provider ? { model: s.model || undefined, provider: s.provider || undefined } : null);
+                      if (s.cwd) setSessionCwd(s.cwd);
+                      setShowHistory(false);
+                    }}
+                    className={`w-full text-left px-3 py-2.5 text-xs border-b border-neutral-100 transition-opacity cursor-pointer ${
+                      s.id === activeSessionId
+                        ? "font-semibold opacity-100 bg-panel-chat"
+                        : "opacity-60 hover:opacity-80"
+                    }`}
+                  >
+                    <div className="truncate">
+                      {s.title || `Session ${s.id.slice(0, 8)}`}
+                    </div>
+                    <div className="text-[10px] text-neutral-500 mt-0.5 flex items-center gap-1.5">
+                      <span>{relativeTime(s.updated_at || s.created_at)}</span>
+                      {s.model && <span className="opacity-70">{s.model}</span>}
+                    </div>
+                    {s.cwd && (
+                      <div className="text-[10px] text-neutral-400 mt-0.5 truncate" title={s.cwd}>
+                        {s.cwd.replace(/^\/home\/dev\/?/, "~/")}
+                      </div>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Session sidebar — hidden on mobile (use History button), vertical sidebar on desktop */}
+      <div className="hidden md:flex md:w-56 shrink-0 bg-panel-sidebar border border-neutral-200 flex-col">
+        <div className="p-3 border-b border-neutral-200 flex md:flex-col items-center md:items-stretch gap-2">
           {agentType === "opencode" ? (
             <div className="relative min-w-0 flex-1 md:flex-none md:w-full">
               <button
@@ -955,9 +1013,9 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
             {creating ? `Initializing ${agentLabel}...` : "New Session"}
           </button>
         </div>
-        <div className="flex md:flex-col md:flex-1 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto">
+        <div className="flex-col flex-1 overflow-y-auto">
           {sessions.length === 0 ? (
-            <p className="text-xs text-neutral-500 p-2 sm:p-3 whitespace-nowrap">
+            <p className="text-xs text-neutral-500 p-3">
               No sessions yet.
             </p>
           ) : (
@@ -978,13 +1036,13 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
                   setModelInfo(s.model || s.provider ? { model: s.model || undefined, provider: s.provider || undefined } : null);
                   if (s.cwd) setSessionCwd(s.cwd);
                 }}
-                className={`text-left px-3 py-2 md:py-2.5 text-xs border-r md:border-r-0 md:border-b border-neutral-100 transition-opacity cursor-pointer shrink-0 ${
+                className={`w-full text-left px-3 py-2.5 text-xs border-b border-neutral-100 transition-opacity cursor-pointer ${
                   s.id === activeSessionId
                     ? "font-semibold opacity-100 bg-panel-chat"
                     : "opacity-60 hover:opacity-80"
                 }`}
               >
-                <div className="truncate max-w-[150px] md:max-w-none">
+                <div className="truncate">
                   {s.title || `Session ${s.id.slice(0, 8)}`}
                 </div>
                 <div className="text-[10px] text-neutral-500 mt-0.5 flex items-center gap-1.5">
@@ -992,7 +1050,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
                   {s.model && <span className="opacity-70">{s.model}</span>}
                 </div>
                 {s.cwd && (
-                  <div className="text-[10px] text-neutral-400 mt-0.5 truncate max-w-[150px] md:max-w-none" title={s.cwd}>
+                  <div className="text-[10px] text-neutral-400 mt-0.5 truncate" title={s.cwd}>
                     {s.cwd.replace(/^\/home\/dev\/?/, "~/")}
                   </div>
                 )}
@@ -1000,6 +1058,98 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
             ))
           )}
         </div>
+      </div>
+
+      {/* Mobile controls — New Session + History buttons */}
+      <div className="flex md:hidden items-center gap-2 p-2 bg-panel-sidebar border border-neutral-200">
+        {agentType === "opencode" ? (
+          <div className="relative min-w-0 flex-1">
+            <button
+              onClick={() => setShowModelPicker(!showModelPicker)}
+              className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground text-left cursor-pointer hover:border-foreground transition-colors truncate"
+            >
+              {selectedOpenCodeModelLabel}
+            </button>
+            {showModelPicker && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowModelPicker(false)} />
+                <div className="absolute left-0 top-full mt-1 z-50 w-64 bg-surface border border-neutral-200 shadow-lg max-h-80 overflow-y-auto">
+                  <button
+                    onClick={() => { setSelectedOpenCodeModel(""); setShowModelPicker(false); }}
+                    className={`w-full text-left px-3 py-2 text-xs hover:bg-neutral-100 cursor-pointer ${!selectedOpenCodeModel ? "font-semibold" : ""}`}
+                  >
+                    Default
+                  </button>
+                  {openCodeProviders.map((provider) => (
+                    <div key={provider.id}>
+                      <div className="px-3 pt-3 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider">
+                        {provider.name || provider.id}
+                      </div>
+                      {provider.models.map((model) => {
+                        const val = `${provider.id}:${model.id}`;
+                        return (
+                          <button
+                            key={val}
+                            onClick={() => { setSelectedOpenCodeModel(val); setShowModelPicker(false); }}
+                            className={`w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 cursor-pointer flex items-center justify-between ${selectedOpenCodeModel === val ? "font-semibold" : ""}`}
+                          >
+                            <span>{model.name || model.id}</span>
+                            {selectedOpenCodeModel === val && <span className="text-neutral-400">&#10003;</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                  {openCodePopular.length > 0 && (
+                    <>
+                      <div className="px-3 pt-4 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider border-t border-neutral-100 mt-2">
+                        Add provider
+                      </div>
+                      {openCodePopular.map((p) => (
+                        <div
+                          key={p.id}
+                          className="px-3 py-1.5 text-xs text-neutral-400 flex items-center justify-between"
+                          title={`Set ${p.env[0] || "API key"} in the VM terminal`}
+                        >
+                          <span>{p.name}</span>
+                          <span className="text-[10px]">{p.env[0]?.replace(/_API_KEY|_TOKEN/, "")}</span>
+                        </div>
+                      ))}
+                      <p className="px-3 py-2 text-[10px] text-neutral-400 border-t border-neutral-100 mt-1">
+                        Set API keys in terminal to connect
+                      </p>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        ) : modelOptions.length > 1 ? (
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground focus:border-foreground focus:outline-none cursor-pointer min-w-0 flex-1"
+          >
+            {modelOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        ) : <div className="flex-1" />}
+        <button
+          onClick={() => handleCreateSession()}
+          disabled={creating}
+          className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1 whitespace-nowrap shrink-0"
+        >
+          {creating ? "Creating..." : "New Session"}
+        </button>
+        <button
+          onClick={() => setShowHistory(true)}
+          className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer py-1 whitespace-nowrap shrink-0"
+        >
+          History
+        </button>
       </div>
 
       {/* Chat area */}
@@ -1037,22 +1187,6 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
             >
               <kbd className="text-[9px]">{navigator.platform?.includes("Mac") ? "\u2318" : "Ctrl+"}K</kbd>
             </button>
-            {agentType === "opencode" && sessionStatus !== "busy" && messages.length > 0 && (
-              <>
-                <button
-                  onClick={handleUndo}
-                  className="text-xs underline underline-offset-4 opacity-60 transition-opacity hover:opacity-80 cursor-pointer"
-                >
-                  Undo
-                </button>
-                <button
-                  onClick={handleRedo}
-                  className="text-xs underline underline-offset-4 opacity-60 transition-opacity hover:opacity-80 cursor-pointer"
-                >
-                  Redo
-                </button>
-              </>
-            )}
             {sessionStatus === "busy" && (
               <button
                 onClick={handleStop}
@@ -1158,7 +1292,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
               onKeyDown={handleKeyDown}
               placeholder={activeSessionId ? `Message ${agentLabel}...` : `Start a new ${agentLabel} session...`}
               rows={1}
-              className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none resize-none min-h-[28px] max-h-32"
+              className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-base sm:text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none resize-none min-h-[28px] max-h-32"
             />
             <button
               onClick={activeSessionId ? handleSend : () => handleCreateSession()}

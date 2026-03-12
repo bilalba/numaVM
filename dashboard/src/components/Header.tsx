@@ -47,9 +47,9 @@ export function Header() {
   }, [open]);
 
   return (
-    <header className="flex items-center justify-between px-4 py-2 border-b border-neutral-200 text-xs bg-background">
+    <header className="flex items-center justify-between px-4 py-2 text-xs bg-background">
       <Link to="/" className="text-foreground hover:underline font-medium">
-        numavm
+        NumaVM
       </Link>
       <div className="flex items-center gap-2">
         <ThemeToggle />
@@ -59,13 +59,13 @@ export function Header() {
             onClick={() => setOpen(!open)}
             className="flex items-center gap-2 text-neutral-500 hover:text-foreground cursor-pointer"
           >
-            <span>{user.email}</span>
+            <span className="hidden sm:inline">{user.email}</span>
             <Avatar user={user} />
           </button>
           {open && (
             <div className="absolute right-0 top-full mt-1 w-48 bg-surface border border-neutral-200 rounded shadow-sm py-1 z-50">
               <div className="px-3 py-1.5 text-neutral-400 truncate border-b border-neutral-100 mb-1">
-                {user.name || user.email}
+                {user.email}
               </div>
               <button
                 onClick={() => { navigate("/plan"); setOpen(false); }}

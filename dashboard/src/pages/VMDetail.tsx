@@ -93,7 +93,7 @@ export function VMDetail() {
   ];
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col h-[calc(100vh-33px)]">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-8 flex flex-col h-[calc(100dvh-33px)]">
       {/* Header */}
       <div className="mb-4 sm:mb-6">
         <div className="flex items-center gap-3">
@@ -210,7 +210,7 @@ export function VMDetail() {
       )}
 
       {/* Tab bar — scrollable on mobile */}
-      <div className="flex border-b border-neutral-200 mb-4 sm:mb-6 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+      <div className="flex border-b border-neutral-200 mb-4 sm:mb-6 overflow-x-auto overflow-y-hidden -mx-4 px-4 sm:mx-0 sm:px-0">
         {tabs.map((tab) => (
           <button
             key={tab.id}

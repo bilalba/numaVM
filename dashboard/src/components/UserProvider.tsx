@@ -15,9 +15,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     api.getUser()
       .then(setUser)
-      .catch(() => {}) // auth failure → Caddy redirects to login
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  // Client-side auth redirect (replaces Caddy forward_auth redirect)
+  useEffect(() => {
+    if (!loading && !user) {
+      const apiHost = import.meta.env.VITE_API_URL?.replace(/^\/\//, "") || "api.localhost";
+      const authHost = apiHost.replace(/^api\./, "auth.");
+      const protocol = window.location.protocol;
+      window.location.href = `${protocol}//${authHost}/login?redirect=${encodeURIComponent(window.location.href)}`;
+    }
+  }, [loading, user]);
 
   return (
     <UserContext.Provider value={{ user, loading }}>
