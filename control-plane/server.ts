@@ -113,7 +113,7 @@ export async function createServer(options?: CreateServerOptions) {
   // Extract auth headers set by Caddy forward_auth (or Bearer token from CLI)
   app.addHook("preHandler", async (request, reply) => {
     // Skip auth for health check, status pages, and Stripe webhook
-    if (request.url === "/health" || request.url === "/images" || request.url.endsWith("/status-page") || request.url === "/billing/webhook" || request.url.match(/^\/link-ssh\/[^/]+$/) || request.url.match(/^\/link-ssh\/[^/]+\/status$/)) return;
+    if (request.url === "/health" || request.url === "/images" || request.url.endsWith("/status-page") || request.url === "/billing/webhook" || (request.method === "GET" && request.url.match(/^\/link-ssh\/[^/]+$/)) || request.url.match(/^\/link-ssh\/[^/]+\/status$/)) return;
 
     const userId = request.headers["x-user-id"] as string | undefined;
     const userEmail = request.headers["x-user-email"] as string | undefined;
