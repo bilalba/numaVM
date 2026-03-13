@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { api, type VMDetail as VMDetailType } from "../lib/api";
 import { useToast } from "../components/Toast";
+import { useUser } from "../components/UserProvider";
 import { TerminalTab } from "../components/TerminalTab";
 import { ClaudeCodeTab } from "../components/ClaudeCodeTab";
 import { AgentTab } from "../components/AgentTab";
@@ -35,6 +36,8 @@ export function VMDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const pendingSession = !!(location.state as any)?.pendingSession;
+  const { user } = useUser();
+  const webTerminalEnabled = user?.web_terminal_enabled !== false;
 
   useEffect(() => {
     if (!slug) return;
@@ -86,10 +89,10 @@ export function VMDetail() {
     { id: "opencode", label: "OpenCode" },
     { id: "codex", label: "Codex" },
     { id: "claude", label: "Claude Code" },
-    { id: "terminal", label: "Terminal" },
+    ...(webTerminalEnabled ? [{ id: "terminal" as TabId, label: "Terminal" }] : []),
     { id: "files", label: "Files" },
     { id: "access", label: "Access" },
-    { id: "firewall", label: "Firewall" },
+    { id: "firewall", label: "IPv6" },
   ];
 
   return (
@@ -104,18 +107,17 @@ export function VMDetail() {
             className={`w-2 h-2 rounded-full shrink-0 ${statusColors[vm.status] || "bg-neutral-400"}`}
           />
           <h1 className="text-xl sm:text-2xl font-semibold truncate">{vm.name}</h1>
+          <a
+            href={vm.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 shrink-0"
+          >
+            Visit
+          </a>
           <div className="flex items-center gap-2 text-xs ml-auto shrink-0">
-            <a
-              href={vm.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline underline-offset-4 transition-opacity hover:opacity-60"
-            >
-              Visit
-            </a>
             {vm.repo_url && (
               <>
-                <span className="text-neutral-400">|</span>
                 <a
                   href={vm.repo_url}
                   target="_blank"
@@ -124,9 +126,9 @@ export function VMDetail() {
                 >
                   GitHub
                 </a>
+                <span className="text-neutral-400">&middot;</span>
               </>
             )}
-            <span className="text-neutral-400">&middot;</span>
             <span className="text-neutral-500 capitalize">
               {vm.status} &middot;{" "}
               {vm.image && vm.image !== "alpine" ? `${vm.image} v${vm.image_version} \u00B7 ` : ""}
@@ -242,6 +244,7 @@ export function VMDetail() {
             sshCommand={vm.ssh_command}
             isPublic={vm.is_public}
             vmUrl={vm.url}
+            region={vm.region}
             onPublicChange={(isPublic) => setVM((prev) => prev ? { ...prev, is_public: isPublic } : prev)}
           />
         )}

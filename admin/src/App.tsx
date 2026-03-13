@@ -6,6 +6,8 @@ import { Users } from "./pages/Users";
 import { VMs } from "./pages/VMs";
 import { Events } from "./pages/Events";
 import { Traffic } from "./pages/Traffic";
+import { LLMUsage } from "./pages/LLMUsage";
+import { Nodes } from "./pages/Nodes";
 
 export function App() {
   return (
@@ -20,6 +22,8 @@ export function App() {
             <Route path="/vms" element={<VMs />} />
             <Route path="/events" element={<Events />} />
             <Route path="/traffic" element={<Traffic />} />
+            <Route path="/llm" element={<LLMUsage />} />
+            <Route path="/nodes" element={<Nodes />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

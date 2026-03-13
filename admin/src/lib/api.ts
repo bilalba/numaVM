@@ -68,6 +68,22 @@ export interface AdminEvent {
   created_at: string;
 }
 
+export interface LLMUserUsage {
+  user_id: string;
+  email: string;
+  name: string | null;
+  spend: number;
+  budget: number;
+  usage_pct: number;
+}
+
+export interface LLMUsageResponse {
+  total_spend: number;
+  total_budget: number;
+  total_keys: number;
+  users: LLMUserUsage[];
+}
+
 export interface TrafficSummary {
   vm_id: string;
   total_rx: number;
@@ -81,6 +97,31 @@ export interface TrafficPoint {
   recorded_at: string;
 }
 
+export interface AdminNode {
+  id: string;
+  name: string;
+  region: string;
+  endpoint: string;
+  public_ip: string;
+  status: string;
+  capacity_mem_mib: number;
+  capacity_disk_gib: number;
+  last_heartbeat: string | null;
+  created_at: string;
+  used_mem_mib: number;
+  used_disk_gib: number;
+  available_mem_mib: number;
+  available_disk_gib: number;
+  vm_count: number;
+  running_mem_mib: number;
+  snapshot_mem_mib: number;
+  running_count: number;
+  snapshot_count: number;
+  creating_count: number;
+  stopped_count: number;
+  error_count: number;
+}
+
 export const adminApi = {
   getStats: () => apiFetch<AdminStats>("/admin/stats"),
   getUsers: () => apiFetch<{ users: AdminUser[] }>("/admin/users"),
@@ -91,4 +132,7 @@ export const adminApi = {
   getTrafficSummary: (hours = 24) => apiFetch<{ summary: TrafficSummary[]; hours: number }>(`/admin/traffic/summary?hours=${hours}`),
   getTrafficHistory: (vmId: string, hours = 24) => apiFetch<{ vmId: string; history: TrafficPoint[]; hours: number }>(`/admin/traffic/${vmId}/history?hours=${hours}`),
   getHealth: () => apiFetch<any>("/admin/health"),
+  getLLMUsage: () => apiFetch<LLMUsageResponse>("/admin/llm/usage"),
+  getLLMModels: () => apiFetch<any>("/admin/llm/models"),
+  getNodes: () => apiFetch<{ nodes: AdminNode[] }>("/admin/nodes"),
 };

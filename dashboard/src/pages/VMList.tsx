@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { api, githubConnectUrl, type VMSummary, type GitHubRepo, type RamQuota, type ImageInfo } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { SshKeysPanel } from "../components/SshKeysPanel";
 import { relativeTime } from "../lib/time";
 
 function formatBytes(bytes: number): string {
@@ -146,7 +145,6 @@ export function VMList() {
   const [nameStatus, setNameStatus] = useState<"idle" | "checking" | "available" | "taken" | "invalid" | "reserved" | "too_short">("idle");
   const [nameMessage, setNameMessage] = useState("");
   const [creating, setCreating] = useState(false);
-  const [showSshKeys, setShowSshKeys] = useState(false);
   const [githubStatus, setGithubStatus] = useState<{ connected: boolean; username: string | null; dev_mode?: boolean } | null>(null);
   const [repoMode, setRepoMode] = useState<"none" | "existing" | "new">("none");
   const [repoSearch, setRepoSearch] = useState("");
@@ -396,12 +394,6 @@ export function VMList() {
         <h1 className="text-2xl font-semibold">VMs</h1>
         <div className="flex items-center gap-4">
           <button
-            onClick={() => setShowSshKeys(!showSshKeys)}
-            className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
-          >
-            {showSshKeys ? "Close" : "SSH Keys"}
-          </button>
-          <button
             onClick={() => {
               setShowCreate(!showCreate);
               if (showCreate) resetRepoState();
@@ -412,12 +404,6 @@ export function VMList() {
           </button>
         </div>
       </div>
-
-      {showSshKeys && (
-        <div className="mb-6">
-          <SshKeysPanel />
-        </div>
-      )}
 
       {/* GitHub connection banner (dismissable, only when not connected) */}
       {githubStatus?.dev_mode && githubStatus && !githubStatus.connected && !githubBannerDismissed && (
@@ -792,6 +778,7 @@ export function VMList() {
               <div className="flex items-center justify-between text-xs text-neutral-500">
                 <span className="capitalize">{isPausing ? "Pausing..." : vm.role}</span>
                 <span>
+                  {vm.region && <>{vm.region} &middot; </>}
                   {vm.image !== "alpine" && <>{vm.image} &middot; </>}
                   {vm.mem_size_mib >= 1024
                     ? `${(vm.mem_size_mib / 1024).toFixed(vm.mem_size_mib % 1024 ? 2 : 0)} GB`

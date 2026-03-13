@@ -69,6 +69,7 @@ export interface VMSummary {
   image: string;
   image_version: number;
   is_public: boolean;
+  region?: string | null;
 }
 
 export interface Quota {
@@ -120,6 +121,7 @@ export interface VMDetail {
   is_public: boolean;
   vm_ipv6?: string | null;
   host_id?: string | null;
+  region?: string | null;
   quota_error?: {
     message: string;
     current_ram_mib: number;
@@ -259,6 +261,8 @@ export interface User {
   trial_active?: boolean;
   trial_expires_at?: string | null;
   dev_mode?: boolean;
+  default_region?: string | null;
+  web_terminal_enabled?: boolean;
 }
 
 export interface Subscription {
@@ -522,6 +526,15 @@ export const api = {
     apiFetch<{ ok: boolean; message: string }>(`/link-ssh/${token}`, {
       method: "POST",
       body: JSON.stringify({}),
+    }),
+
+  // Regions (commercial multi-node)
+  getRegions: () => apiFetch<{ regions: string[] }>("/regions"),
+
+  setUserRegion: (region: string | null) =>
+    apiFetch<{ ok: boolean; default_region: string | null }>("/me/region", {
+      method: "PATCH",
+      body: JSON.stringify({ region }),
     }),
 
   // Billing

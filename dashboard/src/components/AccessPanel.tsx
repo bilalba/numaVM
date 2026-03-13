@@ -9,10 +9,11 @@ interface AccessPanelProps {
   sshCommand?: string;
   isPublic: boolean;
   vmUrl: string;
+  region?: string | null;
   onPublicChange: (isPublic: boolean) => void;
 }
 
-export function AccessPanel({ vmId, currentUserRole, sshCommand, isPublic, vmUrl, onPublicChange }: AccessPanelProps) {
+export function AccessPanel({ vmId, currentUserRole, sshCommand, isPublic, vmUrl, region, onPublicChange }: AccessPanelProps) {
   const [access, setAccess] = useState<AccessEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState("");
@@ -124,6 +125,14 @@ export function AccessPanel({ vmId, currentUserRole, sshCommand, isPublic, vmUrl
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Zone */}
+      {region && (
+        <div className="mb-6 bg-panel-chat border border-neutral-200 p-4">
+          <h3 className="text-xs font-semibold">Zone</h3>
+          <p className="text-xs text-neutral-500 mt-1">{region}</p>
         </div>
       )}
 

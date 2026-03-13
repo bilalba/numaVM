@@ -15,8 +15,10 @@ export function registerVerifyRoute(app: FastifyInstance) {
       return reply.status(401).send("Unauthorized");
     }
 
-    // Extract host from forwarded headers (Caddy sets these)
+    // Extract host: query param (survives all proxy hops) > forwarded header > host
+    const queryVmHost = (request.query as Record<string, string>)["vm_host"] || "";
     const forwardedHost =
+      queryVmHost ||
       (request.headers["x-forwarded-host"] as string) ||
       (request.headers.host as string) ||
       "";
