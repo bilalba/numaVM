@@ -2,7 +2,6 @@ import type { ServerChannel } from "ssh2";
 import type { SshUser } from "../services/ssh-key-lookup.js";
 import { customAlphabet, nanoid } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
-import { fetchSshKeys } from "../services/github.js";
 import { registerPendingKey } from "../routes/user.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
@@ -516,16 +515,9 @@ async function showCreateVM(channel: ServerChannel, user: SshUser): Promise<void
   const slug = `vm-${generateSlug()}`;
   const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal, hostId } = await getVMEngine().allocateResources();
 
-  // Fetch SSH keys
-  const keyParts: string[] = [];
-  if (dbUser?.github_username) {
-    const ghKeys = await fetchSshKeys(dbUser.github_username);
-    if (ghKeys) keyParts.push(ghKeys);
-  }
-  if (dbUser?.ssh_public_keys) {
-    keyParts.push(dbUser.ssh_public_keys);
-  }
-  const sshKeys = keyParts.join("\n");
+  // Fetch SSH keys from per-key records
+  const userKeys = getDatabase().getUserSshKeys(user.userId);
+  const sshKeys = userKeys.map(k => k.key_data).join("\n");
 
   const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
 

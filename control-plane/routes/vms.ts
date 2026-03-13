@@ -3,9 +3,9 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { customAlphabet } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy, getLifecycleHook } from "../adapters/providers.js";
-import { fetchSshKeys } from "../services/github.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
 import { bindWakeProxy, unbindWakeProxy, bindAppWakeProxy, unbindAppWakeProxy } from "../services/wake-proxy.js";
+import { prepareVMForSnapshot } from "../services/snapshot-cleanup.js";
 import { createAgentSession } from "./agents.js";
 import { validateVMName } from "../utils/validation.js";
 
@@ -98,17 +98,10 @@ export function registerVMRoutes(app: FastifyInstance) {
     // GitHub repo is optional — if provided, VM will clone it
     const repoFullName = body.gh_repo || null;
 
-    // Fetch user's SSH keys (GitHub + custom)
+    // Gather SSH keys from per-key records
     const user = getDatabase().findUserById(request.userId);
-    const keyParts: string[] = [];
-    if (user?.github_username) {
-      const ghKeys = await fetchSshKeys(user.github_username);
-      if (ghKeys) keyParts.push(ghKeys);
-    }
-    if (user?.ssh_public_keys) {
-      keyParts.push(user.ssh_public_keys);
-    }
-    const sshKeys = keyParts.join("\n");
+    const userKeys = getDatabase().getUserSshKeys(request.userId);
+    const sshKeys = userKeys.map(k => k.key_data).join("\n");
 
     // Generate per-VM OpenCode password
     const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
@@ -481,6 +474,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     }
 
     try {
+      await prepareVMForSnapshot(id);
       await getVMEngine().snapshotVM(id);
       const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${id}/snapshot`;
       getDatabase().updateVMSnapshotPath(id, snapshotPath);
@@ -573,17 +567,10 @@ export function registerVMRoutes(app: FastifyInstance) {
     const slug = `vm-${generateSlug()}`;
     const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal, hostId: cloneHostId } = await getVMEngine().allocateResources();
 
-    // Fetch cloning user's SSH keys (not source's)
+    // Gather cloning user's SSH keys from per-key records
     const user = getDatabase().findUserById(request.userId);
-    const keyParts: string[] = [];
-    if (user?.github_username) {
-      const ghKeys = await fetchSshKeys(user.github_username);
-      if (ghKeys) keyParts.push(ghKeys);
-    }
-    if (user?.ssh_public_keys) {
-      keyParts.push(user.ssh_public_keys);
-    }
-    const sshKeys = keyParts.join("\n");
+    const userKeys = getDatabase().getUserSshKeys(request.userId);
+    const sshKeys = userKeys.map(k => k.key_data).join("\n");
 
     const opencodePassword = generateSlug() + generateSlug() + generateSlug() + generateSlug();
     const ghToken = user?.github_token || process.env.GH_PAT || null;
@@ -782,45 +769,8 @@ export function registerVMRoutes(app: FastifyInstance) {
     reply.type("text/html").send(html);
   });
 
-  /** Deduplicate SSH keys by their key data (type + base64 blob), ignoring comments. */
-  function dedupeKeys(rawKeys: string): string {
-    const seen = new Set<string>();
-    const unique: string[] = [];
-    for (const line of rawKeys.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      // Key identity is "type base64data" (first two fields)
-      const parts = trimmed.split(/\s+/);
-      const identity = parts.length >= 2 ? `${parts[0]} ${parts[1]}` : trimmed;
-      if (!seen.has(identity)) {
-        seen.add(identity);
-        unique.push(trimmed);
-      }
-    }
-    return unique.join("\n");
-  }
-
-  /** Gather all desired keys for a user (GitHub + custom + internal), deduped. */
-  async function gatherUserKeys(userId: string): Promise<string> {
-    const user = getDatabase().findUserById(userId);
-    const parts: string[] = [];
-
-    if (user?.github_username) {
-      const ghKeys = await fetchSshKeys(user.github_username);
-      if (ghKeys) parts.push(ghKeys);
-    }
-    if (user?.ssh_public_keys) {
-      parts.push(user.ssh_public_keys);
-    }
-
-    // Always include the internal key
-    parts.push(getVMEngine().getInternalSshPubKey());
-
-    return dedupeKeys(parts.join("\n"));
-  }
-
-  // Check if SSH keys are already synced to the VM
-  app.get("/vms/:id/ssh-keys-status", async (request, reply) => {
+  // Add a single SSH key to a running VM's authorized_keys
+  app.post("/vms/:id/ssh-keys/add", async (request, reply) => {
     const { id } = request.params as { id: string };
     const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
     if (!vm) {
@@ -832,51 +782,112 @@ export function registerVMRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "No access to this VM" });
     }
 
-    if (vm.status !== "running" || !vm.vm_ip) {
-      return { synced: false, reason: "not_running" };
+    if (vm.status !== "running") {
+      return { ok: false, error: "not_running" };
     }
 
-    try {
-      const desiredKeys = await gatherUserKeys(request.userId);
-      const currentRaw = await getVMEngine().exec(vm.id, [
-        "cat", "/home/dev/.ssh/authorized_keys",
-      ]);
-      const currentKeys = dedupeKeys(currentRaw);
-      return { synced: currentKeys === desiredKeys };
-    } catch {
-      return { synced: false, reason: "check_failed" };
-    }
-  });
-
-  // Sync SSH keys to a running VM
-  app.post("/vms/:id/sync-ssh-keys", async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
-    if (!vm) {
-      return reply.status(404).send({ error: "VM not found" });
+    const body = request.body as { key_data?: string };
+    if (!body.key_data?.trim()) {
+      return reply.status(400).send({ error: "key_data is required" });
     }
 
-    const role = getDatabase().checkAccess(vm.id, request.userId);
-    if (!role) {
-      return reply.status(403).send({ error: "No access to this VM" });
-    }
-
-    if (vm.status !== "running" || !vm.vm_ip) {
-      return reply.status(400).send({ error: "VM is not running" });
-    }
-
-    const allKeys = await gatherUserKeys(request.userId);
-    const keysB64 = Buffer.from(allKeys).toString("base64");
+    const keyLine = body.key_data.trim();
+    const parts = keyLine.split(/\s+/);
+    const keyIdentity = parts.length >= 2 ? `${parts[0]} ${parts[1]}` : keyLine;
 
     try {
       await getVMEngine().exec(vm.id, [
         "sh", "-c",
-        `echo '${keysB64}' | base64 -d > /home/dev/.ssh/authorized_keys && chmod 600 /home/dev/.ssh/authorized_keys`,
+        `grep -qF '${keyIdentity}' /home/dev/.ssh/authorized_keys 2>/dev/null || echo '${keyLine}' >> /home/dev/.ssh/authorized_keys`,
       ]);
-      return { ok: true, message: "SSH keys synced to VM" };
+
+      // Verify
+      const current = await getVMEngine().exec(vm.id, ["cat", "/home/dev/.ssh/authorized_keys"]);
+      const verified = current.includes(keyIdentity);
+
+      return { ok: true, verified };
     } catch (err: any) {
-      request.log.error({ err, id }, "Failed to sync SSH keys");
-      return reply.status(500).send({ error: "Failed to sync SSH keys", details: err.message });
+      return reply.status(500).send({ error: "Failed to add key", details: err.message });
+    }
+  });
+
+  // Remove a key from a running VM's authorized_keys
+  app.post("/vms/:id/ssh-keys/remove", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
+    }
+
+    if (vm.status !== "running") {
+      return { ok: false, error: "not_running" };
+    }
+
+    const body = request.body as { key_identity?: string };
+    if (!body.key_identity?.trim()) {
+      return reply.status(400).send({ error: "key_identity is required (type + base64)" });
+    }
+
+    const escaped = body.key_identity.trim().replace(/[/\\&]/g, "\\$&");
+    try {
+      await getVMEngine().exec(vm.id, [
+        "sh", "-c",
+        `sed -i '\\|${escaped}|d' /home/dev/.ssh/authorized_keys`,
+      ]);
+      return { ok: true };
+    } catch (err: any) {
+      return reply.status(500).send({ error: "Failed to remove key", details: err.message });
+    }
+  });
+
+  // Check which of the user's keys are present in the VM
+  app.get("/vms/:id/ssh-keys/status", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
+    }
+
+    const userKeys = getDatabase().getUserSshKeys(request.userId);
+
+    if (vm.status !== "running") {
+      return {
+        keys: userKeys.map(k => ({
+          id: k.id, fingerprint: k.fingerprint, key_type: k.key_type, comment: k.comment,
+          present: false, reason: "not_running",
+        })),
+      };
+    }
+
+    try {
+      const currentRaw = await getVMEngine().exec(vm.id, ["cat", "/home/dev/.ssh/authorized_keys"]);
+      return {
+        keys: userKeys.map(k => {
+          const parts = k.key_data.split(/\s+/);
+          const identity = parts.length >= 2 ? `${parts[0]} ${parts[1]}` : k.key_data;
+          return {
+            id: k.id, fingerprint: k.fingerprint, key_type: k.key_type, comment: k.comment,
+            present: currentRaw.includes(identity),
+          };
+        }),
+      };
+    } catch {
+      return {
+        keys: userKeys.map(k => ({
+          id: k.id, fingerprint: k.fingerprint, key_type: k.key_type, comment: k.comment,
+          present: false, reason: "check_failed",
+        })),
+      };
     }
   });
 

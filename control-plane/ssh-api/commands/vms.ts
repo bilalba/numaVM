@@ -4,8 +4,8 @@ import { rmSync } from "node:fs";
 import type { CommandContext } from "../dispatcher.js";
 import { writeJson, writeError } from "../dispatcher.js";
 import { getDatabase, getVMEngine, getReverseProxy } from "../../adapters/providers.js";
-import { fetchSshKeys } from "../../services/github.js";
 import { ensureVMRunning, QuotaExceededError } from "../../services/wake.js";
+import { prepareVMForSnapshot } from "../../services/snapshot-cleanup.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 
@@ -154,17 +154,10 @@ async function createVM(ctx: CommandContext): Promise<void> {
   const slug = `vm-${generateSlug()}`;
   const { appPort, sshPort, opencodePort, vsockCid, vmIp, vmIpv6, vmIpv6Internal, hostId } = await getVMEngine().allocateResources();
 
-  // Fetch SSH keys
+  // Fetch SSH keys from per-key records
   const dbUser = getDatabase().findUserById(user.userId);
-  const keyParts: string[] = [];
-  if (dbUser?.github_username) {
-    const ghKeys = await fetchSshKeys(dbUser.github_username);
-    if (ghKeys) keyParts.push(ghKeys);
-  }
-  if (dbUser?.ssh_public_keys) {
-    keyParts.push(dbUser.ssh_public_keys);
-  }
-  const sshKeys = keyParts.join("\n");
+  const userKeys = getDatabase().getUserSshKeys(user.userId);
+  const sshKeys = userKeys.map(k => k.key_data).join("\n");
 
   // GitHub token
   const ghToken = dbUser?.github_token || process.env.GH_PAT || null;
@@ -356,6 +349,7 @@ async function stopVM(vmId: string, ctx: CommandContext): Promise<void> {
   }
 
   try {
+    await prepareVMForSnapshot(vmId);
     await getVMEngine().snapshotVM(vmId);
     writeJson(ctx.channel, { ok: true, status: "snapshotted", message: `VM ${vmId} snapshotted` });
     ctx.channel.exit(0);

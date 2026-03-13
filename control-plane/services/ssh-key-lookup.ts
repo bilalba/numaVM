@@ -22,31 +22,41 @@ let cacheTime = 0;
 const CACHE_TTL_MS = 30_000; // 30 seconds
 
 function buildCache(): KeyEntry[] {
-  const users = getDatabase().findAllUsersWithSshKeys();
+  const db = getDatabase();
+  // Get all users who have at least one key in user_ssh_keys
+  const rows = db.raw<{ user_id: string; key_data: string }>(
+    "SELECT user_id, key_data FROM user_ssh_keys"
+  );
+
+  // Collect unique user IDs
+  const userIds = [...new Set(rows.map(r => r.user_id))];
+  const userMap = new Map<string, SshUser>();
+  for (const uid of userIds) {
+    const user = db.findUserById(uid);
+    if (user) {
+      userMap.set(uid, {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        githubUsername: user.github_username,
+        plan: user.plan,
+      });
+    }
+  }
+
   const entries: KeyEntry[] = [];
+  for (const row of rows) {
+    const sshUser = userMap.get(row.user_id);
+    if (!sshUser) continue;
 
-  for (const user of users) {
-    const sshUser: SshUser = {
-      userId: user.id,
-      email: user.email,
-      name: user.name,
-      githubUsername: user.github_username,
-      plan: user.plan,
-    };
+    const parsed = utils.parseKey(row.key_data);
+    if (parsed instanceof Error) continue;
 
-    for (const line of user.ssh_public_keys.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-
-      const parsed = utils.parseKey(trimmed);
-      if (parsed instanceof Error) continue;
-
-      const keys = Array.isArray(parsed) ? parsed : [parsed];
-      for (const k of keys) {
-        const pub = k.getPublicSSH();
-        if (pub) {
-          entries.push({ user: sshUser, publicKeyData: pub });
-        }
+    const keys = Array.isArray(parsed) ? parsed : [parsed];
+    for (const k of keys) {
+      const pub = k.getPublicSSH();
+      if (pub) {
+        entries.push({ user: sshUser, publicKeyData: pub });
       }
     }
   }

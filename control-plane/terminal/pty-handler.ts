@@ -73,6 +73,23 @@ export function createTerminal(params: CreateTerminalParams): string {
   return sessionId;
 }
 
+export function destroyTerminalsForVM(vmId: string): void {
+  for (const [id, session] of sessions) {
+    if (session.vmId !== vmId) continue;
+    try {
+      session.pty.kill();
+    } catch {
+      /* ignore */
+    }
+    try {
+      session.ws.close(1000, "VM going to sleep");
+    } catch {
+      /* ignore */
+    }
+    sessions.delete(id);
+  }
+}
+
 export function destroyAllTerminals(): void {
   for (const [id, session] of sessions) {
     try {

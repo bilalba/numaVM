@@ -83,3 +83,18 @@ CREATE TABLE IF NOT EXISTS admin_events (
 
 CREATE INDEX IF NOT EXISTS idx_admin_events_type ON admin_events(type);
 CREATE INDEX IF NOT EXISTS idx_admin_events_created ON admin_events(created_at);
+
+-- Per-key SSH key records (replaces users.ssh_public_keys text blob)
+CREATE TABLE IF NOT EXISTS user_ssh_keys (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  key_data    TEXT NOT NULL,
+  key_type    TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  comment     TEXT,
+  source      TEXT NOT NULL DEFAULT 'manual',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_ssh_keys_user ON user_ssh_keys(user_id);

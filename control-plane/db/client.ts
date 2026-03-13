@@ -2,6 +2,7 @@ import Database, { type Database as DatabaseType } from "better-sqlite3";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -237,6 +238,51 @@ if (msgSchema && !msgSchema.sql.includes("reasoning")) {
     CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id);
   `);
   db.pragma("foreign_keys = ON");
+}
+
+// Migrate: populate user_ssh_keys from users.ssh_public_keys text blob
+{
+  const hasNewTable = (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_ssh_keys'").get() as any);
+  if (hasNewTable) {
+    const existingCount = (db.prepare("SELECT COUNT(*) as cnt FROM user_ssh_keys").get() as { cnt: number }).cnt;
+    if (existingCount === 0) {
+      // Only migrate if the new table is empty (first run after adding it)
+      const usersWithKeys = db.prepare(
+        "SELECT id, ssh_public_keys FROM users WHERE ssh_public_keys IS NOT NULL AND ssh_public_keys != ''"
+      ).all() as { id: string; ssh_public_keys: string }[];
+
+      const insertKey = db.prepare(
+        "INSERT OR IGNORE INTO user_ssh_keys (id, user_id, key_data, key_type, fingerprint, comment, source) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      );
+
+      let migrated = 0;
+      for (const user of usersWithKeys) {
+        for (const line of user.ssh_public_keys.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const parts = trimmed.split(/\s+/);
+          if (parts.length < 2) continue;
+          const keyType = parts[0];
+          const keyBase64 = parts[1];
+          const comment = parts.length > 2 ? parts.slice(2).join(" ") : null;
+          // Compute fingerprint from the raw key bytes
+          try {
+            const keyBytes = Buffer.from(keyBase64, "base64");
+            const hash = createHash("sha256").update(keyBytes).digest("base64").replace(/=+$/, "");
+            const fingerprint = `SHA256:${hash}`;
+            const id = `mig-${user.id.slice(0, 8)}-${migrated}`;
+            insertKey.run(id, user.id, trimmed, keyType, fingerprint, comment, "manual");
+            migrated++;
+          } catch {
+            // Skip malformed keys
+          }
+        }
+      }
+      if (migrated > 0) {
+        console.log(`[db] Migrated ${migrated} SSH key(s) from users.ssh_public_keys to user_ssh_keys`);
+      }
+    }
+  }
 }
 
 export { db };
@@ -602,6 +648,57 @@ const appendUserSshKeyStmt = db.prepare(
 );
 export function appendUserSshKey(userId: string, key: string): void {
   appendUserSshKeyStmt.run(key, key, userId);
+}
+
+// --- Per-key SSH key records ---
+
+export interface SshKeyRecord {
+  id: string;
+  user_id: string;
+  key_data: string;
+  key_type: string;
+  fingerprint: string;
+  comment: string | null;
+  source: string;
+  created_at: string;
+}
+
+const getUserSshKeysStmt = db.prepare(
+  "SELECT * FROM user_ssh_keys WHERE user_id = ? ORDER BY created_at ASC"
+);
+export function getUserSshKeys(userId: string): SshKeyRecord[] {
+  return getUserSshKeysStmt.all(userId) as SshKeyRecord[];
+}
+
+const addUserSshKeyStmt = db.prepare(
+  "INSERT INTO user_ssh_keys (id, user_id, key_data, key_type, fingerprint, comment, source) VALUES (?, ?, ?, ?, ?, ?, ?)"
+);
+export function addUserSshKey(userId: string, id: string, keyData: string, keyType: string, fingerprint: string, comment: string | null, source: string): void {
+  addUserSshKeyStmt.run(id, userId, keyData, keyType, fingerprint, comment, source);
+}
+
+const removeUserSshKeyStmt = db.prepare(
+  "DELETE FROM user_ssh_keys WHERE id = ? AND user_id = ?"
+);
+export function removeUserSshKey(userId: string, keyId: string): void {
+  removeUserSshKeyStmt.run(keyId, userId);
+}
+
+const findUserSshKeyByFingerprintStmt = db.prepare(
+  "SELECT * FROM user_ssh_keys WHERE user_id = ? AND fingerprint = ?"
+);
+export function findUserSshKeyByFingerprint(userId: string, fingerprint: string): SshKeyRecord | undefined {
+  return findUserSshKeyByFingerprintStmt.get(userId, fingerprint) as SshKeyRecord | undefined;
+}
+
+const getAllSshKeysForVMStmt = db.prepare(`
+  SELECT usk.* FROM user_ssh_keys usk
+  JOIN vm_access va ON va.user_id = usk.user_id
+  WHERE va.vm_id = ?
+  ORDER BY usk.created_at ASC
+`);
+export function getAllSshKeysForVM(vmId: string): SshKeyRecord[] {
+  return getAllSshKeysForVMStmt.all(vmId) as SshKeyRecord[];
 }
 
 // --- Monthly data usage ---

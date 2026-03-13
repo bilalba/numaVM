@@ -298,6 +298,26 @@ export interface GitHubRepo {
   updatedAt: string;
 }
 
+export interface SshKeyRecord {
+  id: string;
+  user_id: string;
+  key_data: string;
+  key_type: string;
+  fingerprint: string;
+  comment: string | null;
+  source: string;
+  created_at: string;
+}
+
+export interface SshKeyStatusRecord {
+  id: string;
+  fingerprint: string;
+  key_type: string;
+  comment: string | null;
+  present: boolean;
+  reason?: string;
+}
+
 export const api = {
   checkNameAvailability: (name: string) =>
     apiFetch<{ available: boolean; reason?: string; message?: string }>(`/vms/check-name/${encodeURIComponent(name)}`),
@@ -478,24 +498,23 @@ export const api = {
       method: "DELETE",
     }),
 
-  // SSH keys
+  // SSH keys (per-key management)
   getSshKeys: () =>
-    apiFetch<{ keys: string; github_keys: string }>("/me/ssh-keys"),
+    apiFetch<{ keys: SshKeyRecord[] }>("/me/ssh-keys"),
 
-  saveSshKeys: (keys: string) =>
-    apiFetch<{ ok: boolean }>("/me/ssh-keys", {
-      method: "PUT",
-      body: JSON.stringify({ keys }),
-    }),
-
-  syncSshKeys: (vmId: string) =>
-    apiFetch<{ ok: boolean; message: string }>(`/vms/${vmId}/sync-ssh-keys`, {
+  addSshKey: (key: string) =>
+    apiFetch<SshKeyRecord>("/me/ssh-keys", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ key }),
     }),
 
-  checkSshKeysStatus: (vmId: string) =>
-    apiFetch<{ synced: boolean; reason?: string }>(`/vms/${vmId}/ssh-keys-status`),
+  removeSshKey: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/me/ssh-keys/${id}`, {
+      method: "DELETE",
+    }),
+
+  getSshKeysStatus: (vmId: string) =>
+    apiFetch<{ keys: SshKeyStatusRecord[] }>(`/vms/${vmId}/ssh-keys/status`),
 
   // GitHub repo access
   getGithubStatus: () =>

@@ -323,18 +323,32 @@ export function removeIpv6FirewallRules(slug: string, vmIpv6: string | null | un
  * Add DNAT + SNAT rules to map a public IPv6 address to an internal ULA address.
  * Inbound: packets to publicIpv6 are rewritten to ulaIpv6 (DNAT)
  * Outbound: packets from ulaIpv6 are rewritten to publicIpv6 (SNAT)
+ * Uses -C to check first, preventing duplicate rules across restore cycles.
  */
 export function addIpv6Nat(publicIpv6: string, ulaIpv6: string): void {
-  try { execSync(`ip6tables -t nat -A PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
-  try { execSync(`ip6tables -t nat -A POSTROUTING -s ${ulaIpv6} -j SNAT --to-source ${publicIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
+  try {
+    execSync(`ip6tables -t nat -C PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6} 2>/dev/null`, { stdio: "pipe" });
+  } catch {
+    try { execSync(`ip6tables -t nat -A PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
+  }
+  try {
+    execSync(`ip6tables -t nat -C POSTROUTING -s ${ulaIpv6} -j SNAT --to-source ${publicIpv6} 2>/dev/null`, { stdio: "pipe" });
+  } catch {
+    try { execSync(`ip6tables -t nat -A POSTROUTING -s ${ulaIpv6} -j SNAT --to-source ${publicIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
+  }
 }
 
 /**
- * Remove DNAT + SNAT rules for a public↔ULA mapping.
+ * Remove ALL DNAT + SNAT rules for a public↔ULA mapping.
+ * Loops to handle duplicates that accumulated from prior restores.
  */
 export function removeIpv6Nat(publicIpv6: string, ulaIpv6: string): void {
-  try { execSync(`ip6tables -t nat -D PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
-  try { execSync(`ip6tables -t nat -D POSTROUTING -s ${ulaIpv6} -j SNAT --to-source ${publicIpv6}`, { stdio: "pipe" }); } catch { /* ok */ }
+  for (let i = 0; i < 20; i++) {
+    try { execSync(`ip6tables -t nat -D PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6}`, { stdio: "pipe" }); } catch { break; }
+  }
+  for (let i = 0; i < 20; i++) {
+    try { execSync(`ip6tables -t nat -D POSTROUTING -s ${ulaIpv6} -j SNAT --to-source ${publicIpv6}`, { stdio: "pipe" }); } catch { break; }
+  }
 }
 
 // --- Lifecycle ---

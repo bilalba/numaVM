@@ -47,32 +47,79 @@ function getSshProxyPort(): number {
 
 let sshServer: InstanceType<typeof Server> | null = null;
 
+// --- Per-VM connection tracking for graceful snapshot ---
+
+interface ConnEntry {
+  client: Connection;
+  upstream: InstanceType<typeof Client> | null;
+  clientChannel: ServerChannel | null;
+}
+
+const activeConnections = new Map<string, Set<ConnEntry>>();
+const snapshotInProgress = new Set<string>();
+
+function trackConnection(vmId: string, entry: ConnEntry): void {
+  let set = activeConnections.get(vmId);
+  if (!set) {
+    set = new Set();
+    activeConnections.set(vmId, set);
+  }
+  set.add(entry);
+}
+
+function untrackConnection(vmId: string, entry: ConnEntry): void {
+  const set = activeConnections.get(vmId);
+  if (set) {
+    set.delete(entry);
+    if (set.size === 0) activeConnections.delete(vmId);
+  }
+}
+
+/**
+ * Disconnect all SSH proxy sessions for a VM (called before snapshot).
+ * Writes a message to stderr and cleanly ends connections.
+ * Also suppresses the wake-retry handler for 5s.
+ */
+export function disconnectSSHForVM(vmId: string): void {
+  snapshotInProgress.add(vmId);
+  setTimeout(() => snapshotInProgress.delete(vmId), 5000);
+
+  const set = activeConnections.get(vmId);
+  if (!set) return;
+
+  for (const entry of set) {
+    try {
+      if (entry.clientChannel) {
+        entry.clientChannel.stderr.write("\r\nVM going to sleep...\r\n");
+      }
+    } catch { /* ignore */ }
+    try {
+      if (entry.upstream) entry.upstream.end();
+    } catch { /* ignore */ }
+    try {
+      entry.client.end();
+    } catch { /* ignore */ }
+  }
+  activeConnections.delete(vmId);
+}
+
 // --- Key matching ---
 
 /**
  * Collect all authorized public keys for a VM.
- * Returns parsed ssh2 keys ready for comparison.
+ * Reads from the per-key user_ssh_keys table via vm_access join.
  */
 function getAuthorizedKeys(vmId: string): ParsedKey[] {
-  const users = getDatabase().getAuthorizedUsersForVM(vmId);
+  const keyRecords = getDatabase().getAllSshKeysForVM(vmId);
   const keys: ParsedKey[] = [];
 
-  for (const user of users) {
-    if (!user.ssh_public_keys) continue;
-
-    // ssh_public_keys may contain multiple keys, one per line
-    for (const line of user.ssh_public_keys.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-
-      const parsed = utils.parseKey(trimmed);
-      if (parsed instanceof Error) continue;
-      // parseKey can return an array for multi-key inputs
-      if (Array.isArray(parsed)) {
-        keys.push(...parsed);
-      } else {
-        keys.push(parsed);
-      }
+  for (const record of keyRecords) {
+    const parsed = utils.parseKey(record.key_data);
+    if (parsed instanceof Error) continue;
+    if (Array.isArray(parsed)) {
+      keys.push(...parsed);
+    } else {
+      keys.push(parsed);
     }
   }
 
@@ -103,6 +150,7 @@ function handleConnection(client: Connection, _info: ClientInfo) {
   let capturedKeyFingerprint: string | null = null;
   let capturedKeyAlgo: string | null = null;
   let capturedKeyData: Buffer | null = null;
+  let connEntry: ConnEntry | null = null;
 
   client.on("authentication", (ctx: AuthContext) => {
     if (ctx.method === "none") {
@@ -228,6 +276,9 @@ function handleConnection(client: Connection, _info: ClientInfo) {
     if (!vm) { client.end(); return; }
     console.log(`[ssh-proxy] Client authenticated for ${vm.id} (user: ${authenticatedUser})`);
 
+    connEntry = { client, upstream: null, clientChannel: null };
+    trackConnection(vm.id, connEntry);
+
     client.on("session", (accept, reject) => {
       const session = accept();
 
@@ -320,26 +371,24 @@ function handleConnection(client: Connection, _info: ClientInfo) {
         wakePromise
           .then(() => {
             const engine = getVMEngine();
-            let internalKey: Buffer;
-            if (engine.connectToVM) {
-              // Multi-node: get cached private key from remote engine
-              internalKey = (engine as any).getInternalSshPrivateKey(vm.id);
-            } else {
-              const internalKeyPath = engine.getInternalSshKeyPath();
-              internalKey = readFileSync(internalKeyPath);
+
+            // Multi-node with openVMSession: node handles SSH auth
+            if (engine.openVMSession) {
+              connectViaNodeSession(vm, clientChan, opts, engine, needsWake, retriedAfterSnapshot);
+              return;
             }
 
+            // Single-node: direct SSH connection using internal key
+            const internalKeyPath = engine.getInternalSshKeyPath();
+            const internalKey = readFileSync(internalKeyPath);
+
             const upstream = new Client();
+            if (connEntry) {
+              connEntry.upstream = upstream;
+              connEntry.clientChannel = clientChan;
+            }
 
             upstream.on("ready", () => {
-              // Set env vars on upstream
-              if (opts.envVars) {
-                for (const ev of opts.envVars) {
-                  // ssh2 Client doesn't have a direct env method,
-                  // but the exec/shell options can pass env
-                }
-              }
-
               if (opts.subsystem) {
                 forwardViaSubsystem(upstream, clientChan, opts.subsystem, opts);
                 return;
@@ -405,55 +454,17 @@ function handleConnection(client: Connection, _info: ClientInfo) {
             });
 
             upstream.on("error", (err) => {
-              console.error(`[ssh-proxy] Upstream error for ${vm.id}: ${err.message}`);
-              // VM may have been snapshotted mid-connection — try waking once
-              if (!needsWake && !retriedAfterSnapshot) {
-                retriedAfterSnapshot = true;
-                clientChan.stderr.write("VM went to sleep, waking... ");
-                ensureVMRunning(vm.id)
-                  .then(() => {
-                    clientChan.stderr.write("ready.\r\n");
-                    connectUpstream(vm, clientChan, opts);
-                  })
-                  .catch((wakeErr) => {
-                    if (wakeErr instanceof QuotaExceededError) {
-                      clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another VM or upgrade your plan.\r\n`);
-                    } else {
-                      clientChan.stderr.write(`failed: ${wakeErr.message}\r\n`);
-                    }
-                    clientChan.close();
-                  });
-                return;
-              }
-              clientChan.stderr.write(`Connection error: ${err.message}\r\n`);
-              clientChan.close();
+              handleUpstreamError(err, vm, clientChan, opts, needsWake, retriedAfterSnapshot);
             });
 
-            // If the engine supports connectToVM (multi-node), use it to tunnel
-            const connectFn = getVMEngine().connectToVM;
-            if (connectFn) {
-              connectFn(vm.id).then((socket) => {
-                upstream.connect({
-                  sock: socket as any,
-                  username: "dev",
-                  privateKey: internalKey,
-                  readyTimeout: 10000,
-                  hostVerifier: () => true,
-                } as any);
-              }).catch((err) => {
-                clientChan.stderr.write(`Tunnel error: ${err.message}\r\n`);
-                clientChan.close();
-              });
-            } else {
-              upstream.connect({
-                host: vmIp,
-                port: 22,
-                username: "dev",
-                privateKey: internalKey,
-                readyTimeout: 10000,
-                hostVerifier: () => true,
-              } as any);
-            }
+            upstream.connect({
+              host: vmIp,
+              port: 22,
+              username: "dev",
+              privateKey: internalKey,
+              readyTimeout: 10000,
+              hostVerifier: () => true,
+            } as any);
           })
           .catch((err) => {
             if (err instanceof QuotaExceededError) {
@@ -463,6 +474,165 @@ function handleConnection(client: Connection, _info: ClientInfo) {
             }
             clientChan.close();
           });
+      }
+
+      /** Multi-node path: node agent handles SSH auth, CP relays over WebSocket. */
+      function connectViaNodeSession(
+        vm: { id: string; vm_ip: string | null },
+        clientChan: ServerChannel,
+        opts: { ptyInfo?: any; envVars?: { key: string; val: string }[]; shell?: boolean; exec?: string; subsystem?: string },
+        engine: ReturnType<typeof getVMEngine>,
+        needsWake: boolean,
+        retriedAfterSnapshot: boolean,
+      ) {
+        const sessionOpts: any = {
+          mode: opts.subsystem ? "subsystem" : opts.exec ? "exec" : "shell",
+        };
+        if (opts.exec) sessionOpts.command = opts.exec;
+        if (opts.subsystem) sessionOpts.subsystem = opts.subsystem;
+        if (opts.ptyInfo) {
+          sessionOpts.pty = {
+            rows: opts.ptyInfo.rows,
+            cols: opts.ptyInfo.cols,
+            height: opts.ptyInfo.height,
+            width: opts.ptyInfo.width,
+            modes: opts.ptyInfo.modes,
+          };
+        }
+        if (opts.envVars && opts.envVars.length > 0) {
+          sessionOpts.env = {};
+          for (const ev of opts.envVars) {
+            sessionOpts.env[ev.key] = ev.val;
+          }
+        }
+
+        if (connEntry) {
+          connEntry.clientChannel = clientChan;
+        }
+
+        engine.openVMSession!(vm.id, sessionOpts).then((ws: any) => {
+          upstreamChannel = { setWindow: (rows: number, cols: number, h: number, w: number) => {
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: "resize", rows, cols, height: h, width: w }));
+            }
+          }};
+
+          // WS binary → client channel (stdout)
+          ws.on("message", (data: Buffer | string, isBinary: boolean) => {
+            if (!isBinary) {
+              // Text frame — JSON control message
+              try {
+                const msg = JSON.parse(data.toString());
+                if (msg.type === "exit") {
+                  if (msg.signal) {
+                    clientChan.exit(msg.signal as any);
+                  } else {
+                    clientChan.exit(msg.code ?? 0);
+                  }
+                  clientChan.close();
+                  return;
+                }
+                if (msg.type === "stderr" && msg.data) {
+                  clientChan.stderr.write(Buffer.from(msg.data, "base64"));
+                  return;
+                }
+                if (msg.type === "error") {
+                  clientChan.stderr.write(`Error: ${msg.message}\r\n`);
+                  clientChan.close();
+                  return;
+                }
+              } catch { /* not JSON */ }
+            } else {
+              clientChan.write(data);
+            }
+          });
+
+          // Client channel → WS binary (stdin)
+          clientChan.on("data", (data: Buffer) => {
+            if (ws.readyState === 1) {
+              ws.send(data);
+            }
+          });
+
+          ws.on("close", () => {
+            clientChan.close();
+          });
+
+          ws.on("error", (err: Error) => {
+            console.error(`[ssh-proxy] WS session error for ${vm.id}: ${err.message}`);
+            if (snapshotInProgress.has(vm.id)) {
+              clientChan.close();
+              return;
+            }
+            if (!needsWake && !retriedAfterSnapshot) {
+              clientChan.stderr.write("VM went to sleep, waking... ");
+              ensureVMRunning(vm.id)
+                .then(() => {
+                  clientChan.stderr.write("ready.\r\n");
+                  connectUpstream(vm, clientChan, opts);
+                })
+                .catch((wakeErr) => {
+                  if (wakeErr instanceof QuotaExceededError) {
+                    clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another VM or upgrade your plan.\r\n`);
+                  } else {
+                    clientChan.stderr.write(`failed: ${wakeErr.message}\r\n`);
+                  }
+                  clientChan.close();
+                });
+              return;
+            }
+            clientChan.stderr.write(`Connection error: ${err.message}\r\n`);
+            clientChan.close();
+          });
+
+          clientChan.on("close", () => {
+            ws.close();
+          });
+
+          // Forward window-change
+          clientChan.on("window-change" as any, (info: any) => {
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: "resize", rows: info.rows, cols: info.cols, height: info.height, width: info.width }));
+            }
+          });
+        }).catch((err: Error) => {
+          clientChan.stderr.write(`Session error: ${err.message}\r\n`);
+          clientChan.close();
+        });
+      }
+
+      function handleUpstreamError(
+        err: Error,
+        vm: { id: string; vm_ip: string | null },
+        clientChan: ServerChannel,
+        opts: any,
+        needsWake: boolean,
+        retriedAfterSnapshot: boolean,
+      ) {
+        console.error(`[ssh-proxy] Upstream error for ${vm.id}: ${err.message}`);
+        if (snapshotInProgress.has(vm.id)) {
+          clientChan.close();
+          return;
+        }
+        if (!needsWake && !retriedAfterSnapshot) {
+          clientChan.stderr.write("VM went to sleep, waking... ");
+          ensureVMRunning(vm.id)
+            .then(() => {
+              clientChan.stderr.write("ready.\r\n");
+              connectUpstream(vm, clientChan, opts);
+            })
+            .catch((wakeErr) => {
+              if (wakeErr instanceof QuotaExceededError) {
+                clientChan.stderr.write(`\r\nRAM quota exceeded. Stop another VM or upgrade your plan.\r\n`);
+              } else {
+                clientChan.stderr.write(`failed: ${wakeErr.message}\r\n`);
+              }
+              clientChan.close();
+            });
+          return;
+        }
+        clientChan.stderr.write(`Connection error: ${err.message}\r\n`);
+        clientChan.close();
       }
 
       function forwardViaSubsystem(upstream: InstanceType<typeof Client>, clientChan: ServerChannel, name: string, opts: any) {
@@ -527,7 +697,9 @@ function handleConnection(client: Connection, _info: ClientInfo) {
   });
 
   client.on("end", () => {
-    // Normal disconnect
+    if (vm && connEntry) {
+      untrackConnection(vm.id, connEntry);
+    }
   });
 }
 

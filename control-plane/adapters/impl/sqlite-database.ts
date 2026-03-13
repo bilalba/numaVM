@@ -1,4 +1,4 @@
-import type { IDatabase, FirewallRule } from "../database.js";
+import type { IDatabase, FirewallRule, SshKeyRecord } from "../database.js";
 import type { VM, VMWithRole, User, UserPlan, AgentSession, AgentMessage } from "../types.js";
 import { getPlanRegistry } from "../providers.js";
 import {
@@ -56,6 +56,11 @@ import {
   getTrafficSummary as _getTrafficSummary,
   pruneOldTraffic as _pruneOldTraffic,
   emitAdminEvent as _emitAdminEvent,
+  getUserSshKeys as _getUserSshKeys,
+  addUserSshKey as _addUserSshKey,
+  removeUserSshKey as _removeUserSshKey,
+  findUserSshKeyByFingerprint as _findUserSshKeyByFingerprint,
+  getAllSshKeysForVM as _getAllSshKeysForVM,
 } from "../../db/client.js";
 
 /**
@@ -102,6 +107,11 @@ export class SqliteDatabase implements IDatabase {
   setStripeCustomerId(userId: string, customerId: string): void { _setStripeCustomerId(userId, customerId); }
   updateUserPlan(userId: string, plan: string): void { _updateUserPlan(userId, plan); }
   findUserByStripeCustomerId(customerId: string): User | undefined { return _findUserByStripeCustomerId(customerId); }
+  getUserSshKeys(userId: string): SshKeyRecord[] { return _getUserSshKeys(userId); }
+  addUserSshKey(userId: string, id: string, keyData: string, keyType: string, fingerprint: string, comment: string | null, source: string): void { _addUserSshKey(userId, id, keyData, keyType, fingerprint, comment, source); }
+  removeUserSshKey(userId: string, keyId: string): void { _removeUserSshKey(userId, keyId); }
+  findUserSshKeyByFingerprint(userId: string, fingerprint: string): SshKeyRecord | undefined { return _findUserSshKeyByFingerprint(userId, fingerprint); }
+  getAllSshKeysForVM(vmId: string): SshKeyRecord[] { return _getAllSshKeysForVM(vmId); }
 
   // --- IAgentStore ---
   insertAgentSession(s: Pick<AgentSession, "id" | "vm_id" | "agent_type" | "thread_id" | "title" | "cwd" | "status">): void { _insertAgentSession(s); }

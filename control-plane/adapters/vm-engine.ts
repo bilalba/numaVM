@@ -133,4 +133,14 @@ export interface IVMEngine {
 
   /** Open a duplex stream to the VM's SSH port (used by SSH proxy for remote VMs). */
   connectToVM?(vmId: string): Promise<import("node:stream").Duplex>;
+
+  /** Open an authenticated SSH session to a VM. Returns a WebSocket speaking the shell protocol.
+   *  Node agent handles the SSH handshake using its internal key — CP becomes a pure relay. */
+  openVMSession?(vmId: string, opts: {
+    mode: "shell" | "exec" | "subsystem";
+    command?: string;
+    subsystem?: string;
+    pty?: { rows: number; cols: number; width: number; height: number; modes?: any };
+    env?: Record<string, string>;
+  }): Promise<import("ws").WebSocket>;
 }

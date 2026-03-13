@@ -1,73 +1,75 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, type SshKeyRecord, type SshKeyStatusRecord } from "../lib/api";
 import { useToast } from "./Toast";
 
 interface SshKeysPanelProps {
-  /** If provided, shows sync button + SSH command for this VM */
+  /** If provided, shows per-key sync status for this VM */
   vmId?: string;
   sshCommand?: string;
 }
 
 export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
-  const [keys, setKeys] = useState("");
-  const [githubKeys, setGithubKeys] = useState("");
+  const [keys, setKeys] = useState<SshKeyRecord[]>([]);
+  const [keyStatus, setKeyStatus] = useState<Map<string, SshKeyStatusRecord>>(new Map());
+  const [newKey, setNewKey] = useState("");
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [keysSynced, setKeysSynced] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const { toast } = useToast();
 
-  useEffect(() => {
+  const loadKeys = () => {
     api
       .getSshKeys()
-      .then((data) => {
-        setKeys(data.keys || "");
-        setGithubKeys(data.github_keys || "");
-      })
+      .then((data) => setKeys(data.keys || []))
       .catch((err) => toast(`Failed to load SSH keys: ${err.message}`, "error"))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadKeys();
   }, []);
 
-  // Check if keys are already synced to the VM
+  // Load per-key sync status for the VM
   useEffect(() => {
     if (!vmId) return;
     api
-      .checkSshKeysStatus(vmId)
-      .then((data) => setKeysSynced(data.synced))
-      .catch(() => setKeysSynced(false));
-  }, [vmId]);
+      .getSshKeysStatus(vmId)
+      .then((data) => {
+        const map = new Map<string, SshKeyStatusRecord>();
+        for (const k of data.keys) {
+          map.set(k.id, k);
+        }
+        setKeyStatus(map);
+      })
+      .catch(() => setKeyStatus(new Map()));
+  }, [vmId, keys]);
 
-  const handleSave = async () => {
-    setSaving(true);
+  const handleAdd = async () => {
+    const trimmed = newKey.trim();
+    if (!trimmed) return;
+    setAdding(true);
     try {
-      await api.saveSshKeys(keys.trim());
-      setDirty(false);
-      setKeysSynced(false);
-      toast("SSH keys saved", "success");
+      await api.addSshKey(trimmed);
+      setNewKey("");
+      loadKeys();
+      toast("SSH key added", "success");
     } catch (err: any) {
       toast(err.message, "error");
     } finally {
-      setSaving(false);
+      setAdding(false);
     }
   };
 
-  const handleSync = async () => {
-    if (!vmId) return;
-    setSyncing(true);
+  const handleRemove = async (id: string) => {
+    setRemovingId(id);
     try {
-      // Save first if there are unsaved changes
-      if (dirty) {
-        await api.saveSshKeys(keys.trim());
-        setDirty(false);
-      }
-      await api.syncSshKeys(vmId);
-      setKeysSynced(true);
-      toast("SSH keys synced to VM", "success");
+      await api.removeSshKey(id);
+      loadKeys();
+      toast("SSH key removed", "success");
     } catch (err: any) {
       toast(err.message, "error");
     } finally {
-      setSyncing(false);
+      setRemovingId(null);
     }
   };
 
@@ -76,9 +78,22 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
     toast("Copied to clipboard", "success");
   };
 
-  const keyCount =
-    keys.split("\n").filter((l) => l.trim()).length +
-    githubKeys.split("\n").filter((l) => l.trim()).length;
+  // Handle paste — detect full key line and auto-add
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && newKey.trim()) {
+      e.preventDefault();
+      handleAdd();
+    }
+  };
+
+  /** Truncate key data for display: show type + first 12 chars of base64 + comment */
+  const truncateKey = (keyData: string): string => {
+    const parts = keyData.split(/\s+/);
+    if (parts.length < 2) return keyData.slice(0, 40) + "...";
+    const base64 = parts[1];
+    const truncated = base64.length > 16 ? base64.slice(0, 16) + "..." : base64;
+    return `${parts[0]} ${truncated}`;
+  };
 
   if (loading) {
     return (
@@ -109,73 +124,97 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
         </div>
       )}
 
-      {/* GitHub keys (read-only) */}
-      {githubKeys && (
-        <div className="bg-panel-chat border border-neutral-200 p-4">
-          <h3 className="text-xs font-semibold mb-2">
-            GitHub keys
-            <span className="font-normal text-neutral-500 ml-2">
-              (auto-imported)
-            </span>
-          </h3>
-          <div className="text-xs text-neutral-600 font-mono space-y-1">
-            {githubKeys
-              .split("\n")
-              .filter((l) => l.trim())
-              .map((key, i) => (
-                <div key={i} className="truncate bg-neutral-100 border border-neutral-100 px-2 py-1">
-                  {key}
-                </div>
-              ))}
-          </div>
-        </div>
-      )}
-
-      {/* Custom SSH keys */}
+      {/* Key list */}
       <div className="bg-panel-chat border border-neutral-200 p-4">
-        <h3 className="text-xs font-semibold mb-2">Custom SSH keys</h3>
-        <textarea
-          value={keys}
-          onChange={(e) => {
-            setKeys(e.target.value);
-            setDirty(true);
-          }}
-          placeholder="Paste your public key (e.g. ssh-ed25519 AAAA... user@host)"
-          rows={4}
-          className="w-full border border-neutral-200 bg-surface px-3 py-2 text-xs font-mono placeholder:text-neutral-400 focus:border-foreground focus:outline-none resize-y"
-        />
-        <p className="text-[10px] text-neutral-500 mt-1 mb-3">
-          One key per line. Find yours with{" "}
+        <h3 className="text-xs font-semibold mb-3">SSH keys</h3>
+
+        {keys.length === 0 ? (
+          <p className="text-xs text-neutral-500 mb-3">No SSH keys configured.</p>
+        ) : (
+          <div className="space-y-2 mb-3">
+            {keys.map((key) => {
+              const status = keyStatus.get(key.id);
+              return (
+                <div
+                  key={key.id}
+                  className="flex items-center gap-2 bg-neutral-100 border border-neutral-100 px-3 py-2"
+                >
+                  {/* Sync status dot (per-VM only) */}
+                  {vmId && (
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        status?.present ? "bg-green-500" : "bg-red-400"
+                      }`}
+                      title={status?.present ? "Present in VM" : "Not in VM"}
+                    />
+                  )}
+
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-mono truncate" title={key.key_data}>
+                      {truncateKey(key.key_data)}
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[10px] text-neutral-500">{key.key_type}</span>
+                      {key.comment && (
+                        <span className="text-[10px] text-neutral-500">{key.comment}</span>
+                      )}
+                      {key.source !== "manual" && (
+                        <span className="text-[10px] bg-neutral-200 px-1 rounded">
+                          {key.source}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleRemove(key.id)}
+                    disabled={removingId === key.id}
+                    className="text-xs text-neutral-400 hover:text-red-500 transition-colors cursor-pointer shrink-0 disabled:opacity-30"
+                    title="Remove key"
+                  >
+                    {removingId === key.id ? "..." : "\u00d7"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Add key input */}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={newKey}
+            onChange={(e) => setNewKey(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="ssh-ed25519 AAAA... user@host"
+            className="flex-1 border border-neutral-200 bg-surface px-3 py-2 text-xs font-mono placeholder:text-neutral-400 focus:border-foreground focus:outline-none"
+          />
+          <button
+            onClick={handleAdd}
+            disabled={adding || !newKey.trim()}
+            className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer shrink-0"
+          >
+            {adding ? "Adding..." : "Add"}
+          </button>
+        </div>
+        <p className="text-[10px] text-neutral-500 mt-1">
+          Paste your public key. Find yours with{" "}
           <code className="bg-neutral-100 px-1">cat ~/.ssh/id_ed25519.pub</code>
         </p>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleSave}
-            disabled={saving || !dirty}
-            className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer"
-          >
-            {saving ? "Saving..." : "Save"}
-          </button>
-          {vmId && (
-            <button
-              onClick={handleSync}
-              disabled={syncing || (keysSynced && !dirty)}
-              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer"
-            >
-              {syncing ? "Syncing..." : keysSynced && !dirty ? "Synced" : "Sync to this VM"}
-            </button>
-          )}
-          {keyCount > 0 && (
+
+        {keys.length > 0 && (
+          <div className="flex items-center mt-3">
             <span className="text-[10px] text-neutral-500 ml-auto">
-              {keyCount} key{keyCount !== 1 ? "s" : ""} configured
+              {keys.length} key{keys.length !== 1 ? "s" : ""} configured
             </span>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {!vmId && (
         <p className="text-[10px] text-neutral-500">
-          Keys are injected into new VMs automatically. For existing VMs, use "Sync" from the VM's Access tab.
+          Keys are automatically pushed to running VMs when added.
         </p>
       )}
     </div>

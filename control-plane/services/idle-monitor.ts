@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { getDatabase, getVMEngine, getReverseProxy } from "../adapters/providers.js";
-import { agentManager } from "../agents/manager.js";
+import { prepareVMForSnapshot } from "./snapshot-cleanup.js";
 
 /**
  * Network Idle Monitor
@@ -97,9 +97,8 @@ async function pollOnce(): Promise<void> {
 
       snapshottingSet.add(vm.id);
       try {
-        // Tear down agent bridges before snapshot so SSE disconnects
-        // don't falsely mark idle sessions as "error"
-        agentManager.destroyBridgesForVM(vm.id);
+        // Gracefully notify all connections before snapshot
+        await prepareVMForSnapshot(vm.id);
 
         // Snapshot the VM
         await engine.snapshotVM(vm.id);
@@ -180,7 +179,7 @@ async function pollOnce(): Promise<void> {
         if (snapshottingSet.has(vmId)) continue;
         snapshottingSet.add(vmId);
         try {
-          agentManager.destroyBridgesForVM(vmId);
+          await prepareVMForSnapshot(vmId);
           await engine.snapshotVM(vmId);
           const snapshotPath = `${process.env.DATA_DIR || "/data/vms"}/${vmId}/snapshot`;
           db.updateVMSnapshotPath(vmId, snapshotPath);

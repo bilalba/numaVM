@@ -32,6 +32,19 @@ class WsHub {
     }
   }
 
+  closeConnectionsForVM(vmId: string): void {
+    const set = this.connections.get(vmId);
+    if (!set) return;
+    const payload = JSON.stringify({ type: "vm.snapshotting", vmId });
+    for (const ws of set) {
+      if (ws.readyState === ws.OPEN) {
+        try { ws.send(payload); } catch { /* ignore */ }
+        try { ws.close(1000, "VM going to sleep"); } catch { /* ignore */ }
+      }
+    }
+    this.connections.delete(vmId);
+  }
+
   getConnectionCount(vmId: string): number {
     return this.connections.get(vmId)?.size ?? 0;
   }

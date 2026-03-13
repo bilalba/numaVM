@@ -1,9 +1,9 @@
 import type { VM, VMWithRole, User, UserPlan, AgentSession, AgentMessage } from "./types.js";
-import type { FirewallRule } from "../db/client.js";
+import type { FirewallRule, SshKeyRecord } from "../db/client.js";
 
 // Re-export types so consumers can import everything from one place
 export type { VM, VMWithRole, User, UserPlan, AgentSession, AgentMessage } from "./types.js";
-export type { FirewallRule } from "../db/client.js";
+export type { FirewallRule, SshKeyRecord } from "../db/client.js";
 
 // --- Sub-interfaces grouped by domain ---
 
@@ -48,6 +48,12 @@ export interface IUserStore {
   setStripeCustomerId(userId: string, customerId: string): void;
   updateUserPlan(userId: string, plan: string): void;
   findUserByStripeCustomerId(customerId: string): User | undefined;
+  // Per-key SSH key management
+  getUserSshKeys(userId: string): SshKeyRecord[];
+  addUserSshKey(userId: string, id: string, keyData: string, keyType: string, fingerprint: string, comment: string | null, source: string): void;
+  removeUserSshKey(userId: string, keyId: string): void;
+  findUserSshKeyByFingerprint(userId: string, fingerprint: string): SshKeyRecord | undefined;
+  getAllSshKeysForVM(vmId: string): SshKeyRecord[];
 }
 
 export interface IAgentStore {

@@ -197,6 +197,13 @@ async function doWake(vmId: string, vm: VM): Promise<void> {
 
     db.emitAdminEvent("vm.woke", vmId, null, { hadSnapshot: hasSnapshot });
 
+    // Additive key sync — push any missing user keys after snapshot restore
+    try {
+      await syncMissingKeysToVM(vmId);
+    } catch (err) {
+      console.warn(`[wake] Failed to sync SSH keys for ${vmId}: ${err}`);
+    }
+
     // Reset idle timer so it doesn't immediately re-snapshot
     getIdleMonitor().resetTimer(vmId);
   } catch (err: any) {
@@ -204,6 +211,47 @@ async function doWake(vmId: string, vm: VM): Promise<void> {
     console.error(`[wake] Failed to wake VM ${vmId}: ${err.message}`);
     throw err;
   }
+}
+
+/**
+ * Additive key sync — push any missing user keys to a running VM.
+ * Called after wake to ensure keys added while VM was snapshotted are present.
+ */
+async function syncMissingKeysToVM(vmId: string): Promise<void> {
+  const db = getDatabase();
+  const engine = getVMEngine();
+
+  const allKeys = db.getAllSshKeysForVM(vmId);
+  if (allKeys.length === 0) return;
+
+  // Read current authorized_keys from VM
+  let currentContent: string;
+  try {
+    currentContent = await engine.exec(vmId, ["cat", "/home/dev/.ssh/authorized_keys"]);
+  } catch {
+    currentContent = "";
+  }
+
+  // Find missing keys
+  const missing: string[] = [];
+  for (const key of allKeys) {
+    const parts = key.key_data.split(/\s+/);
+    const identity = parts.length >= 2 ? `${parts[0]} ${parts[1]}` : key.key_data;
+    if (!currentContent.includes(identity)) {
+      missing.push(key.key_data);
+    }
+  }
+
+  if (missing.length === 0) return;
+
+  // Append all missing keys in a single exec
+  const keysToAdd = missing.join("\n");
+  const b64 = Buffer.from(keysToAdd).toString("base64");
+  await engine.exec(vmId, [
+    "sh", "-c",
+    `echo '${b64}' | base64 -d >> /home/dev/.ssh/authorized_keys`,
+  ]);
+  console.log(`[wake] Synced ${missing.length} missing SSH key(s) to ${vmId}`);
 }
 
 /**

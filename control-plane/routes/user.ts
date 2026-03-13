@@ -1,7 +1,13 @@
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
+import ssh2 from "ssh2";
+import { createHash } from "node:crypto";
 import { getDatabase } from "../adapters/providers.js";
-import { fetchSshKeys, listRepos, createRepo } from "../services/github.js";
+import { listRepos, createRepo } from "../services/github.js";
 import { invalidateKeyCache } from "../services/ssh-key-lookup.js";
+import { getVMEngine } from "../adapters/providers.js";
+
+const { utils } = ssh2;
 
 // --- Pending SSH key linking ---
 // In-memory store: token → { publicKey, fingerprint, email, confirmed, createdAt }
@@ -44,46 +50,113 @@ export function deletePendingKey(token: string): void {
   pendingKeys.delete(token);
 }
 
+/** Parse an SSH public key line, compute fingerprint + extract fields. */
+function parsePublicKey(keyLine: string): { keyType: string; fingerprint: string; comment: string | null } | null {
+  const trimmed = keyLine.trim();
+  if (!trimmed || trimmed.startsWith("#")) return null;
+
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 2) return null;
+  const keyType = parts[0];
+  const keyBase64 = parts[1];
+  const comment = parts.length > 2 ? parts.slice(2).join(" ") : null;
+
+  // Validate key format
+  if (!keyType.startsWith("ssh-") && !keyType.startsWith("ecdsa-") && !keyType.startsWith("sk-")) {
+    return null;
+  }
+
+  try {
+    const keyBytes = Buffer.from(keyBase64, "base64");
+    const hash = createHash("sha256").update(keyBytes).digest("base64").replace(/=+$/, "");
+    return { keyType, fingerprint: `SHA256:${hash}`, comment };
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort push a key to all running VMs the user has access to. */
+function bestEffortPushKey(userId: string, keyData: string): void {
+  const db = getDatabase();
+  const engine = getVMEngine();
+  const vms = db.findVMsByUser(userId);
+  for (const vm of vms) {
+    if (vm.status !== "running") continue;
+    const keyIdentity = keyData.split(/\s+/).slice(0, 2).join(" ");
+    const cmd = `grep -qF '${keyIdentity}' /home/dev/.ssh/authorized_keys 2>/dev/null || echo '${keyData}' >> /home/dev/.ssh/authorized_keys`;
+    engine.exec(vm.id, ["sh", "-c", cmd]).catch(() => {});
+  }
+}
+
+/** Best-effort remove a key from all running VMs the user has access to. */
+function bestEffortRemoveKey(userId: string, keyData: string): void {
+  const db = getDatabase();
+  const engine = getVMEngine();
+  const vms = db.findVMsByUser(userId);
+  const keyIdentity = keyData.split(/\s+/).slice(0, 2).join(" ");
+  const escaped = keyIdentity.replace(/[/\\&]/g, "\\$&");
+  for (const vm of vms) {
+    if (vm.status !== "running") continue;
+    engine.exec(vm.id, ["sh", "-c", `sed -i '\\|${escaped}|d' /home/dev/.ssh/authorized_keys`]).catch(() => {});
+  }
+}
+
 export function registerUserRoutes(app: FastifyInstance) {
-  // Get current user's SSH keys
+  // Get current user's SSH keys (per-key records)
   app.get("/me/ssh-keys", async (request) => {
-    const user = getDatabase().findUserById(request.userId);
-    const keys = user?.ssh_public_keys || "";
-
-    // Also fetch GitHub keys for display
-    let githubKeys = "";
-    if (user?.github_username) {
-      githubKeys = await fetchSshKeys(user.github_username);
-    }
-
-    return { keys, github_keys: githubKeys };
+    const keys = getDatabase().getUserSshKeys(request.userId);
+    return { keys };
   });
 
-  // Save custom SSH keys
-  app.put("/me/ssh-keys", async (request, reply) => {
-    const body = request.body as { keys?: string };
-    const rawKeys = (body.keys ?? "").trim();
-
-    if (!rawKeys) {
-      getDatabase().updateUserSshKeys(request.userId, null);
-      return { ok: true };
+  // Add a single SSH key
+  app.post("/me/ssh-keys", async (request, reply) => {
+    const body = request.body as { key?: string };
+    const keyLine = body.key?.trim();
+    if (!keyLine) {
+      return reply.status(400).send({ error: "key is required" });
     }
 
-    // Validate each non-empty line looks like an SSH public key
-    const lines = rawKeys.split("\n").map((l) => l.trim()).filter(Boolean);
-    for (const line of lines) {
-      if (
-        !line.startsWith("ssh-") &&
-        !line.startsWith("ecdsa-") &&
-        !line.startsWith("sk-")
-      ) {
-        return reply.status(400).send({
-          error: `Invalid SSH public key: line must start with ssh-, ecdsa-, or sk-. Got: "${line.slice(0, 40)}..."`,
-        });
-      }
+    const parsed = parsePublicKey(keyLine);
+    if (!parsed) {
+      return reply.status(400).send({
+        error: `Invalid SSH public key: must start with ssh-, ecdsa-, or sk-`,
+      });
     }
 
-    getDatabase().updateUserSshKeys(request.userId, lines.join("\n"));
+    // Reject duplicate fingerprint
+    const existing = getDatabase().findUserSshKeyByFingerprint(request.userId, parsed.fingerprint);
+    if (existing) {
+      return reply.status(409).send({ error: "Key already exists", key: existing });
+    }
+
+    const id = randomUUID();
+    getDatabase().addUserSshKey(
+      request.userId, id, keyLine, parsed.keyType, parsed.fingerprint, parsed.comment, "manual",
+    );
+    invalidateKeyCache();
+
+    // Best-effort push to running VMs
+    bestEffortPushKey(request.userId, keyLine);
+
+    const record = getDatabase().findUserSshKeyByFingerprint(request.userId, parsed.fingerprint);
+    return reply.status(201).send(record);
+  });
+
+  // Remove a single SSH key
+  app.delete("/me/ssh-keys/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const keys = getDatabase().getUserSshKeys(request.userId);
+    const key = keys.find(k => k.id === id);
+    if (!key) {
+      return reply.status(404).send({ error: "Key not found" });
+    }
+
+    getDatabase().removeUserSshKey(request.userId, id);
+    invalidateKeyCache();
+
+    // Best-effort remove from running VMs
+    bestEffortRemoveKey(request.userId, key.key_data);
+
     return { ok: true };
   });
 
@@ -165,19 +238,29 @@ export function registerUserRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Link token expired or invalid" });
     }
 
-    // Check if this key is already in the user's keys
-    const user = getDatabase().findUserById(request.userId);
-    const existingKeys = user?.ssh_public_keys || "";
-    if (existingKeys.includes(pending.publicKey.trim())) {
+    // Check if this key is already linked (by fingerprint)
+    const existing = getDatabase().findUserSshKeyByFingerprint(request.userId, pending.fingerprint);
+    if (existing) {
       pending.confirmed = true;
       return { ok: true, message: "Key already linked to your account" };
     }
 
-    // Append the key
-    getDatabase().appendUserSshKey(request.userId, pending.publicKey.trim());
+    // Parse and add the key as a proper record
+    const parsed = parsePublicKey(pending.publicKey.trim());
+    if (!parsed) {
+      return reply.status(400).send({ error: "Invalid key format" });
+    }
+
+    const id = randomUUID();
+    getDatabase().addUserSshKey(
+      request.userId, id, pending.publicKey.trim(),
+      parsed.keyType, parsed.fingerprint, parsed.comment, "linked",
+    );
     invalidateKeyCache();
     pending.confirmed = true;
-    // Don't delete yet — the TUI needs to poll and see confirmed=true
+
+    // Best-effort push to running VMs
+    bestEffortPushKey(request.userId, pending.publicKey.trim());
 
     return { ok: true, message: "SSH key linked to your account" };
   });
