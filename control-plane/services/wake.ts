@@ -95,8 +95,19 @@ export async function ensureVMRunning(vmId: string): Promise<void> {
   // Not snapshotted — can't wake
   if (vm.status !== "snapshotted" && vm.status !== "paused") {
     if (vm.status === "running") {
-      // DB says running but VM process is gone — stale state
-      console.warn(`[wake] ${vmId} DB says running but VM not in memory (stale state)`);
+      // DB says running but VM not in engine's cache — could be stale state
+      // (local: process died) or a remote VM after CP restart. Check with engine.
+      try {
+        const info = await engine.inspectVM(vmId);
+        if (info.running) {
+          console.log(`[wake] ${vmId} confirmed running via inspectVM (cache miss after restart)`);
+          getIdleMonitor().resetTimer(vmId);
+          return;
+        }
+      } catch {
+        // inspectVM failed — treat as stale
+      }
+      console.warn(`[wake] ${vmId} DB says running but VM not actually running (stale state)`);
       return;
     }
     console.warn(`[wake] ${vmId} cannot wake from status: ${vm.status}`);

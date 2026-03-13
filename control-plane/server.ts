@@ -76,7 +76,7 @@ export async function createServer(options?: CreateServerOptions) {
       cb(null, false);
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
   // Initialize providers (OSS defaults, or enterprise overrides via NUMAVM_PROVIDERS env var)
@@ -168,7 +168,7 @@ export async function createServer(options?: CreateServerOptions) {
     const { github_token, ...rest } = user;
     const plan = db.getUserPlan(request.userId);
     const devMode = process.env.DEV_MODE === "true";
-    return { ...rest, has_github_token: !!github_token, plan: plan.plan, plan_label: plan.label, trial_active: plan.trial_active, trial_expires_at: plan.trial_expires_at, dev_mode: devMode };
+    return { ...rest, has_github_token: !!github_token, plan: plan.plan, plan_label: plan.label, trial_active: plan.trial_active, trial_expires_at: plan.trial_expires_at, dev_mode: devMode, web_terminal_enabled: true };
   });
 
   // Register route modules

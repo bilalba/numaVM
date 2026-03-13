@@ -88,14 +88,17 @@ fi
 
 # --- SSH Setup ---
 
+# Ensure .ssh directory exists with correct permissions
+mkdir -p /home/dev/.ssh
+chmod 700 /home/dev/.ssh
+chown dev:dev /home/dev/.ssh
+
 # Decode and write authorized_keys
 if [ -n "${DM_ssh_keys:-}" ]; then
   echo "${DM_ssh_keys}" | base64 -d > /home/dev/.ssh/authorized_keys 2>/dev/null || {
     # If not base64, treat as raw
     echo "${DM_ssh_keys}" > /home/dev/.ssh/authorized_keys
   }
-  chmod 600 /home/dev/.ssh/authorized_keys
-  chown dev:dev /home/dev/.ssh/authorized_keys
 fi
 
 # Also install the control plane's internal SSH key if provided
@@ -103,6 +106,12 @@ if [ -n "${DM_internal_ssh_key:-}" ]; then
   echo "${DM_internal_ssh_key}" | base64 -d >> /home/dev/.ssh/authorized_keys 2>/dev/null || {
     echo "${DM_internal_ssh_key}" >> /home/dev/.ssh/authorized_keys
   }
+fi
+
+# Always ensure correct ownership/permissions (even if only internal key was written)
+if [ -f /home/dev/.ssh/authorized_keys ]; then
+  chmod 600 /home/dev/.ssh/authorized_keys
+  chown dev:dev /home/dev/.ssh/authorized_keys
 fi
 
 # Host keys and sshd_config (including PermitUserEnvironment) are pre-baked
@@ -249,11 +258,10 @@ if [ -f /etc/numavm/BASE_AGENTS.md ] && [ -d "${WORK_DIR}" ]; then
   chown dev:dev "${WORK_DIR}/AGENTS.md"
 fi
 
-# Pre-start OpenCode server so it's ready when the user creates a session
-# (avoids ~3s cold-start delay on first session creation)
-if command -v opencode &>/dev/null && [ -n "${DM_opencode_password:-}" ]; then
-  sudo -u dev bash -lc "source ~/.env 2>/dev/null; cd '${WORK_DIR}' 2>/dev/null || cd ~; OPENCODE_SERVER_PASSWORD='${DM_opencode_password}' nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 & disown" &
-fi
+# OpenCode server is started on-demand by the control plane's ensureRunning().
+# Pre-starting here caused a race condition on 256MB VMs: init.sh reaches this
+# line ~20s after sshd (git clone + env setup), but the CP spawns immediately
+# after SSH is ready, resulting in duplicate processes fighting for port 5000.
 
 # --- Start user app (best-effort) ---
 

@@ -63,13 +63,19 @@ export class OpenCodeBridge implements AgentBridge {
   /**
    * Ensure the OpenCode server is running inside the VM.
    * Uses a per-VM lock to prevent concurrent callers from spawning duplicates.
+   * Callers that arrive while a lock is held wait for it, then verify via HTTP.
    */
   async ensureRunning(onProgress?: (step: string, message: string) => void): Promise<void> {
-    const existing = OpenCodeBridge.ensureLocks.get(this.vmId);
-    if (existing) {
-      // Another caller is already starting — wait for it, then verify via HTTP
+    // If another caller is already running ensureRunning for this VM, wait for it.
+    // Loop because multiple waiters wake up simultaneously when the lock resolves —
+    // only one should proceed to acquire; the rest re-check.
+    while (true) {
+      const existing = OpenCodeBridge.ensureLocks.get(this.vmId);
+      if (!existing) break;
       await existing;
+      // Lock holder finished — check if server is now up
       try { await this.httpRequest("GET", "/session"); return; } catch {}
+      // Server not up yet — loop back to check if someone else grabbed the lock
     }
 
     let resolve!: () => void;
@@ -85,34 +91,24 @@ export class OpenCodeBridge implements AgentBridge {
 
   /**
    * Inner implementation: checks via HTTP, starts via SSH if not running, polls until ready.
-   * Retries pgrep to handle the race where init.sh hasn't started OpenCode yet.
+   * This is the single source of truth for starting OpenCode (init.sh does NOT pre-start).
    */
   private async _ensureRunningInner(onProgress?: (step: string, message: string) => void): Promise<void> {
     // Fast path: already running and responding
-    let isRunning = false;
     try {
       await this.httpRequest("GET", "/session");
-      isRunning = true;
+      return;
     } catch {
       // Not responding — need to check/start
     }
 
-    if (isRunning) {
-      return;
-    }
-
-    // Check if process exists but not yet ready.
-    // Retry pgrep up to 3 times (with 2s gaps) to handle the race where
-    // init.sh hasn't reached the OpenCode pre-start line yet.
+    // Check if process exists but not yet ready (e.g. still loading on slow VMs)
     let processRunning = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const out = await getVMEngine().exec(this.vmId, ["pgrep", "-f", "opencode serve"], { timeoutMs: 5000 });
-        if (out.trim()) { processRunning = true; break; }
-      } catch {
-        // Not running
-      }
-      if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+    try {
+      const out = await getVMEngine().exec(this.vmId, ["pgrep", "-f", "opencode serve"], { timeoutMs: 5000 });
+      processRunning = !!out.trim();
+    } catch {
+      // Not running
     }
 
     if (!processRunning) {
