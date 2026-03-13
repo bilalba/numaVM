@@ -1,16 +1,22 @@
 import { useEffect, useState } from "react";
-import { api, type SshKeyRecord, type SshKeyStatusRecord } from "../lib/api";
+import { api } from "../lib/api";
 import { useToast } from "./Toast";
 
+interface VmSshKey {
+  id: string;
+  key_data: string;
+  key_type: string;
+  comment: string | null;
+}
+
 interface SshKeysPanelProps {
-  /** If provided, shows per-key sync status for this VM */
+  /** If provided, manages keys directly on this VM's authorized_keys */
   vmId?: string;
   sshCommand?: string;
 }
 
 export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
-  const [keys, setKeys] = useState<SshKeyRecord[]>([]);
-  const [keyStatus, setKeyStatus] = useState<Map<string, SshKeyStatusRecord>>(new Map());
+  const [keys, setKeys] = useState<VmSshKey[]>([]);
   const [newKey, setNewKey] = useState("");
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -18,38 +24,48 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
   const { toast } = useToast();
 
   const loadKeys = () => {
-    api
-      .getSshKeys()
-      .then((data) => setKeys(data.keys || []))
-      .catch((err) => toast(`Failed to load SSH keys: ${err.message}`, "error"))
-      .finally(() => setLoading(false));
+    if (vmId) {
+      // VM-scoped: read keys from the VM's authorized_keys
+      api
+        .getVmSshKeys(vmId)
+        .then((data) => setKeys(data.keys || []))
+        .catch((err) => toast(`Failed to load SSH keys: ${err.message}`, "error"))
+        .finally(() => setLoading(false));
+    } else {
+      // Account-scoped: read keys from user's account
+      api
+        .getSshKeys()
+        .then((data) =>
+          setKeys(
+            (data.keys || []).map((k) => ({
+              id: k.id,
+              key_data: k.key_data,
+              key_type: k.key_type,
+              comment: k.comment,
+            }))
+          )
+        )
+        .catch((err) => toast(`Failed to load SSH keys: ${err.message}`, "error"))
+        .finally(() => setLoading(false));
+    }
   };
 
   useEffect(() => {
     loadKeys();
-  }, []);
-
-  // Load per-key sync status for the VM
-  useEffect(() => {
-    if (!vmId) return;
-    api
-      .getSshKeysStatus(vmId)
-      .then((data) => {
-        const map = new Map<string, SshKeyStatusRecord>();
-        for (const k of data.keys) {
-          map.set(k.id, k);
-        }
-        setKeyStatus(map);
-      })
-      .catch(() => setKeyStatus(new Map()));
-  }, [vmId, keys]);
+  }, [vmId]);
 
   const handleAdd = async () => {
     const trimmed = newKey.trim();
     if (!trimmed) return;
     setAdding(true);
     try {
-      await api.addSshKey(trimmed);
+      if (vmId) {
+        // VM-scoped: add key directly to VM's authorized_keys
+        await api.addVmSshKey(vmId, trimmed);
+      } else {
+        // Account-scoped: add to user account (pushes to all VMs)
+        await api.addSshKey(trimmed);
+      }
       setNewKey("");
       loadKeys();
       toast("SSH key added", "success");
@@ -60,10 +76,18 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
     }
   };
 
-  const handleRemove = async (id: string) => {
-    setRemovingId(id);
+  const handleRemove = async (key: VmSshKey) => {
+    setRemovingId(key.id);
     try {
-      await api.removeSshKey(id);
+      if (vmId) {
+        // VM-scoped: remove from VM's authorized_keys
+        const parts = key.key_data.split(/\s+/);
+        const identity = parts.length >= 2 ? `${parts[0]} ${parts[1]}` : key.key_data;
+        await api.removeVmSshKey(vmId, identity);
+      } else {
+        // Account-scoped: remove from user account
+        await api.removeSshKey(key.id);
+      }
       loadKeys();
       toast("SSH key removed", "success");
     } catch (err: any) {
@@ -78,7 +102,6 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
     toast("Copied to clipboard", "success");
   };
 
-  // Handle paste — detect full key line and auto-add
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && newKey.trim()) {
       e.preventDefault();
@@ -132,51 +155,33 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
           <p className="text-xs text-neutral-500 mb-3">No SSH keys configured.</p>
         ) : (
           <div className="space-y-2 mb-3">
-            {keys.map((key) => {
-              const status = keyStatus.get(key.id);
-              return (
-                <div
-                  key={key.id}
-                  className="flex items-center gap-2 bg-neutral-100 border border-neutral-100 px-3 py-2"
-                >
-                  {/* Sync status dot (per-VM only) */}
-                  {vmId && (
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                        status?.present ? "bg-green-500" : "bg-red-400"
-                      }`}
-                      title={status?.present ? "Present in VM" : "Not in VM"}
-                    />
-                  )}
-
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-mono truncate" title={key.key_data}>
-                      {truncateKey(key.key_data)}
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-[10px] text-neutral-500">{key.key_type}</span>
-                      {key.comment && (
-                        <span className="text-[10px] text-neutral-500">{key.comment}</span>
-                      )}
-                      {key.source !== "manual" && (
-                        <span className="text-[10px] bg-neutral-200 px-1 rounded">
-                          {key.source}
-                        </span>
-                      )}
-                    </div>
+            {keys.map((key) => (
+              <div
+                key={key.id}
+                className="flex items-center gap-2 bg-neutral-100 border border-neutral-100 px-3 py-2"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-mono truncate" title={key.key_data}>
+                    {truncateKey(key.key_data)}
                   </div>
-
-                  <button
-                    onClick={() => handleRemove(key.id)}
-                    disabled={removingId === key.id}
-                    className="text-xs text-neutral-400 hover:text-red-500 transition-colors cursor-pointer shrink-0 disabled:opacity-30"
-                    title="Remove key"
-                  >
-                    {removingId === key.id ? "..." : "\u00d7"}
-                  </button>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] text-neutral-500">{key.key_type}</span>
+                    {key.comment && (
+                      <span className="text-[10px] text-neutral-500">{key.comment}</span>
+                    )}
+                  </div>
                 </div>
-              );
-            })}
+
+                <button
+                  onClick={() => handleRemove(key)}
+                  disabled={removingId === key.id}
+                  className="text-xs text-neutral-400 hover:text-red-500 transition-colors cursor-pointer shrink-0 disabled:opacity-30"
+                  title="Remove key"
+                >
+                  {removingId === key.id ? "..." : "\u00d7"}
+                </button>
+              </div>
+            ))}
           </div>
         )}
 

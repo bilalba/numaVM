@@ -769,6 +769,46 @@ export function registerVMRoutes(app: FastifyInstance) {
     reply.type("text/html").send(html);
   });
 
+  // List SSH keys in a running VM's authorized_keys (excludes internal key)
+  app.get("/vms/:id/ssh-keys", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const vm = getDatabase().findVMById(id) || getDatabase().findVMByName(id);
+    if (!vm) {
+      return reply.status(404).send({ error: "VM not found" });
+    }
+
+    const role = getDatabase().checkAccess(vm.id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
+    }
+
+    if (vm.status !== "running") {
+      return { keys: [], reason: "not_running" };
+    }
+
+    try {
+      const raw = await getVMEngine().exec(vm.id, ["cat", "/home/dev/.ssh/authorized_keys"]);
+      const keys = raw
+        .split("\n")
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith("#") && !l.includes("numavm-internal"));
+
+      return {
+        keys: keys.map((keyLine, i) => {
+          const parts = keyLine.split(/\s+/);
+          return {
+            id: `vm-key-${i}`,
+            key_data: keyLine,
+            key_type: parts[0] || "unknown",
+            comment: parts.length > 2 ? parts.slice(2).join(" ") : null,
+          };
+        }),
+      };
+    } catch {
+      return { keys: [], reason: "read_failed" };
+    }
+  });
+
   // Add a single SSH key to a running VM's authorized_keys
   app.post("/vms/:id/ssh-keys/add", async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -798,7 +838,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     try {
       await getVMEngine().exec(vm.id, [
         "sh", "-c",
-        `grep -qF '${keyIdentity}' /home/dev/.ssh/authorized_keys 2>/dev/null || echo '${keyLine}' >> /home/dev/.ssh/authorized_keys`,
+        `grep -qF '${keyIdentity}' /home/dev/.ssh/authorized_keys 2>/dev/null || printf '\\n%s\\n' '${keyLine}' >> /home/dev/.ssh/authorized_keys`,
       ]);
 
       // Verify

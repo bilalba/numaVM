@@ -386,9 +386,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
 
   // Build kernel cmdline with dm.* params
   // Base64-encode SSH keys to avoid whitespace issues in cmdline
-  const sshKeysB64 = Buffer.from(
-    sshKeys + "\n" + getInternalSshPubKey()
-  ).toString("base64");
+  const allKeys = [sshKeys, getInternalSshPubKey()].filter(Boolean).join("\n") + "\n";
+  const sshKeysB64 = Buffer.from(allKeys).toString("base64");
 
   const envNameB64 = Buffer.from(name || slug).toString("base64");
 

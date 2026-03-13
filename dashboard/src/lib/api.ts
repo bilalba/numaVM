@@ -516,6 +516,22 @@ export const api = {
   getSshKeysStatus: (vmId: string) =>
     apiFetch<{ keys: SshKeyStatusRecord[] }>(`/vms/${vmId}/ssh-keys/status`),
 
+  // VM-scoped SSH key management (reads from VM's authorized_keys)
+  getVmSshKeys: (vmId: string) =>
+    apiFetch<{ keys: { id: string; key_data: string; key_type: string; comment: string | null }[]; reason?: string }>(`/vms/${vmId}/ssh-keys`),
+
+  addVmSshKey: (vmId: string, keyData: string) =>
+    apiFetch<{ ok: boolean; verified?: boolean }>(`/vms/${vmId}/ssh-keys/add`, {
+      method: "POST",
+      body: JSON.stringify({ key_data: keyData }),
+    }),
+
+  removeVmSshKey: (vmId: string, keyIdentity: string) =>
+    apiFetch<{ ok: boolean }>(`/vms/${vmId}/ssh-keys/remove`, {
+      method: "POST",
+      body: JSON.stringify({ key_identity: keyIdentity }),
+    }),
+
   // GitHub repo access
   getGithubStatus: () =>
     apiFetch<{ connected: boolean; username: string | null }>("/me/github"),

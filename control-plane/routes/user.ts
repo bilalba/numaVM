@@ -83,7 +83,7 @@ function bestEffortPushKey(userId: string, keyData: string): void {
   for (const vm of vms) {
     if (vm.status !== "running") continue;
     const keyIdentity = keyData.split(/\s+/).slice(0, 2).join(" ");
-    const cmd = `grep -qF '${keyIdentity}' /home/dev/.ssh/authorized_keys 2>/dev/null || echo '${keyData}' >> /home/dev/.ssh/authorized_keys`;
+    const cmd = `grep -qF '${keyIdentity}' /home/dev/.ssh/authorized_keys 2>/dev/null || printf '\\n%s\\n' '${keyData}' >> /home/dev/.ssh/authorized_keys`;
     engine.exec(vm.id, ["sh", "-c", cmd]).catch(() => {});
   }
 }

@@ -103,6 +103,8 @@ fi
 
 # Also install the control plane's internal SSH key if provided
 if [ -n "${DM_internal_ssh_key:-}" ]; then
+  # Ensure file ends with a newline before appending
+  [ -s /home/dev/.ssh/authorized_keys ] && printf '\n' >> /home/dev/.ssh/authorized_keys
   echo "${DM_internal_ssh_key}" | base64 -d >> /home/dev/.ssh/authorized_keys 2>/dev/null || {
     echo "${DM_internal_ssh_key}" >> /home/dev/.ssh/authorized_keys
   }
