@@ -1,0 +1,13 @@
+[Unit]
+Description=NumaVM App (git, env, app startup)
+After=numavm-setup.service
+Requires=numavm-setup.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/numavm/app.sh
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

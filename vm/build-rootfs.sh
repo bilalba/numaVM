@@ -213,16 +213,28 @@ Subsystem sftp ${SFTP_PATH}
 SSHD_CONF
 
 # ============================================================
-# Phase 8: Init scripts (shared)
+# Phase 8: Init scripts (distro-specific)
 # ============================================================
 
 echo "Configuring init..."
 
-# Enable OpenRC services (Alpine-specific but harmless on Ubuntu)
-chroot "${MOUNTDIR}" rc-update add sshd default 2>/dev/null || true
+# Create the numavm dir for scripts
+mkdir -p "${MOUNTDIR}/opt/numavm"
 
-# Create numavm-init (PID 1)
-cat > "${MOUNTDIR}/sbin/numavm-init" <<'INIT'
+# Copy BASE_AGENTS.md (used by init scripts to write AGENTS.md into project directories)
+mkdir -p "${MOUNTDIR}/etc/numavm"
+if [ -f "${SCRIPT_DIR}/BASE_AGENTS.md" ]; then
+  cp "${SCRIPT_DIR}/BASE_AGENTS.md" "${MOUNTDIR}/etc/numavm/BASE_AGENTS.md"
+  echo "Installed BASE_AGENTS.md to /etc/numavm/BASE_AGENTS.md"
+fi
+
+if [ "${DISTRO}" = "alpine" ]; then
+  # --- Alpine: custom init as PID 1 (uses OpenRC) ---
+
+  chroot "${MOUNTDIR}" rc-update add sshd default 2>/dev/null || true
+
+  # Create numavm-init (PID 1)
+  cat > "${MOUNTDIR}/sbin/numavm-init" <<'INIT'
 #!/bin/bash
 # NumaVM VM init — executed as PID 1 by the kernel
 # See vm/init.sh for the full version with overlayfs + env setup
@@ -253,31 +265,59 @@ fi
 # Keep PID 1 alive
 exec sleep infinity
 INIT
-chmod +x "${MOUNTDIR}/sbin/numavm-init"
+  chmod +x "${MOUNTDIR}/sbin/numavm-init"
 
-# Verify shebang wasn't corrupted (bash history expansion can turn #!/bin/bash into #\!/bin/bash)
-if ! head -1 "${MOUNTDIR}/sbin/numavm-init" | grep -q '^#!/bin/bash$'; then
-  echo "ERROR: numavm-init shebang is corrupted: $(head -1 "${MOUNTDIR}/sbin/numavm-init")" >&2
-  echo "  This usually happens when the build script is run in an interactive shell." >&2
-  echo "  Run with: sudo ./build-rootfs.sh (not 'sudo bash' then paste)" >&2
-  exit 1
-fi
+  # Verify shebang wasn't corrupted (bash history expansion can turn #!/bin/bash into #\!/bin/bash)
+  if ! head -1 "${MOUNTDIR}/sbin/numavm-init" | grep -q '^#!/bin/bash$'; then
+    echo "ERROR: numavm-init shebang is corrupted: $(head -1 "${MOUNTDIR}/sbin/numavm-init")" >&2
+    echo "  This usually happens when the build script is run in an interactive shell." >&2
+    echo "  Run with: sudo ./build-rootfs.sh (not 'sudo bash' then paste)" >&2
+    exit 1
+  fi
 
-# Create the numavm dir for init script
-mkdir -p "${MOUNTDIR}/opt/numavm"
+  # Copy the actual init script
+  if [ -f "${SCRIPT_DIR}/init.sh" ]; then
+    cp "${SCRIPT_DIR}/init.sh" "${MOUNTDIR}/opt/numavm/init.sh"
+    chmod +x "${MOUNTDIR}/opt/numavm/init.sh"
+    echo "Installed init.sh to /opt/numavm/init.sh"
+  fi
 
-# Copy the actual init script
-if [ -f "${SCRIPT_DIR}/init.sh" ]; then
-  cp "${SCRIPT_DIR}/init.sh" "${MOUNTDIR}/opt/numavm/init.sh"
-  chmod +x "${MOUNTDIR}/opt/numavm/init.sh"
-  echo "Installed init.sh to /opt/numavm/init.sh"
-fi
+else
+  # --- Ubuntu: systemd as PID 1 ---
 
-# Copy BASE_AGENTS.md (used by init.sh to write AGENTS.md into project directories)
-mkdir -p "${MOUNTDIR}/etc/numavm"
-if [ -f "${SCRIPT_DIR}/BASE_AGENTS.md" ]; then
-  cp "${SCRIPT_DIR}/BASE_AGENTS.md" "${MOUNTDIR}/etc/numavm/BASE_AGENTS.md"
-  echo "Installed BASE_AGENTS.md to /etc/numavm/BASE_AGENTS.md"
+  # Copy systemd scripts
+  cp "${SCRIPT_DIR}/systemd/parse-cmdline.sh" "${MOUNTDIR}/opt/numavm/parse-cmdline.sh"
+  cp "${SCRIPT_DIR}/systemd/setup.sh" "${MOUNTDIR}/opt/numavm/setup.sh"
+  cp "${SCRIPT_DIR}/systemd/app.sh" "${MOUNTDIR}/opt/numavm/app.sh"
+  chmod +x "${MOUNTDIR}/opt/numavm/parse-cmdline.sh"
+  chmod +x "${MOUNTDIR}/opt/numavm/setup.sh"
+  chmod +x "${MOUNTDIR}/opt/numavm/app.sh"
+
+  # Install systemd unit files
+  cp "${SCRIPT_DIR}/systemd/numavm-setup.service" "${MOUNTDIR}/etc/systemd/system/numavm-setup.service"
+  cp "${SCRIPT_DIR}/systemd/numavm-app.service" "${MOUNTDIR}/etc/systemd/system/numavm-app.service"
+
+  # Install ssh.service drop-in for vsock-signal after sshd starts
+  mkdir -p "${MOUNTDIR}/etc/systemd/system/ssh.service.d"
+  cp "${SCRIPT_DIR}/systemd/numavm-ready.conf" "${MOUNTDIR}/etc/systemd/system/ssh.service.d/numavm-ready.conf"
+
+  # Set default hostname (overridden at boot by setup.sh)
+  echo "numavm" > "${MOUNTDIR}/etc/hostname"
+
+  # Enable numavm services + ssh
+  chroot "${MOUNTDIR}" systemctl enable numavm-setup.service
+  chroot "${MOUNTDIR}" systemctl enable numavm-app.service
+  chroot "${MOUNTDIR}" systemctl enable ssh.service
+
+  # Mask unnecessary services for faster boot
+  chroot "${MOUNTDIR}" systemctl mask systemd-networkd.service
+  chroot "${MOUNTDIR}" systemctl mask systemd-resolved.service
+  chroot "${MOUNTDIR}" systemctl mask systemd-timesyncd.service
+
+  # Ensure /sbin/init exists (kernel default init path)
+  ln -sf /lib/systemd/systemd "${MOUNTDIR}/sbin/init"
+
+  echo "Installed systemd units: numavm-setup, numavm-app, ssh drop-in"
 fi
 
 # ============================================================

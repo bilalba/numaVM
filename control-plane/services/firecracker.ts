@@ -101,6 +101,7 @@ export interface CreateVMParams {
   diskSizeGib?: number;
   image?: string;
   extraKernelArgs?: string[];
+  firewallRules?: FirewallRule[];
   onProgress?: (detail: string) => void;
 }
 
@@ -399,7 +400,9 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     "nomodules",
     "random.trust_cpu=on",
     "i8042.noaux",
-    "init=/sbin/numavm-init",
+    ...(!image || image === "alpine"
+      ? ["init=/sbin/numavm-init"]
+      : ["init=/lib/systemd/systemd"]),
     `dm.ip=${vmIp}`,
     `dm.gateway=${getVmGateway()}`,
     `dm.dns=8.8.8.8`,
@@ -554,8 +557,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   // Apply IPv6 firewall rules (default-deny) using ULA address (post-DNAT destination)
   if (ipv6Ula) {
     try {
-      const { getVMFirewallRules } = await import("../db/client.js");
-      const rules = getVMFirewallRules(slug);
+      // Prefer passed-in rules (from CP via multi-node) over reading from local DB
+      const rules = params.firewallRules ?? (await import("../db/client.js")).getVMFirewallRules(slug);
       applyIpv6FirewallRules(slug, ipv6Ula, rules);
     } catch (err) {
       console.error(`[firecracker] Failed to apply IPv6 firewall rules for ${slug}:`, err);

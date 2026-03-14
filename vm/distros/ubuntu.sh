@@ -73,7 +73,11 @@ EOF
     procps \
     sudo \
     ca-certificates \
-    gnupg
+    gnupg \
+    file \
+    systemd \
+    libsystemd0 \
+    dbus
 }
 
 distro_install_node() {
