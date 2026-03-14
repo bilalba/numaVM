@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, Link, useNavigate, useSearchParams, useLocation } from "react-router-dom";
-import { api, type VMDetail as VMDetailType, type Quota } from "../lib/api";
+import { api, wsUrlToHttp, type VMDetail as VMDetailType, type Quota, type NodeConnection } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { useUser } from "../components/UserProvider";
 import { TerminalTab } from "../components/TerminalTab";
@@ -38,12 +38,21 @@ export function VMDetail() {
   const pendingSession = !!(location.state as any)?.pendingSession;
   const { user } = useUser();
   const webTerminalEnabled = user?.web_terminal_enabled !== false;
+  const nodeRef = useRef<NodeConnection | null>(null);
 
   useEffect(() => {
     if (!slug) return;
     api
       .getVM(slug)
-      .then(setVM)
+      .then((vmData) => {
+        setVM(vmData);
+        // Eagerly resolve node connection for remote VMs
+        if (vmData.host_id) {
+          api.refreshConnectToken(vmData.id).then((data) => {
+            nodeRef.current = { httpUrl: wsUrlToHttp(data.agentWsUrl), token: data.connectToken };
+          }).catch(() => {});
+        }
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [slug]);
@@ -61,10 +70,20 @@ export function VMDetail() {
     if (vm.status !== "snapshotted" && vm.status !== "paused" && vm.status !== "creating") return;
 
     const interval = setInterval(() => {
-      api.getVM(slug).then((updated) => {
-        setVM(updated);
-        if (updated.status === "running" || updated.quota_error || updated.disk_quota_error || updated.data_quota_error) clearInterval(interval);
-      }).catch(() => {});
+      const node = nodeRef.current;
+      if (node) {
+        // Poll status directly from node (avoids CP round-trip)
+        api.getNodeVMStatus(node, vm.id).then((status) => {
+          setVM((prev) => prev ? { ...prev, status: status.status, status_detail: status.status_detail } : prev);
+          if (status.status === "running") clearInterval(interval);
+        }).catch(() => {});
+      } else {
+        // Fallback to CP for non-remote VMs
+        api.getVM(slug).then((updated) => {
+          setVM(updated);
+          if (updated.status === "running" || updated.quota_error || updated.disk_quota_error || updated.data_quota_error) clearInterval(interval);
+        }).catch(() => {});
+      }
     }, 3000);
 
     return () => clearInterval(interval);
@@ -235,10 +254,10 @@ export function VMDetail() {
 
       {/* Tab content */}
       <div className="flex-1 min-h-0">
-        {activeTab === "codex" && <AgentTab vmId={vm.id} agentType="codex" vmStatus={vm.status} />}
-        {activeTab === "opencode" && <AgentTab vmId={vm.id} agentType="opencode" vmName={vm.name} vmStatus={vm.status} pendingSession={pendingSession} />}
+        {activeTab === "codex" && <AgentTab vmId={vm.id} agentType="codex" vmStatus={vm.status} hostId={vm.host_id} />}
+        {activeTab === "opencode" && <AgentTab vmId={vm.id} agentType="opencode" vmName={vm.name} vmStatus={vm.status} pendingSession={pendingSession} hostId={vm.host_id} />}
         {activeTab === "terminal" && <TerminalTab vmId={vm.id} isRemote={!!vm.host_id} />}
-        {activeTab === "files" && <FilesTab vmId={vm.id} />}
+        {activeTab === "files" && <FilesTab vmId={vm.id} hostId={vm.host_id} />}
         {activeTab === "access" && (
           <AccessPanel
             vmId={vm.id}

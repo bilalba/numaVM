@@ -113,11 +113,9 @@ export function useAgentSocket(vmId: string) {
     };
 
     ws.onerror = () => {
-      // Only clear node refs if this is still the active WS
-      if (ws === wsRef.current && nodeWsUrlRef.current) {
-        nodeWsUrlRef.current = null;
-        connectTokenRef.current = null;
-      }
+      // Don't clear node refs — reconnect should retry the same node, not fall back to CP.
+      // Clearing refs here would cause reconnections to hit CP's WS route, which returns
+      // 4010 for remote VMs, creating an infinite reconnect loop.
       ws.close();
     };
   }, [vmId, scheduleTokenRefresh]);
@@ -183,5 +181,10 @@ export function useAgentSocket(vmId: string) {
     return connectTokenRef.current;
   }, []);
 
-  return { connected, events, sendCommand, clearEvents, addListener, connectToCP, reconnectToNode, getNodeToken };
+  /** Get the current node WS URL (for constructing HTTP URL). */
+  const getNodeWsUrl = useCallback((): string | null => {
+    return nodeWsUrlRef.current;
+  }, []);
+
+  return { connected, events, sendCommand, clearEvents, addListener, connectToCP, reconnectToNode, getNodeToken, getNodeWsUrl };
 }

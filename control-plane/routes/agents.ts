@@ -6,6 +6,7 @@ import type { AgentCommand, AgentType, ApprovalDecision, ApprovalPolicy, Sandbox
 import { OpenCodeBridge } from "../agents/opencode-bridge.js";
 import { getVMEngine } from "../adapters/providers.js";
 import { ensureVMRunning, QuotaExceededError } from "../services/wake.js";
+import { getOpenCodeStatus } from "../agents/opencode-status.js";
 
 const VALID_AGENT_TYPES = new Set(["codex", "opencode"]);
 
@@ -18,8 +19,6 @@ interface RemoteAgentForwarder {
   issueConnectToken(userId: string, vmId: string, purpose?: string): Promise<{ token: string; expiresAt: string }>;
   /** Get the agent WS URL for a VM's node agent. */
   getAgentWsUrl(vmId: string): string | null;
-  /** Open a WebSocket to the node agent and return it for proxying. */
-  openNodeWs?(vmId: string, path: string): import("ws").WebSocket | null;
 }
 
 let remoteForwarder: RemoteAgentForwarder | null = null;
@@ -735,7 +734,31 @@ export function registerAgentRoutes(app: FastifyInstance) {
     }
   });
 
-  // GET /vms/:id/ws — WebSocket for agent events
+  // GET /vms/:id/opencode-status — OpenCode server readiness status
+  app.get("/vms/:id/opencode-status", async (request, reply) => {
+    let { id } = request.params as { id: string };
+    id = resolveVMId(id);
+
+    const role = getDatabase().checkAccess(id, request.userId);
+    if (!role) {
+      return reply.status(403).send({ error: "No access to this VM" });
+    }
+
+    // Multi-node: forward to node agent
+    if (isRemoteVM(id)) {
+      try {
+        return await remoteForwarder!.forward(id, "GET", `/vms/${id}/opencode-status`);
+      } catch (err: any) {
+        return { vmId: id, opencode_status: "unknown" };
+      }
+    }
+
+    return { vmId: id, opencode_status: getOpenCodeStatus(id) };
+  });
+
+  // GET /vms/:id/ws — WebSocket for agent events (local VMs only)
+  // Remote VMs: dashboard connects directly to node agent's /vms/:id/agent-ws
+  // using connect tokens. CP no longer proxies WebSocket for remote VMs.
   app.get(
     "/vms/:id/ws",
     { websocket: true },
@@ -749,38 +772,9 @@ export function registerAgentRoutes(app: FastifyInstance) {
         return;
       }
 
-      // For remote VMs, proxy WebSocket to the node agent's agent-ws endpoint
-      if (isRemoteVM(id) && remoteForwarder?.openNodeWs) {
-        const nodeWs = remoteForwarder.openNodeWs(id, `/vms/${id}/agent-ws`);
-        if (!nodeWs) {
-          socket.close(4004, "Node not found for VM");
-          return;
-        }
-
-        // Bridge: node → dashboard
-        nodeWs.on("message", (data: Buffer | string) => {
-          if (socket.readyState === 1) {
-            socket.send(typeof data === "string" ? data : data.toString());
-          }
-        });
-
-        // Bridge: dashboard → node
-        socket.on("message", (data: Buffer | string) => {
-          if (nodeWs.readyState === 1) {
-            nodeWs.send(typeof data === "string" ? data : data.toString());
-          }
-        });
-
-        // Close propagation
-        nodeWs.on("close", () => {
-          if (socket.readyState === 1) socket.close(1000);
-        });
-        nodeWs.on("error", () => {
-          if (socket.readyState === 1) socket.close(1011, "Node connection error");
-        });
-        socket.on("close", () => {
-          if (nodeWs.readyState <= 1) nodeWs.close();
-        });
+      // Remote VMs should use direct node connection — close with redirect hint
+      if (isRemoteVM(id)) {
+        socket.close(4010, "Use direct node connection");
         return;
       }
 

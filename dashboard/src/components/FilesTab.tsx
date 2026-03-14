@@ -1,8 +1,10 @@
-import { useState, useCallback, useEffect } from "react";
-import { api, type FileEntry, type FileContent, type GitCommit } from "../lib/api";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { api, wsUrlToHttp, type FileEntry, type FileContent, type GitCommit, type NodeConnection } from "../lib/api";
 
 interface FilesTabProps {
   vmId: string;
+  /** If set, VM is on a remote node — route file calls directly to node */
+  hostId?: string | null;
 }
 
 interface DirState {
@@ -14,7 +16,7 @@ interface DirState {
 
 const ROOT = "/home/dev";
 
-export function FilesTab({ vmId }: FilesTabProps) {
+export function FilesTab({ vmId, hostId }: FilesTabProps) {
   const [dirs, setDirs] = useState<Map<string, DirState>>(new Map());
   const [selectedFile, setSelectedFile] = useState<FileContent | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
@@ -22,6 +24,19 @@ export function FilesTab({ vmId }: FilesTabProps) {
   const [commits, setCommits] = useState<GitCommit[]>([]);
   // On mobile, toggle between tree view and file view
   const [mobileShowFile, setMobileShowFile] = useState(false);
+  const [nodeReady, setNodeReady] = useState(!hostId);
+  const nodeRef = useRef<NodeConnection | null>(null);
+
+  // Eagerly resolve node connection for remote VMs
+  useEffect(() => {
+    if (!hostId) { setNodeReady(true); return; }
+    api.refreshConnectToken(vmId).then((data) => {
+      nodeRef.current = { httpUrl: wsUrlToHttp(data.agentWsUrl), token: data.connectToken };
+      setNodeReady(true);
+    }).catch(() => { setNodeReady(true); });
+  }, [vmId, hostId]);
+
+  const getNode = () => nodeRef.current;
 
   const loadDir = useCallback(
     async (path: string) => {
@@ -33,7 +48,10 @@ export function FilesTab({ vmId }: FilesTabProps) {
       });
 
       try {
-        const data = await api.listFiles(vmId, path);
+        const node = getNode();
+        const data = node
+          ? await api.listNodeFiles(node, vmId, path)
+          : await api.listFiles(vmId, path);
         setDirs((prev) => {
           const next = new Map(prev);
           next.set(path, { entries: data.entries, loading: false, expanded: true });
@@ -66,18 +84,27 @@ export function FilesTab({ vmId }: FilesTabProps) {
     [dirs, loadDir]
   );
 
-  // Load root + git log on mount
+  // Load root + git log on mount (wait for node connection)
   useEffect(() => {
+    if (!nodeReady) return;
     loadDir(ROOT);
-    api.getGitLog(vmId, 20).then((data) => setCommits(data.commits)).catch(() => {});
-  }, [vmId, loadDir]);
+    const node = getNode();
+    if (node) {
+      api.getNodeGitLog(node, vmId, 20).then((data) => setCommits(data.commits)).catch(() => {});
+    } else {
+      api.getGitLog(vmId, 20).then((data) => setCommits(data.commits)).catch(() => {});
+    }
+  }, [vmId, nodeReady, loadDir]);
 
   const handleFileClick = async (path: string) => {
     setFileLoading(true);
     setFileError(null);
     setMobileShowFile(true);
     try {
-      const data = await api.readFile(vmId, path);
+      const node = getNode();
+      const data = node
+        ? await api.readNodeFile(node, vmId, path)
+        : await api.readFile(vmId, path);
       setSelectedFile(data);
     } catch (err: any) {
       setFileError(err.message);
@@ -87,10 +114,29 @@ export function FilesTab({ vmId }: FilesTabProps) {
     }
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!selectedFile) return;
-    const url = api.getFileDownloadUrl(vmId, selectedFile.path);
-    window.open(url, "_blank");
+    const node = getNode();
+    if (node) {
+      // For node downloads, we need to fetch with auth header then open as blob
+      const { url, token } = api.getNodeFileDownloadUrl(node, vmId, selectedFile.path);
+      try {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (!res.ok) throw new Error("Download failed");
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = selectedFile.path.split("/").pop() || "download";
+        a.click();
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        // Fallback to CP
+        window.open(api.getFileDownloadUrl(vmId, selectedFile.path), "_blank");
+      }
+    } else {
+      window.open(api.getFileDownloadUrl(vmId, selectedFile.path), "_blank");
+    }
   };
 
   const handleMobileBack = () => {

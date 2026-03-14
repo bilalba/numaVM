@@ -17,6 +17,8 @@ interface AgentTabProps {
   vmStatus?: string;
   /** True when a session is being auto-created in the backend (e.g. VM created with initial prompt) */
   pendingSession?: boolean;
+  /** If set, VM is on a remote node — resolve node connection eagerly */
+  hostId?: string | null;
 }
 
 interface PendingApproval {
@@ -32,7 +34,7 @@ interface PendingQuestion {
   responded: boolean;
 }
 
-export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: AgentTabProps) {
+export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, hostId }: AgentTabProps) {
   const [sessions, setSessionsRaw] = useState<AgentSession[]>([]);
   /** Wrapper that deduplicates sessions by ID (prevents duplicates from racing sources) */
   const setSessions: typeof setSessionsRaw = useCallback((update) => {
@@ -58,6 +60,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [initProgress, setInitProgress] = useState<string | null>(null);
+  const [opencodeReady, setOpencodeReady] = useState(false);
   const [sending, setSending] = useState(false);
   const [sessionStatus, setSessionStatus] = useState<string>("idle");
   const [modelInfo, setModelInfo] = useState<{ model?: string; provider?: string } | null>(null);
@@ -98,8 +101,9 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
 
   // Direct node agent connection (multi-node) — used for all agent HTTP calls
   const nodeRef = useRef<NodeConnection | null>(null);
+  const [nodeReady, setNodeReady] = useState(!hostId); // true immediately for local VMs
 
-  const { connected, addListener, reconnectToNode, connectToCP, getNodeToken } = useAgentSocket(vmId);
+  const { connected, addListener, reconnectToNode, connectToCP, getNodeToken, getNodeWsUrl } = useAgentSocket(vmId);
 
   /** Get the current node connection (uses latest token from WS hook). */
   const getNode = useCallback((): NodeConnection | undefined => {
@@ -110,50 +114,145 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
     return nodeRef.current;
   }, [getNodeToken]);
 
-  // Check Codex auth status once VM is running
+  // Eagerly resolve node connection for remote VMs — fetch connect token from CP
+  // so all subsequent API calls go directly to the node agent.
+  useEffect(() => {
+    if (!hostId) {
+      setNodeReady(true);
+      return;
+    }
+    api.refreshConnectToken(vmId).then((data) => {
+      nodeRef.current = { httpUrl: wsUrlToHttp(data.agentWsUrl), token: data.connectToken };
+      reconnectToNode(data.agentWsUrl, data.connectToken, data.expiresAt);
+      setNodeReady(true);
+    }).catch(() => {
+      // Fall back to CP if token fetch fails
+      setNodeReady(true);
+    });
+  }, [vmId, hostId]);
+
+  // Check OpenCode readiness on mount (covers page reload after server is already up).
+  // Also connects WS early so we receive the opencode.ready event if still booting.
+  useEffect(() => {
+    if (agentType !== "opencode") {
+      setOpencodeReady(true);
+      return;
+    }
+    if (vmStatus && vmStatus !== "running") return;
+    if (!nodeReady) return;
+
+    // Connect WS early so we receive opencode.ready
+    if (hostId) {
+      // Node WS already connected by eagerly-resolved token above
+    } else {
+      connectToCP();
+    }
+
+    // Poll the HTTP endpoint to check if already ready
+    const node = getNode();
+    const promise = node
+      ? api.getNodeOpenCodeStatus(node, vmId)
+      : api.getOpenCodeStatus(vmId);
+    promise.then((data) => {
+      if (data.opencode_status === "ready") {
+        setOpencodeReady(true);
+      }
+    }).catch(() => {});
+  }, [vmId, agentType, vmStatus, nodeReady]);
+
+  /** Catch up from node event log — recover in-flight streaming data on reconnect/reload. */
+  const catchUpFromEventLog = useCallback((node: NodeConnection, vmId: string, sessionId: string) => {
+    api.pollEvents(node, vmId, sessionId, 0, 1).then((result) => {
+      if (result.events.length > 0) {
+        let pendingText = "";
+        let pendingReasoning = "";
+        for (const evt of result.events) {
+          const e = evt.data as any;
+          switch (evt.type) {
+            case "message.delta":
+              pendingText += e.text || "";
+              break;
+            case "reasoning.delta":
+              pendingReasoning += e.text || "";
+              break;
+            case "turn.started":
+              setSessionStatus("busy");
+              break;
+          }
+        }
+        if (pendingText) setStreamingText(pendingText);
+        if (pendingReasoning) setReasoningText(pendingReasoning);
+      }
+    }).catch(() => {}); // Best effort — WS will deliver live events
+  }, []);
+
+  // Check Codex auth status once VM is running + node is ready
   useEffect(() => {
     if (agentType !== "codex") {
       setCodexAuth({ checked: true, authenticated: true });
       return;
     }
     if (vmStatus && vmStatus !== "running") return;
-    api.getCodexAuthStatus(vmId).then((data) => {
+    if (!nodeReady) return;
+    const node = getNode();
+    const promise = node
+      ? api.getNodeCodexAuthStatus(node, vmId)
+      : api.getCodexAuthStatus(vmId);
+    promise.then((data) => {
       setCodexAuth({ checked: true, authenticated: data.authenticated });
     }).catch(() => {
       setCodexAuth({ checked: true, authenticated: false });
     });
-  }, [vmId, agentType, vmStatus]);
+  }, [vmId, agentType, vmStatus, nodeReady]);
 
   // Fetch Codex models when authenticated and VM is running
   useEffect(() => {
     if (agentType !== "codex" || !codexAuth.authenticated) return;
     if (vmStatus && vmStatus !== "running") return;
-    api.getCodexModels(vmId).then((data) => {
+    if (!nodeReady) return;
+    const node = getNode();
+    const promise = node
+      ? api.getNodeCodexModels(node, vmId)
+      : api.getCodexModels(vmId);
+    promise.then((data) => {
       setCodexModels(data.models || []);
     }).catch(() => {});
-  }, [vmId, agentType, codexAuth.authenticated, vmStatus]);
+  }, [vmId, agentType, codexAuth.authenticated, vmStatus, nodeReady]);
 
-  // Fetch OpenCode providers once VM is running
+  // Fetch OpenCode providers once OpenCode server is ready
   useEffect(() => {
     if (agentType !== "opencode") return;
-    if (vmStatus && vmStatus !== "running") return;
-    api.getOpenCodeProviders(vmId).then((data) => {
+    if (!opencodeReady) return;
+    if (!nodeReady) return;
+    const node = getNode();
+    const promise = node
+      ? api.getNodeOpenCodeProviders(node, vmId)
+      : api.getOpenCodeProviders(vmId);
+    promise.then((data) => {
       setOpenCodeProviders(data.connected || []);
       setOpenCodePopular(data.popular || []);
     }).catch(() => {});
-  }, [vmId, agentType, vmStatus]);
+  }, [vmId, agentType, opencodeReady, nodeReady]);
 
   // Track whether we're waiting for a backend-created session
   const [awaitingSession, setAwaitingSession] = useState(!!pendingSession);
 
   // Load sessions on mount. Poll when a pending session is expected but hasn't appeared yet.
+  // Uses direct node call when connected to a node, falls back to CP.
+  // For OpenCode: wait for opencode.ready before loading (server must be up to list sessions).
   useEffect(() => {
+    if (!nodeReady) return;
+    if (agentType === "opencode" && !opencodeReady) return;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
 
     const fetchSessions = () => {
-      api
-        .listAgentSessions(vmId, agentType)
+      const node = getNode();
+      const sessionsPromise = node
+        ? api.listNodeAgentSessions(node, vmId, agentType)
+        : api.listAgentSessions(vmId, agentType);
+
+      sessionsPromise
         .then((data) => {
           if (cancelled) return;
           setSessions(data.sessions);
@@ -174,17 +273,24 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
     fetchSessions();
 
     return () => { cancelled = true; clearTimeout(pollTimer); };
-  }, [vmId, agentType, connected, awaitingSession]);
+  }, [vmId, agentType, awaitingSession, nodeReady, opencodeReady]);
 
   // Load messages when active session changes
+  // Uses direct node call when connected, falls back to CP (which includes connectToken).
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
       return;
     }
+    if (!nodeReady) return;
     setLoading(true);
-    api
-      .getAgentSession(vmId, activeSessionId)
+
+    const node = getNode();
+    const sessionPromise = node
+      ? api.getNodeAgentSession(node, vmId, activeSessionId)
+      : api.getAgentSession(vmId, activeSessionId);
+
+    sessionPromise
       .then((data) => {
         setMessages(data.messages);
         setSessionStatus(data.session.status);
@@ -217,9 +323,17 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
         setTodoItems(data.todos || []);
 
         // Connect WS + HTTP: direct to node agent if remote, or CP if local
-        if (data.connectToken && data.agentWsUrl && data.connectTokenExpiresAt) {
-          nodeRef.current = { httpUrl: wsUrlToHttp(data.agentWsUrl), token: data.connectToken };
-          reconnectToNode(data.agentWsUrl, data.connectToken, data.connectTokenExpiresAt);
+        const cpData = data as any; // CP response may include connectToken fields
+        if (node) {
+          // Already connected to node — just catch up from event log
+          catchUpFromEventLog(node, vmId, activeSessionId);
+        } else if (cpData.connectToken && cpData.agentWsUrl && cpData.connectTokenExpiresAt) {
+          // First connection to remote VM — set up direct node connection
+          nodeRef.current = { httpUrl: wsUrlToHttp(cpData.agentWsUrl), token: cpData.connectToken };
+          reconnectToNode(cpData.agentWsUrl, cpData.connectToken, cpData.connectTokenExpiresAt);
+
+          // Catch up from event log after node connection is established
+          catchUpFromEventLog(nodeRef.current, vmId, activeSessionId);
         } else {
           nodeRef.current = null;
           connectToCP();
@@ -227,7 +341,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [vmId, activeSessionId]);
+  }, [vmId, activeSessionId, nodeReady]);
 
   // Listen for backend-created sessions (e.g. auto-created with initial prompt during VM creation)
   // This handles sessions created by the backend (e.g. VM created with initial prompt).
@@ -260,7 +374,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
       setAwaitingSession(false);
       setCreating(true);
       setInitProgress("Initializing...");
-      setSessionStatus("initializing");
+      setSessionStatus("busy");
       // Show user message optimistically if prompt was included
       if (e.prompt) {
         setMessages([{
@@ -278,6 +392,12 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
   // Listen for WebSocket events
   useEffect(() => {
     return addListener((event: AgentEvent) => {
+      // opencode.ready is a VM-level event (no session) — always handle it
+      if (event.type === "opencode.ready") {
+        setOpencodeReady(true);
+        return;
+      }
+
       if (event.sessionId !== activeSessionId) return;
 
       switch (event.type) {
@@ -479,7 +599,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
       setApprovals([]);
       setQuestions([]);
       setTodoItems([]);
-      setSessionStatus("initializing");
+      setSessionStatus("busy");
       setModelInfo(null);
 
       // Connect WS + HTTP: direct to node agent if remote, or CP if local
@@ -1007,7 +1127,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
           </button>
           <button
             onClick={() => handleCreateSession()}
-            disabled={creating}
+            disabled={creating || (agentType === "opencode" && !opencodeReady)}
             className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1 whitespace-nowrap shrink-0 md:w-full"
           >
             {creating ? `Initializing ${agentLabel}...` : "New Session"}
@@ -1139,7 +1259,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
         ) : <div className="flex-1" />}
         <button
           onClick={() => handleCreateSession()}
-          disabled={creating}
+          disabled={creating || (agentType === "opencode" && !opencodeReady)}
           className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1 whitespace-nowrap shrink-0"
         >
           {creating ? "Creating..." : "New Session"}
@@ -1160,16 +1280,18 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
             <span className="text-xs font-semibold">{agentLabel}</span>
             <span
               className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                sessionStatus === "busy" || sessionStatus === "initializing"
+                sessionStatus === "busy"
                   ? "bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]"
                   : sessionStatus === "error"
                     ? "bg-red-500"
-                    : connected
-                      ? "bg-green-500"
-                      : "bg-neutral-400"
+                    : (agentType === "opencode" && !opencodeReady)
+                      ? "bg-neutral-400 animate-pulse"
+                      : connected
+                        ? "bg-green-500"
+                        : "bg-neutral-400"
               }`}
             />
-            <span className="text-xs text-neutral-500 hidden sm:inline">{initProgress || sessionStatus}</span>
+            <span className="text-xs text-neutral-500 hidden sm:inline">{agentType === "opencode" && !opencodeReady ? "Waiting for OpenCode..." : initProgress || sessionStatus}</span>
             {modelInfo?.model && (
               <span className="text-xs text-neutral-500 ml-2 hidden sm:inline">{modelInfo.model}</span>
             )}
@@ -1200,7 +1322,11 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-3 sm:py-4">
-          {!activeSessionId ? (
+          {agentType === "opencode" && !opencodeReady ? (
+            <div className="h-full flex flex-col items-center justify-center text-neutral-500 text-xs gap-2">
+              <div className="animate-pulse">Waiting for OpenCode server...</div>
+            </div>
+          ) : !activeSessionId ? (
             <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
               Create or select a session to start
             </div>
@@ -1210,8 +1336,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
             </div>
           ) : awaitingSession ? (
             <div className="h-full flex flex-col items-center justify-center text-neutral-500 text-xs gap-2">
-              <div className="animate-pulse">Setting up OpenCode...</div>
-              <div className="text-[10px] text-neutral-400">Booting VM and initializing session</div>
+              <div className="animate-pulse">Setting up session...</div>
             </div>
           ) : messages.length === 0 && !streamingText && !reasoningText && !creating ? (
             <div className="h-full flex items-center justify-center text-neutral-500 text-xs">
@@ -1296,7 +1421,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession }: 
             />
             <button
               onClick={activeSessionId ? handleSend : () => handleCreateSession()}
-              disabled={!inputText.trim() || sending || creating || sessionStatus === "busy"}
+              disabled={!inputText.trim() || sending || creating || sessionStatus === "busy" || (agentType === "opencode" && !opencodeReady)}
               className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer shrink-0 pb-1"
             >
               {activeSessionId ? "Send" : "New Session"}

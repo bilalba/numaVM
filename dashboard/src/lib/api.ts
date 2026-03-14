@@ -322,6 +322,23 @@ export interface SshKeyStatusRecord {
   reason?: string;
 }
 
+export interface NodeInfo {
+  id: string;
+  name: string;
+  region: string;
+  endpoint: string;
+  token: string;
+  expiresAt: string;
+  vmIds: string[];
+}
+
+export interface EventLogEntry {
+  seq: number;
+  type: string;
+  data: Record<string, unknown>;
+  created_at: string;
+}
+
 export const api = {
   checkNameAvailability: (name: string) =>
     apiFetch<{ available: boolean; reason?: string; message?: string }>(`/vms/check-name/${encodeURIComponent(name)}`),
@@ -363,6 +380,10 @@ export const api = {
   // File browser
   listFiles: (vmId: string, path: string) =>
     apiFetch<{ path: string; entries: FileEntry[] }>(`/vms/${vmId}/files?path=${encodeURIComponent(path)}`),
+
+  // OpenCode status
+  getOpenCodeStatus: (vmId: string) =>
+    apiFetch<{ vmId: string; opencode_status: string }>(`/vms/${vmId}/opencode-status`),
 
   // OpenCode providers
   getOpenCodeProviders: (vmId: string) =>
@@ -463,6 +484,73 @@ export const api = {
       `/vms/${vmId}/terminal-connect-token`,
       { method: "POST", body: JSON.stringify({}) }
     ),
+
+  // Node discovery (multi-node: get node endpoints + tokens for direct communication)
+  getMyNodes: () =>
+    apiFetch<{ nodes: NodeInfo[] }>("/my-nodes"),
+
+  // Long-poll events from node (recoverable streams)
+  pollEvents: (node: NodeConnection, vmId: string, sessionId: string, afterSeq: number, timeout = 30) =>
+    nodeFetch<{ events: EventLogEntry[]; lastSeq: number }>(
+      node,
+      `/vms/${vmId}/sessions/${sessionId}/events?after=${afterSeq}&timeout=${timeout}`
+    ),
+
+  // List user's VMs on a specific node
+  getNodeUserVMs: (node: NodeConnection) =>
+    nodeFetch<{ vms: any[] }>(node, "/user/vms"),
+
+  // Get session with history directly from node
+  getNodeAgentSession: (node: NodeConnection, vmId: string, sessionId: string) =>
+    nodeFetch<{ session: AgentSession; messages: AgentMessage[]; pendingApprovals?: any[]; pendingQuestions?: any[]; todos?: any[] }>(
+      node,
+      `/vms/${vmId}/sessions/${sessionId}`
+    ),
+
+  // List agent sessions directly from node
+  listNodeAgentSessions: (node: NodeConnection, vmId: string, agentType: "codex" | "opencode") =>
+    nodeFetch<{ sessions: AgentSession[] }>(node, `/vms/${vmId}/agents/${agentType}/sessions`),
+
+  // Codex auth status directly from node
+  getNodeCodexAuthStatus: (node: NodeConnection, vmId: string, refresh = false) =>
+    nodeFetch<{ authenticated: boolean; authMode?: string; account?: any; error?: string }>(
+      node, `/vms/${vmId}/codex/auth/status${refresh ? "?refresh=true" : ""}`
+    ),
+
+  // Codex models directly from node
+  getNodeCodexModels: (node: NodeConnection, vmId: string, includeHidden = false) =>
+    nodeFetch<{ models: CodexModel[] }>(
+      node, `/vms/${vmId}/codex/models${includeHidden ? "?includeHidden=true" : ""}`
+    ),
+
+  // OpenCode status directly from node
+  getNodeOpenCodeStatus: (node: NodeConnection, vmId: string) =>
+    nodeFetch<{ vmId: string; opencode_status: string }>(node, `/vms/${vmId}/opencode-status`),
+
+  // OpenCode providers directly from node
+  getNodeOpenCodeProviders: (node: NodeConnection, vmId: string) =>
+    nodeFetch<{ connected: OpenCodeProvider[]; popular: OpenCodePopularProvider[]; default: Record<string, string> }>(
+      node, `/vms/${vmId}/opencode/providers`
+    ),
+
+  // File browser directly from node
+  listNodeFiles: (node: NodeConnection, vmId: string, path: string) =>
+    nodeFetch<{ path: string; entries: FileEntry[] }>(node, `/vms/${vmId}/files?path=${encodeURIComponent(path)}`),
+
+  readNodeFile: (node: NodeConnection, vmId: string, path: string) =>
+    nodeFetch<FileContent>(node, `/vms/${vmId}/files/read?path=${encodeURIComponent(path)}`),
+
+  getNodeFileDownloadUrl: (node: NodeConnection, vmId: string, path: string) => {
+    // Returns an object with URL + auth header (can't use cookie auth for node)
+    return { url: `${node.httpUrl}/vms/${vmId}/files/download?path=${encodeURIComponent(path)}`, token: node.token };
+  },
+
+  getNodeGitLog: (node: NodeConnection, vmId: string, limit = 20) =>
+    nodeFetch<{ commits: GitCommit[] }>(node, `/vms/${vmId}/git/log?limit=${limit}`),
+
+  // VM status directly from node (avoids CP round-trip for polling)
+  getNodeVMStatus: (node: NodeConnection, vmId: string) =>
+    nodeFetch<{ id: string; status: string; status_detail: string | null }>(node, `/vms/${vmId}/status`),
 
   // Codex models + threads
   getCodexModels: (vmId: string, includeHidden = false) =>
