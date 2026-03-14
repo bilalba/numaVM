@@ -1,6 +1,7 @@
 import { getDatabase, getVMEngine, getReverseProxy, getIdleMonitor, getLifecycleHook } from "../adapters/providers.js";
 import type { VM } from "../adapters/types.js";
 import { cidToVmIpv6 } from "./port-allocator.js";
+import { trackVM } from "../agents/opencode-status.js";
 
 export class QuotaExceededError extends Error {
   current_ram_mib: number;
@@ -187,6 +188,11 @@ async function doWake(vmId: string, vm: VM): Promise<void> {
     // Update DB state
     db.updateVMStatus(vmId, "running");
     db.updateVMSnapshotPath(vmId, null);
+
+    // Track OpenCode readiness (snapshot restore preserves process state)
+    if (vm.opencode_password) {
+      trackVM(vmId, vm.opencode_port, vm.opencode_password);
+    }
 
     // Re-register Caddy route
     try {

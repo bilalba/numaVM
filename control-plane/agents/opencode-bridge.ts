@@ -3,6 +3,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentBridge, AgentEvent, AgentType, ApprovalDecision } from "./types.js";
 import { getVMEngine } from "../adapters/providers.js";
+import { getOpenCodeStatus, waitForReady, markReady } from "./opencode-status.js";
 
 /**
  * OpenCode bridge — HTTP REST + SSE to VM's OpenCode server.
@@ -90,19 +91,37 @@ export class OpenCodeBridge implements AgentBridge {
   }
 
   /**
-   * Inner implementation: checks via HTTP, starts via SSH if not running, polls until ready.
-   * This is the single source of truth for starting OpenCode (init.sh does NOT pre-start).
+   * Inner implementation: checks via HTTP, waits for boot-time start via tracker,
+   * falls back to SSH start if needed.
    */
   private async _ensureRunningInner(onProgress?: (step: string, message: string) => void): Promise<void> {
     // Fast path: already running and responding
     try {
       await this.httpRequest("GET", "/session");
+      markReady(this.vmId);
       return;
     } catch {
-      // Not responding — need to check/start
+      // Not responding — check tracker or start via SSH
     }
 
-    // Check if process exists but not yet ready (e.g. still loading on slow VMs)
+    // If the tracker knows OpenCode is starting (boot-time start in init.sh),
+    // wait for it instead of doing SSH round-trips.
+    const trackerStatus = getOpenCodeStatus(this.vmId);
+    if (trackerStatus === "starting") {
+      onProgress?.("polling", "Waiting for OpenCode server to start...");
+      await waitForReady(this.vmId, 15_000);
+
+      // Retry HTTP after tracker says ready
+      try {
+        await this.httpRequest("GET", "/session");
+        markReady(this.vmId);
+        return;
+      } catch {
+        // Tracker timed out or server not actually ready — fall through to SSH
+      }
+    }
+
+    // SSH fallback: check if process exists but not yet ready
     let processRunning = false;
     try {
       const out = await getVMEngine().exec(this.vmId, ["pgrep", "-f", "opencode serve"], { timeoutMs: 5000 });
@@ -145,6 +164,7 @@ export class OpenCodeBridge implements AgentBridge {
       await new Promise((r) => setTimeout(r, 500));
       try {
         await this.httpRequest("GET", "/session");
+        markReady(this.vmId);
         return;
       } catch {
         // Check if process died during startup
