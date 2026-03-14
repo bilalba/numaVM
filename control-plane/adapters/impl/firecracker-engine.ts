@@ -96,7 +96,6 @@ export class FirecrackerEngine implements IVMEngine {
     const dataDir = getDataDir();
     const sourceDir = join(dataDir, sourceVmId);
     const sourceRootfs = join(sourceDir, "rootfs.ext4");
-    const sourceData = join(sourceDir, "data.ext4");
     const targetDir = join(dataDir, targetSlug);
 
     mkdirSync(targetDir, { recursive: true });
@@ -112,15 +111,6 @@ export class FirecrackerEngine implements IVMEngine {
         execSync(`cp --reflink=auto "${sourceRootfs}" "${join(targetDir, "rootfs.ext4")}"`, { stdio: "pipe" });
       } catch {
         execSync(`cp "${sourceRootfs}" "${join(targetDir, "rootfs.ext4")}"`, { stdio: "pipe" });
-      }
-
-      // Copy data volume if it exists
-      if (existsSync(sourceData)) {
-        try {
-          execSync(`cp --reflink=auto "${sourceData}" "${join(targetDir, "data.ext4")}"`, { stdio: "pipe" });
-        } catch {
-          execSync(`cp "${sourceData}" "${join(targetDir, "data.ext4")}"`, { stdio: "pipe" });
-        }
       }
     } finally {
       if (isRunning) {
