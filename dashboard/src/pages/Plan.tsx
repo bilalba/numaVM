@@ -136,8 +136,8 @@ export function Plan() {
           <div className="font-medium text-foreground mb-1">Free</div>
           <div className="text-neutral-400 mb-4">$0 / month</div>
           <ul className="space-y-2 text-neutral-600">
-            <li>512 MB max RAM</li>
-            <li>2 memory sizes</li>
+            <li>256 MB RAM</li>
+            <li>1 GB disk</li>
             <li>Community support</li>
           </ul>
           {!isBase && (
@@ -150,8 +150,8 @@ export function Plan() {
           <div className="font-medium text-foreground mb-1">Base</div>
           <div className="text-neutral-400 mb-4">$8 / month</div>
           <ul className="space-y-2 text-neutral-600">
-            <li>1536 MB max RAM</li>
-            <li>6 memory sizes</li>
+            <li>2 GB RAM</li>
+            <li>50 GB disk</li>
             <li>Priority support</li>
           </ul>
           {isPaidBase ? (
