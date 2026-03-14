@@ -2,27 +2,28 @@
 
 ## Quick Reference
 
+**Always check `FC_ROOTFS_DIR` first**, then pass it as `--output-dir`:
+
 ```bash
-# On the compute node (ssh numavm):
-sudo /home/ubuntu/numavm/oss/vm/build-rootfs.sh --distro ubuntu --output-dir /data/rootfs
-sudo /home/ubuntu/numavm/oss/vm/build-rootfs.sh --distro alpine --output-dir /data/rootfs
+# On any compute node:
+ROOTFS_DIR=$(grep -oP 'FC_ROOTFS_DIR=\K.*' /home/ubuntu/numavm/oss/.env 2>/dev/null || echo /opt/firecracker/rootfs)
+sudo /home/ubuntu/numavm/oss/vm/build-rootfs.sh --distro ubuntu --output-dir "$ROOTFS_DIR"
+sudo /home/ubuntu/numavm/oss/vm/build-rootfs.sh --distro alpine --output-dir "$ROOTFS_DIR"
 ```
 
 ## Important: Output Directory
 
-The `--output-dir` flag **must** match the `FC_ROOTFS_DIR` env var configured in the node's `.env` file.
+The `--output-dir` flag **must** match the `FC_ROOTFS_DIR` env var configured in the node's `.env` file. The agent reads rootfs images from `FC_ROOTFS_DIR` at VM creation time — if you build to the wrong directory, new VMs will still use the old image.
 
-| Environment | `FC_ROOTFS_DIR` | Default (no flag) |
-|-------------|-----------------|-------------------|
-| Production node (`numavm`) | `/data/rootfs` | `/opt/firecracker/rootfs` |
-| Dev / standalone | Usually unset | `/opt/firecracker/rootfs` |
-
-**If you omit `--output-dir`, the rootfs is written to `/opt/firecracker/rootfs/` but the agent reads from `/data/rootfs/` — new VMs will still use the old image.**
-
-Check the node's configured directory:
 ```bash
+# Check the node's configured directory:
 grep FC_ROOTFS_DIR /home/ubuntu/numavm/oss/.env
 ```
+
+| Environment | `FC_ROOTFS_DIR` | Default (no env var) |
+|-------------|-----------------|----------------------|
+| Production nodes (`numavm`, `numavm-sv`) | `/data/rootfs` | `/opt/firecracker/rootfs` |
+| Dev / standalone | Usually unset | `/opt/firecracker/rootfs` |
 
 ## How It Works
 
