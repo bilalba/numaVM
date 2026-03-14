@@ -25,6 +25,10 @@ mountpoint -q /run || mount -t tmpfs tmpfs /run
 mkdir -p /tmp
 chmod 1777 /tmp
 
+# --- Grow rootfs to fill block device (host truncate'd extra space) ---
+# Online resize2fs is ~1ms — just updates superblock + block group descriptors.
+# No-op if filesystem already matches the device size (e.g. subsequent boots).
+resize2fs /dev/vda 2>/dev/null || true
 
 # --- Parse kernel cmdline ---
 
@@ -154,65 +158,13 @@ done
 /usr/local/bin/vsock-signal 2>/dev/null || true
 
 
-# --- Git config + env files (parallel with git clone) ---
-
-{
-  sudo -u dev git config --global user.email "agent@numavm.dev" 2>/dev/null
-  sudo -u dev git config --global user.name "Agent" 2>/dev/null
-} &
-GIT_CONFIG_PID=$!
-
-# --- Clone or pull repo ---
+# --- Persist env vars for SSH sessions (provisional WORK_DIR before git clone) ---
 
 GH_REPO="${DM_gh_repo:-}"
 GH_TOKEN="${DM_gh_token:-}"
 
-# Determine working directory — clone into /home/dev/ naturally
+# Provisional work dir — may change after git clone resolves the repo name
 WORK_DIR="/home/dev/${SAFE_DIR_NAME}"
-
-if [ -n "${GH_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
-  # Authenticated clone (private or user-connected repos)
-  REPO_NAME="${GH_REPO##*/}"
-  CLONE_DIR="/home/dev/${REPO_NAME}"
-
-  if [ ! -d "${CLONE_DIR}/.git" ]; then
-    echo "cloning" > /tmp/init-progress
-    sudo -u dev bash -lc "git clone 'https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
-      sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
-      CLONE_DIR=""
-    }
-  else
-    sudo -u dev bash -lc "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
-  fi
-
-  # Use the cloned repo dir as the working dir
-  [ -n "${CLONE_DIR}" ] && WORK_DIR="${CLONE_DIR}"
-elif [ -n "${GH_REPO}" ]; then
-  # Public clone (no token — deploy button flow)
-  REPO_NAME="${GH_REPO##*/}"
-  CLONE_DIR="/home/dev/${REPO_NAME}"
-
-  if [ ! -d "${CLONE_DIR}/.git" ]; then
-    echo "cloning" > /tmp/init-progress
-    sudo -u dev bash -lc "git clone 'https://github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
-      sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
-      CLONE_DIR=""
-    }
-  else
-    sudo -u dev bash -lc "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
-  fi
-
-  [ -n "${CLONE_DIR}" ] && WORK_DIR="${CLONE_DIR}"
-else
-  sudo -u dev mkdir -p "${WORK_DIR}"
-  sudo -u dev git -C "${WORK_DIR}" init 2>/dev/null || true
-fi
-
-
-# Wait for parallel git config
-wait $GIT_CONFIG_PID 2>/dev/null || true
-
-# --- Persist env vars for SSH sessions ---
 
 cat > /home/dev/.env <<EOF
 export GH_REPO="${GH_REPO}"
@@ -271,16 +223,75 @@ if [ -n "${DM_extra_env:-}" ]; then
   echo "${DM_extra_env}" | base64 -d | sed 's/^export //' >> /home/dev/.ssh/environment
 fi
 
+# --- Start OpenCode server in background (runs concurrently with git clone) ---
+# The host-side tracker polls the DNAT'd port to detect readiness.
+# If OpenCode isn't installed (old rootfs), this is a no-op.
+if command -v opencode >/dev/null 2>&1 && [ -n "${DM_opencode_password:-}" ]; then
+  sudo -u dev bash -c 'source ~/.env 2>/dev/null; nohup opencode serve --port 5000 --hostname 0.0.0.0 > /tmp/opencode.log 2>&1 &'
+fi
+
+# --- Git config + clone ---
+
+{
+  sudo -u dev git config --global user.email "agent@numavm.dev" 2>/dev/null
+  sudo -u dev git config --global user.name "Agent" 2>/dev/null
+} &
+GIT_CONFIG_PID=$!
+
+PROVISIONAL_WORK_DIR="${WORK_DIR}"
+
+if [ -n "${GH_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
+  # Authenticated clone (private or user-connected repos)
+  REPO_NAME="${GH_REPO##*/}"
+  CLONE_DIR="/home/dev/${REPO_NAME}"
+
+  if [ ! -d "${CLONE_DIR}/.git" ]; then
+    echo "cloning" > /tmp/init-progress
+    sudo -u dev bash -lc "git clone 'https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
+      sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
+      CLONE_DIR=""
+    }
+  else
+    sudo -u dev bash -lc "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
+  fi
+
+  # Use the cloned repo dir as the working dir
+  [ -n "${CLONE_DIR}" ] && WORK_DIR="${CLONE_DIR}"
+elif [ -n "${GH_REPO}" ]; then
+  # Public clone (no token — deploy button flow)
+  REPO_NAME="${GH_REPO##*/}"
+  CLONE_DIR="/home/dev/${REPO_NAME}"
+
+  if [ ! -d "${CLONE_DIR}/.git" ]; then
+    echo "cloning" > /tmp/init-progress
+    sudo -u dev bash -lc "git clone 'https://github.com/${GH_REPO}.git' '${CLONE_DIR}'" 2>/dev/null || {
+      sudo -u dev bash -lc "mkdir -p '${WORK_DIR}' && cd '${WORK_DIR}' && git init"
+      CLONE_DIR=""
+    }
+  else
+    sudo -u dev bash -lc "cd '${CLONE_DIR}' && git pull --ff-only" 2>/dev/null || true
+  fi
+
+  [ -n "${CLONE_DIR}" ] && WORK_DIR="${CLONE_DIR}"
+else
+  sudo -u dev mkdir -p "${WORK_DIR}"
+  sudo -u dev git -C "${WORK_DIR}" init 2>/dev/null || true
+fi
+
+# Wait for parallel git config
+wait $GIT_CONFIG_PID 2>/dev/null || true
+
+# --- Update WORK_DIR in env files if git clone changed it ---
+if [ "${WORK_DIR}" != "${PROVISIONAL_WORK_DIR}" ]; then
+  sed -i "s|NUMAVM_WORK_DIR=.*|NUMAVM_WORK_DIR=${WORK_DIR}|" /home/dev/.ssh/environment
+  sed -i "s|export NUMAVM_WORK_DIR=.*|export NUMAVM_WORK_DIR=\"${WORK_DIR}\"|" /home/dev/.env
+fi
+
 # Write AGENTS.md into project directory (gives AI agents context about the environment)
 if [ -f /etc/numavm/BASE_AGENTS.md ] && [ -d "${WORK_DIR}" ]; then
   sed "s/{{VM_NAME}}/${ENV_NAME:-workspace}/g" /etc/numavm/BASE_AGENTS.md > "${WORK_DIR}/AGENTS.md"
   chown dev:dev "${WORK_DIR}/AGENTS.md"
 fi
-
-# OpenCode server is started on-demand by the control plane's ensureRunning().
-# Pre-starting here caused a race condition on 256MB VMs: init.sh reaches this
-# line ~20s after sshd (git clone + env setup), but the CP spawns immediately
-# after SSH is ready, resulting in duplicate processes fighting for port 5000.
 
 # --- Start user app (best-effort) ---
 

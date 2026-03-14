@@ -340,6 +340,20 @@ cat > "${MOUNTDIR}/etc/motd" <<'MOTD'
 MOTD
 
 # ============================================================
+# Phase 9.5: Pre-warm OpenCode bun dependencies (shared)
+# ============================================================
+
+echo "Pre-warming OpenCode bun runtime..."
+# Launch opencode serve briefly as dev user so bun JIT-compiles its runtime.
+# Needs /dev/shm and /dev/pts (bun segfaults without them).
+mkdir -p "${MOUNTDIR}/dev/shm" "${MOUNTDIR}/dev/pts"
+mount -t tmpfs tmpfs "${MOUNTDIR}/dev/shm" 2>/dev/null || true
+mount -t devpts devpts "${MOUNTDIR}/dev/pts" 2>/dev/null || true
+chroot "${MOUNTDIR}" su -s /bin/sh dev -c 'HOME=/home/dev timeout 30 opencode serve --port 5099 >/dev/null 2>&1; true' || true
+umount "${MOUNTDIR}/dev/shm" 2>/dev/null || true
+umount "${MOUNTDIR}/dev/pts" 2>/dev/null || true
+
+# ============================================================
 # Phase 10: Swap (shared)
 # ============================================================
 
@@ -354,8 +368,9 @@ mkswap "${MOUNTDIR}/swapfile"
 
 distro_cleanup "${MOUNTDIR}"
 
-# Remove npm cache (can be 100MB+)
-rm -rf "${MOUNTDIR}/root/.npm" "${MOUNTDIR}/tmp/"*
+# Remove npm cache (can be 100MB+), but preserve bun JIT cache (.so files in /tmp)
+rm -rf "${MOUNTDIR}/root/.npm"
+find "${MOUNTDIR}/tmp" -maxdepth 1 ! -name '*.so' ! -name 'tmp' -mindepth 1 -exec rm -rf {} + 2>/dev/null || true
 
 # Remove resolv.conf (will be set at boot)
 rm -f "${MOUNTDIR}/etc/resolv.conf"

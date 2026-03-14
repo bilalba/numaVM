@@ -452,6 +452,8 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
 
   // Rootfs copy (reflink) + expand to user-requested disk size
   // We add diskSizeGib to the base image size so the user gets that much *free* space.
+  // truncate creates a sparse file — no real blocks allocated until the guest writes.
+  // The guest runs resize2fs /dev/vda at boot to grow the filesystem to fill the block device.
   if (!existsSync(vmRootfs)) {
     const baseRootfs = resolveRootfsPath(image);
     setupTasks.push(
@@ -461,8 +463,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
         } catch {
           await execAsync(`cp "${baseRootfs}" "${vmRootfs}"`);
         }
-        // Expand rootfs: +diskSizeGib adds on top of base image size, then resize2fs fills it
-        await execAsync(`truncate -s +${diskSizeGib}G "${vmRootfs}" && e2fsck -f -y "${vmRootfs}" && resize2fs "${vmRootfs}"`);
+        await execAsync(`truncate -s +${diskSizeGib}G "${vmRootfs}"`);
       })()
     );
   }

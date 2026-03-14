@@ -3,6 +3,9 @@
 # Runs as a oneshot systemd service before ssh and numavm-app.
 set -e
 
+# --- Grow rootfs to fill block device (host truncate'd extra space) ---
+resize2fs /dev/vda 2>/dev/null || true
+
 # --- Parse kernel cmdline ---
 source /opt/numavm/parse-cmdline.sh
 
