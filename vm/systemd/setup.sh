@@ -38,9 +38,11 @@ ip route add default via "${GATEWAY}" 2>/dev/null || true
 # IPv6 (only if dm.ipv6 was passed)
 if [ -n "${DM_ipv6:-}" ]; then
   IPV6_PREFIX_LEN="${DM_ipv6_prefix_len:-64}"
+  # Disable SLAAC/RA on eth0 — prevents kernel from adding its own default route
+  sysctl -w net.ipv6.conf.eth0.accept_ra=0 2>/dev/null || true
   ip -6 addr add "${DM_ipv6}/${IPV6_PREFIX_LEN}" dev eth0 2>/dev/null || true
   IPV6_GW=$(echo "${DM_ipv6}" | sed 's/::[0-9a-fA-F]*$/::1/')
-  ip -6 route add default via "${IPV6_GW}" 2>/dev/null || true
+  ip -6 route replace default via "${IPV6_GW}" 2>/dev/null || true
 fi
 
 # DNS
@@ -56,6 +58,10 @@ fi
 mkdir -p /home/dev/.ssh
 chmod 700 /home/dev/.ssh
 chown dev:dev /home/dev/.ssh
+
+# Ensure .config and .local exist with correct ownership (many apps write here)
+mkdir -p /home/dev/.config /home/dev/.local/share
+chown -R dev:dev /home/dev/.config /home/dev/.local
 
 if [ -n "${DM_ssh_keys:-}" ]; then
   echo "${DM_ssh_keys}" | base64 -d > /home/dev/.ssh/authorized_keys 2>/dev/null || {

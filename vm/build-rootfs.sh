@@ -249,7 +249,8 @@ mkdir -p /dev/pts /dev/shm
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
 mountpoint -q /dev/shm || mount -t tmpfs tmpfs /dev/shm
 mountpoint -q /run     || mount -t tmpfs tmpfs /run
-mountpoint -q /tmp     || mount -t tmpfs tmpfs /tmp
+# /tmp stays on the rootfs ext4 volume to avoid eating VM RAM
+mkdir -p /tmp && chmod 1777 /tmp
 
 # Parse kernel cmdline for env vars
 eval $(cat /proc/cmdline | tr ' ' '\n' | grep '^dm\.' | sed 's/^dm\./export DM_/' | sed 's/=\(.*\)/="\1"/')
@@ -313,6 +314,7 @@ else
   chroot "${MOUNTDIR}" systemctl mask systemd-networkd.service
   chroot "${MOUNTDIR}" systemctl mask systemd-resolved.service
   chroot "${MOUNTDIR}" systemctl mask systemd-timesyncd.service
+  chroot "${MOUNTDIR}" systemctl mask tmp.mount
 
   # Ensure /sbin/init exists (kernel default init path)
   ln -sf /lib/systemd/systemd "${MOUNTDIR}/sbin/init"

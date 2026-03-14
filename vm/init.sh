@@ -21,7 +21,9 @@ mkdir -p /dev/pts /dev/shm /run /tmp
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
 mountpoint -q /dev/shm || mount -t tmpfs tmpfs /dev/shm
 mountpoint -q /run || mount -t tmpfs tmpfs /run
-mountpoint -q /tmp || mount -t tmpfs tmpfs /tmp
+# /tmp lives on the rootfs ext4 volume (not tmpfs) to avoid eating VM RAM
+mkdir -p /tmp
+chmod 1777 /tmp
 
 
 # --- Parse kernel cmdline ---
@@ -54,6 +56,15 @@ fi
 SAFE_DIR_NAME=$(echo "${ENV_NAME:-workspace}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
 [ -z "${SAFE_DIR_NAME}" ] && SAFE_DIR_NAME="workspace"
 
+# --- Hostname ---
+HOSTNAME="${SAFE_DIR_NAME:0:63}"
+[ -z "${HOSTNAME}" ] && HOSTNAME="numavm"
+hostname "${HOSTNAME}"
+echo "${HOSTNAME}" > /etc/hostname
+if ! grep -q "${HOSTNAME}" /etc/hosts 2>/dev/null; then
+  echo "127.0.0.1 ${HOSTNAME}" >> /etc/hosts
+fi
+
 
 # --- Networking ---
 
@@ -68,11 +79,13 @@ ip route add default via "${GATEWAY}" 2>/dev/null || true
 # IPv6 (only if dm.ipv6 was passed via kernel cmdline)
 if [ -n "${DM_ipv6:-}" ]; then
   IPV6_PREFIX_LEN="${DM_ipv6_prefix_len:-64}"
+  # Disable SLAAC/RA on eth0 — prevents kernel from adding its own default route
+  sysctl -w net.ipv6.conf.eth0.accept_ra=0 2>/dev/null || true
   ip -6 addr add "${DM_ipv6}/${IPV6_PREFIX_LEN}" dev eth0 2>/dev/null || true
   # Derive gateway: replace the last component (our CID) with "1"
   # e.g. fd00::3 → fd00::1
   IPV6_GW=$(echo "${DM_ipv6}" | sed 's/::[0-9a-fA-F]*$/::1/')
-  ip -6 route add default via "${IPV6_GW}" 2>/dev/null || true
+  ip -6 route replace default via "${IPV6_GW}" 2>/dev/null || true
 fi
 
 # DNS
@@ -92,6 +105,10 @@ fi
 mkdir -p /home/dev/.ssh
 chmod 700 /home/dev/.ssh
 chown dev:dev /home/dev/.ssh
+
+# Ensure .config and .local exist with correct ownership (many apps write here)
+mkdir -p /home/dev/.config /home/dev/.local/share
+chown -R dev:dev /home/dev/.config /home/dev/.local
 
 # Decode and write authorized_keys
 if [ -n "${DM_ssh_keys:-}" ]; then
