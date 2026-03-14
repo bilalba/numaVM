@@ -6,6 +6,17 @@ import { wsHub } from "./ws-hub.js";
 import { getDatabase } from "../adapters/providers.js";
 import type { AgentSession, AgentMessage } from "../adapters/types.js";
 
+/**
+ * Pluggable event sink — allows nodes to additionally push events to a durable
+ * event log (EventQueue) for recoverable streams. Set via setEventSink().
+ */
+export interface AgentEventSink {
+  /** Called for every agent event (after wsHub broadcast). Returns seq number. */
+  push(sessionId: string, event: AgentEvent): number;
+  /** Called on turn.completed — prune the durable event log for this session. */
+  pruneSession(sessionId: string): void;
+}
+
 interface ActiveSession {
   bridge: AgentBridge;
   vmId: string;
@@ -15,6 +26,12 @@ interface ActiveSession {
 class AgentManager {
   private activeSessions = new Map<string, ActiveSession>();
   private authBridges = new Map<string, CodexBridge>(); // VM slug -> codex bridge for auth
+  private eventSink: AgentEventSink | null = null;
+
+  /** Set an external event sink (e.g. EventQueue on node agents). */
+  setEventSink(sink: AgentEventSink): void {
+    this.eventSink = sink;
+  }
 
   /** Get or create a Codex bridge for auth operations (separate from session bridges) */
   async getCodexAuthBridge(vmId: string): Promise<CodexBridge> {
@@ -365,6 +382,11 @@ class AgentManager {
     // Broadcast to WebSocket clients
     wsHub.broadcast(active.vmId, sessionId, event);
 
+    // Push to durable event log (if configured — node agents only)
+    if (this.eventSink) {
+      this.eventSink.push(sessionId, event);
+    }
+
     // Persist completed messages and update session state
     switch (event.type) {
       case "message.delta":
@@ -424,6 +446,11 @@ class AgentManager {
         const curStatus = getDatabase().findAgentSession(sessionId)?.status;
         if (curStatus !== "error") {
           getDatabase().updateAgentSessionStatus(sessionId, "idle");
+        }
+        // Prune the durable event log — all events for this turn are now persisted
+        // as agent_messages, so the event log can be cleaned up.
+        if (this.eventSink) {
+          this.eventSink.pruneSession(sessionId);
         }
         break;
       }
