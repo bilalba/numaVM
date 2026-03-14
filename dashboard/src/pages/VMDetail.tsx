@@ -1,16 +1,15 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams, useLocation } from "react-router-dom";
-import { api, type VMDetail as VMDetailType } from "../lib/api";
+import { api, type VMDetail as VMDetailType, type Quota } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { useUser } from "../components/UserProvider";
 import { TerminalTab } from "../components/TerminalTab";
-import { ClaudeCodeTab } from "../components/ClaudeCodeTab";
 import { AgentTab } from "../components/AgentTab";
 import { AccessPanel } from "../components/AccessPanel";
 import { FilesTab } from "../components/FilesTab";
 import { FirewallPanel } from "../components/FirewallPanel";
 
-type TabId = "terminal" | "claude" | "codex" | "opencode" | "files" | "access" | "firewall";
+type TabId = "terminal" | "codex" | "opencode" | "files" | "access" | "firewall";
 
 const statusColors: Record<string, string> = {
   running: "bg-green-500",
@@ -25,13 +24,14 @@ export function VMDetail() {
   const { slug } = useParams<{ slug: string }>();
   const [vm, setVM] = useState<VMDetailType | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  const validTabs: TabId[] = ["terminal", "claude", "codex", "opencode", "files", "access", "firewall"];
+  const validTabs: TabId[] = ["terminal", "codex", "opencode", "files", "access", "firewall"];
   const tabParam = searchParams.get("tab") as TabId | null;
   const activeTab: TabId = tabParam && validTabs.includes(tabParam) ? tabParam : "opencode";
   const setActiveTab = (tab: TabId) => setSearchParams({ tab }, { replace: true });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pausing, setPausing] = useState(false);
+  const [quota, setQuota] = useState<Quota | null>(null);
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
@@ -47,6 +47,12 @@ export function VMDetail() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [slug]);
+
+  // Fetch quota for keep-alive RAM info on Access tab
+  useEffect(() => {
+    if (activeTab !== "access") return;
+    api.getRamQuota().then(setQuota).catch(() => {});
+  }, [activeTab]);
 
   // Poll for status updates when VM is snapshotted/paused (waking up)
   useEffect(() => {
@@ -88,7 +94,6 @@ export function VMDetail() {
   const tabs: { id: TabId; label: string }[] = [
     { id: "opencode", label: "OpenCode" },
     { id: "codex", label: "Codex" },
-    { id: "claude", label: "Claude Code" },
     ...(webTerminalEnabled ? [{ id: "terminal" as TabId, label: "Terminal" }] : []),
     { id: "files", label: "Files" },
     { id: "access", label: "Access" },
@@ -233,19 +238,26 @@ export function VMDetail() {
         {activeTab === "codex" && <AgentTab vmId={vm.id} agentType="codex" vmStatus={vm.status} />}
         {activeTab === "opencode" && <AgentTab vmId={vm.id} agentType="opencode" vmName={vm.name} vmStatus={vm.status} pendingSession={pendingSession} />}
         {activeTab === "terminal" && <TerminalTab vmId={vm.id} isRemote={!!vm.host_id} />}
-        {activeTab === "claude" && (
-          <ClaudeCodeTab vmId={vm.id} sshCommand={vm.ssh_command} />
-        )}
         {activeTab === "files" && <FilesTab vmId={vm.id} />}
         {activeTab === "access" && (
           <AccessPanel
             vmId={vm.id}
             currentUserRole={vm.role}
             sshCommand={vm.ssh_command}
+            vmIpv6={vm.vm_ipv6}
             isPublic={vm.is_public}
+            keepAlive={vm.keep_alive}
             vmUrl={vm.url}
             region={vm.region}
+            plan={quota?.plan}
+            keepAliveRamUsed={quota?.keep_alive_ram_used}
+            keepAliveRamMax={quota?.keep_alive_ram_max}
             onPublicChange={(isPublic) => setVM((prev) => prev ? { ...prev, is_public: isPublic } : prev)}
+            onKeepAliveChange={(keepAlive) => {
+              setVM((prev) => prev ? { ...prev, keep_alive: keepAlive } : prev);
+              // Refresh quota to update RAM usage
+              api.getRamQuota().then(setQuota).catch(() => {});
+            }}
           />
         )}
         {activeTab === "firewall" && (

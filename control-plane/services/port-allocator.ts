@@ -13,6 +13,34 @@ const VSOCK_CID_MAX = 65535;
 // VM IP allocation: 172.16.0.0/16 subnet, .1 is gateway
 const VM_IP_BASE_OCTET = 2; // Start from 172.16.0.2
 
+// In-flight reservations: ports allocated but not yet committed to DB.
+// Prevents concurrent allocateResources() calls from returning the same port.
+// Each entry auto-expires after 60s in case the VM creation fails without cleanup.
+const RESERVATION_TTL_MS = 60_000;
+const inflightApp = new Map<number, number>();    // port → expiry timestamp
+const inflightSsh = new Map<number, number>();
+const inflightOpencode = new Map<number, number>();
+const inflightCids = new Map<number, number>();
+
+function pruneExpired(m: Map<number, number>): void {
+  const now = Date.now();
+  for (const [key, expiry] of m) {
+    if (now >= expiry) m.delete(key);
+  }
+}
+
+function reserveInflight(m: Map<number, number>, value: number): void {
+  m.set(value, Date.now() + RESERVATION_TTL_MS);
+}
+
+/** Release in-flight reservations for a set of ports/CID (called after DB insert or on failure). */
+export function releaseReservation(resources: { appPort: number; sshPort: number; opencodePort: number; vsockCid: number }): void {
+  inflightApp.delete(resources.appPort);
+  inflightSsh.delete(resources.sshPort);
+  inflightOpencode.delete(resources.opencodePort);
+  inflightCids.delete(resources.vsockCid);
+}
+
 function nextAvailable(used: Set<number>, base: number): number {
   const max = base + PORT_RANGE;
   for (let port = base; port <= max; port++) {
@@ -22,26 +50,40 @@ function nextAvailable(used: Set<number>, base: number): number {
 }
 
 export function allocatePorts(): { appPort: number; sshPort: number; opencodePort: number } {
+  // Prune expired in-flight reservations
+  pruneExpired(inflightApp);
+  pruneExpired(inflightSsh);
+  pruneExpired(inflightOpencode);
+
   const rows = getDatabase().getUsedPorts();
 
-  const usedApp = new Set(rows.map((r) => r.app_port));
-  const usedSsh = new Set(rows.map((r) => r.ssh_port));
-  const usedOpencode = new Set(rows.map((r) => r.opencode_port));
+  const usedApp = new Set([...rows.map((r) => r.app_port), ...inflightApp.keys()]);
+  const usedSsh = new Set([...rows.map((r) => r.ssh_port), ...inflightSsh.keys()]);
+  const usedOpencode = new Set([...rows.map((r) => r.opencode_port), ...inflightOpencode.keys()]);
 
-  return {
-    appPort: nextAvailable(usedApp, APP_PORT_BASE),
-    sshPort: nextAvailable(usedSsh, SSH_PORT_BASE),
-    opencodePort: nextAvailable(usedOpencode, OPENCODE_PORT_BASE),
-  };
+  const appPort = nextAvailable(usedApp, APP_PORT_BASE);
+  const sshPort = nextAvailable(usedSsh, SSH_PORT_BASE);
+  const opencodePort = nextAvailable(usedOpencode, OPENCODE_PORT_BASE);
+
+  // Reserve so concurrent calls get different ports
+  reserveInflight(inflightApp, appPort);
+  reserveInflight(inflightSsh, sshPort);
+  reserveInflight(inflightOpencode, opencodePort);
+
+  return { appPort, sshPort, opencodePort };
 }
 
 /**
  * Allocate a vsock CID for a new VM.
  */
 export function allocateCid(): number {
-  const usedCids = new Set(getDatabase().getUsedCids());
+  pruneExpired(inflightCids);
+  const usedCids = new Set([...getDatabase().getUsedCids(), ...inflightCids.keys()]);
   for (let cid = VSOCK_CID_START; cid <= VSOCK_CID_MAX; cid++) {
-    if (!usedCids.has(cid)) return cid;
+    if (!usedCids.has(cid)) {
+      reserveInflight(inflightCids, cid);
+      return cid;
+    }
   }
   throw new Error("No available vsock CIDs");
 }

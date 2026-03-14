@@ -7,19 +7,26 @@ interface AccessPanelProps {
   vmId: string;
   currentUserRole: string;
   sshCommand?: string;
+  vmIpv6?: string | null;
   isPublic: boolean;
+  keepAlive: boolean;
   vmUrl: string;
   region?: string | null;
+  plan?: string;
+  keepAliveRamUsed?: number;
+  keepAliveRamMax?: number;
   onPublicChange: (isPublic: boolean) => void;
+  onKeepAliveChange: (keepAlive: boolean) => void;
 }
 
-export function AccessPanel({ vmId, currentUserRole, sshCommand, isPublic, vmUrl, region, onPublicChange }: AccessPanelProps) {
+export function AccessPanel({ vmId, currentUserRole, sshCommand, vmIpv6, isPublic, keepAlive, vmUrl, region, plan, keepAliveRamUsed, keepAliveRamMax, onPublicChange, onKeepAliveChange }: AccessPanelProps) {
   const [access, setAccess] = useState<AccessEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("editor");
   const [submitting, setSubmitting] = useState(false);
   const [togglingPublic, setTogglingPublic] = useState(false);
+  const [togglingKeepAlive, setTogglingKeepAlive] = useState(false);
   const { toast } = useToast();
   const isOwner = currentUserRole === "owner";
 
@@ -86,6 +93,22 @@ export function AccessPanel({ vmId, currentUserRole, sshCommand, isPublic, vmUrl
     }
   };
 
+  const handleToggleKeepAlive = async () => {
+    setTogglingKeepAlive(true);
+    try {
+      await api.setVMKeepAlive(vmId, !keepAlive);
+      onKeepAliveChange(!keepAlive);
+      toast(keepAlive ? "Keep-alive disabled — VM will auto-sleep when idle" : "Keep-alive enabled — VM will stay running", "success");
+    } catch (err: any) {
+      toast(err.message, "error");
+    } finally {
+      setTogglingKeepAlive(false);
+    }
+  };
+
+  // Keep-alive is gated to paid plans (plan !== "free" when trial config exists)
+  const keepAliveAvailable = plan !== "free";
+
   return (
     <div className="max-w-2xl">
       {/* Public URL toggle (owner only) */}
@@ -128,6 +151,42 @@ export function AccessPanel({ vmId, currentUserRole, sshCommand, isPublic, vmUrl
         </div>
       )}
 
+      {/* Keep-alive toggle (owner only) */}
+      {isOwner && (
+        <div className="mb-6 bg-panel-chat border border-neutral-200 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-xs font-semibold">Keep Alive</h3>
+              <p className="text-[10px] text-neutral-500 mt-1">
+                {!keepAliveAvailable
+                  ? "Upgrade to a paid plan to keep VMs running indefinitely."
+                  : keepAlive
+                    ? "This VM will stay running and won't auto-sleep when idle."
+                    : "Enable to prevent this VM from auto-sleeping after idle timeout."}
+              </p>
+            </div>
+            <button
+              onClick={handleToggleKeepAlive}
+              disabled={togglingKeepAlive || !keepAliveAvailable}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border transition-colors duration-200 focus:outline-none disabled:opacity-50 ${
+                keepAlive ? "bg-foreground border-foreground" : "bg-neutral-200 border-neutral-300"
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform duration-200 ${
+                  keepAlive ? "translate-x-4" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </div>
+          {keepAliveAvailable && keepAliveRamMax != null && keepAliveRamUsed != null && (
+            <p className="text-[10px] text-neutral-500 mt-2">
+              {keepAliveRamUsed} / {keepAliveRamMax} MiB keep-alive RAM used
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Zone */}
       {region && (
         <div className="mb-6 bg-panel-chat border border-neutral-200 p-4">
@@ -138,7 +197,7 @@ export function AccessPanel({ vmId, currentUserRole, sshCommand, isPublic, vmUrl
 
       {/* SSH access */}
       <div className="mb-6">
-        <SshKeysPanel vmId={vmId} sshCommand={sshCommand} />
+        <SshKeysPanel vmId={vmId} sshCommand={sshCommand} vmIpv6={vmIpv6} />
       </div>
 
       {/* Invite form (owner only) */}

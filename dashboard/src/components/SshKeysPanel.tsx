@@ -13,9 +13,10 @@ interface SshKeysPanelProps {
   /** If provided, manages keys directly on this VM's authorized_keys */
   vmId?: string;
   sshCommand?: string;
+  vmIpv6?: string | null;
 }
 
-export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
+export function SshKeysPanel({ vmId, sshCommand, vmIpv6 }: SshKeysPanelProps) {
   const [keys, setKeys] = useState<VmSshKey[]>([]);
   const [newKey, setNewKey] = useState("");
   const [loading, setLoading] = useState(true);
@@ -126,10 +127,15 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
 
   return (
     <div className="max-w-2xl space-y-4">
-      {/* SSH command (per-VM only) */}
+      {/* SSH commands (per-VM only) */}
       {sshCommand && (
         <div className="bg-panel-chat border border-neutral-200 p-4">
-          <h3 className="text-xs font-semibold mb-2">SSH command</h3>
+          <h3 className="text-xs font-semibold mb-3">SSH command</h3>
+
+          {/* Via gateway */}
+          <div className="mb-1">
+            <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Via gateway</span>
+          </div>
           <div className="flex items-center gap-2">
             <code className="flex-1 text-xs bg-neutral-100 border border-neutral-200 px-3 py-2 font-mono select-all">
               {sshCommand}
@@ -141,6 +147,27 @@ export function SshKeysPanel({ vmId, sshCommand }: SshKeysPanelProps) {
               Copy
             </button>
           </div>
+
+          {/* Direct IPv6 */}
+          {vmIpv6 && (
+            <>
+              <div className="mt-3 mb-1">
+                <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Direct IPv6</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-xs bg-neutral-100 border border-neutral-200 px-3 py-2 font-mono select-all">
+                  ssh dev@{vmIpv6}
+                </code>
+                <button
+                  onClick={() => handleCopy(`ssh dev@${vmIpv6}`)}
+                  className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer shrink-0"
+                >
+                  Copy
+                </button>
+              </div>
+            </>
+          )}
+
           <p className="text-[10px] text-neutral-500 mt-2">
             Requires an SSH key configured below.
           </p>

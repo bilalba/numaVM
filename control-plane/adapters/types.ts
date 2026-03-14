@@ -26,6 +26,7 @@ export interface VM {
   vm_ipv6: string | null;
   firewall_rules?: string | null;
   host_id?: string | null;
+  keep_alive?: number;
 }
 
 export interface VMWithRole extends VM {

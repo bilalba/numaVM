@@ -3,6 +3,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { customAlphabet } from "nanoid";
 import { getDatabase, getVMEngine, getReverseProxy, getLifecycleHook } from "../adapters/providers.js";
+import { releaseReservation } from "../services/port-allocator.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
 import { bindWakeProxy, unbindWakeProxy, bindAppWakeProxy, unbindAppWakeProxy } from "../services/wake-proxy.js";
 import { prepareVMForSnapshot } from "../services/snapshot-cleanup.js";
@@ -112,30 +113,35 @@ export function registerVMRoutes(app: FastifyInstance) {
     // git push won't work without a token, but the repo will still be cloned.
 
     // Insert VM record early (reserves ports + CID)
-    getDatabase().insertVM({
-      id: slug,
-      name: body.name,
-      owner_id: request.userId,
-      gh_repo: repoFullName,
-      gh_token: ghToken,
-      container_id: null,
-      vm_ip: vmIp,
-      vsock_cid: vsockCid,
-      vm_pid: null,
-      snapshot_path: null,
-      app_port: appPort,
-      ssh_port: sshPort,
-      opencode_port: opencodePort,
-      opencode_password: opencodePassword,
-      status: "creating",
-      status_detail: null,
-      mem_size_mib: memSizeMib,
-      disk_size_gib: diskSizeGib,
-      image,
-      image_version: imageVersion,
-      vm_ipv6: vmIpv6,
-      host_id: hostId,
-    });
+    try {
+      getDatabase().insertVM({
+        id: slug,
+        name: body.name,
+        owner_id: request.userId,
+        gh_repo: repoFullName,
+        gh_token: ghToken,
+        container_id: null,
+        vm_ip: vmIp,
+        vsock_cid: vsockCid,
+        vm_pid: null,
+        snapshot_path: null,
+        app_port: appPort,
+        ssh_port: sshPort,
+        opencode_port: opencodePort,
+        opencode_password: opencodePassword,
+        status: "creating",
+        status_detail: null,
+        mem_size_mib: memSizeMib,
+        disk_size_gib: diskSizeGib,
+        image,
+        image_version: imageVersion,
+        vm_ipv6: vmIpv6,
+        host_id: hostId,
+      });
+    } finally {
+      // Release in-flight reservations — DB row now holds the constraint (or insert failed)
+      releaseReservation({ appPort, sshPort, opencodePort, vsockCid });
+    }
 
     // Grant owner access (used by auth verify for subdomain gating)
     getDatabase().grantAccess(slug, request.userId, "owner");
@@ -170,6 +176,9 @@ export function registerVMRoutes(app: FastifyInstance) {
           console.error(`[vm] Lifecycle hook getExtraKernelArgs failed for ${slug}:`, err);
         }
 
+        // Default firewall rules — allow SSH inbound (matches DB default in insertVM)
+        const defaultFirewallRules = [{ proto: "tcp" as const, port: 22, source: "::/0", description: "SSH" }];
+
         const vmId = await getVMEngine().createAndStartVM({
           slug,
           name: body.name,
@@ -191,6 +200,7 @@ export function registerVMRoutes(app: FastifyInstance) {
           diskSizeGib: diskSizeGib,
           image,
           extraKernelArgs,
+          firewallRules: defaultFirewallRules,
           onProgress: (detail: string) => {
             getDatabase().updateVMStatusDetail(slug, detail);
           },
@@ -281,6 +291,7 @@ export function registerVMRoutes(app: FastifyInstance) {
         image: e.image,
         image_version: e.image_version,
         is_public: !!e.is_public,
+        keep_alive: !!e.keep_alive,
       })),
     };
   });
@@ -306,6 +317,7 @@ export function registerVMRoutes(app: FastifyInstance) {
     const currentDisk = getDatabase().getUserProvisionedDisk(request.userId);
     const dataUsage = getDatabase().getUserMonthlyDataUsage(request.userId);
 
+    const keepAliveRam = getDatabase().getUserKeepAliveRam(request.userId);
     const llmUsage = await getLifecycleHook().getLLMUsage?.(request.userId) ?? null;
 
     return {
@@ -324,6 +336,8 @@ export function registerVMRoutes(app: FastifyInstance) {
       valid_mem_sizes: userPlan.valid_mem_sizes,
       trial_active: userPlan.trial_active,
       trial_expires_at: userPlan.trial_expires_at,
+      keep_alive_ram_used: keepAliveRam,
+      keep_alive_ram_max: userPlan.max_ram_mib,
       ...(llmUsage ? {
         llm_spend: llmUsage.spend,
         llm_budget: llmUsage.budget,
@@ -393,6 +407,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       image: vm.image,
       image_version: vm.image_version,
       is_public: !!vm.is_public,
+      keep_alive: !!vm.keep_alive,
       vm_ipv6: vm.vm_ipv6 || null,
       host_id: vm.host_id || null,
       ...(quotaError ? { quota_error: quotaError } : {}),

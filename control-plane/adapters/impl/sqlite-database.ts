@@ -15,6 +15,7 @@ import {
   updateVMInfo as _updateVMInfo,
   updateVMSnapshotPath as _updateVMSnapshotPath,
   updateVMPublic as _updateVMPublic,
+  updateVMKeepAlive as _updateVMKeepAlive,
   updateVMFirewallRules as _updateVMFirewallRules,
   getVMFirewallRules as _getVMFirewallRules,
   findVMBySshPort as _findVMBySshPort,
@@ -32,6 +33,7 @@ import {
   clearUserGithubToken as _clearUserGithubToken,
   getUserPlan as _getUserPlan,
   getUserProvisionedRam as _getUserProvisionedRam,
+  getUserKeepAliveRam as _getUserKeepAliveRam,
   getUserProvisionedDisk as _getUserProvisionedDisk,
   getUserMonthlyDataUsage as _getUserMonthlyDataUsage,
   setStripeCustomerId as _setStripeCustomerId,
@@ -81,6 +83,7 @@ export class SqliteDatabase implements IDatabase {
   updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: number, vmPid: number | null): void { _updateVMInfo(id, vmId, vmIp, vsockCid, vmPid); }
   updateVMSnapshotPath(id: string, snapshotPath: string | null): void { _updateVMSnapshotPath(id, snapshotPath); }
   updateVMPublic(id: string, isPublic: boolean): void { _updateVMPublic(id, isPublic); }
+  updateVMKeepAlive(id: string, keepAlive: boolean): void { _updateVMKeepAlive(id, keepAlive); }
   updateVMFirewallRules(id: string, rules: FirewallRule[]): void { _updateVMFirewallRules(id, rules); }
   getVMFirewallRules(id: string): FirewallRule[] { return _getVMFirewallRules(id); }
   findVMBySshPort(port: number): VM | undefined { return _findVMBySshPort(port); }
@@ -102,6 +105,7 @@ export class SqliteDatabase implements IDatabase {
   clearUserGithubToken(userId: string): void { _clearUserGithubToken(userId); }
   getUserPlan(userId: string): UserPlan { return _getUserPlan(userId, getPlanRegistry()); }
   getUserProvisionedRam(userId: string): number { return _getUserProvisionedRam(userId); }
+  getUserKeepAliveRam(userId: string): number { return _getUserKeepAliveRam(userId); }
   getUserProvisionedDisk(userId: string): number { return _getUserProvisionedDisk(userId); }
   getUserMonthlyDataUsage(userId: string): number { return _getUserMonthlyDataUsage(userId); }
   setStripeCustomerId(userId: string, customerId: string): void { _setStripeCustomerId(userId, customerId); }

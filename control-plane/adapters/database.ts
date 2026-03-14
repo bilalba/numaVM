@@ -20,6 +20,7 @@ export interface IVMStore {
   updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: number, vmPid: number | null): void;
   updateVMSnapshotPath(id: string, snapshotPath: string | null): void;
   updateVMPublic(id: string, isPublic: boolean): void;
+  updateVMKeepAlive(id: string, keepAlive: boolean): void;
   updateVMFirewallRules(id: string, rules: FirewallRule[]): void;
   getVMFirewallRules(id: string): FirewallRule[];
   findVMBySshPort(port: number): VM | undefined;
@@ -43,6 +44,7 @@ export interface IUserStore {
   clearUserGithubToken(userId: string): void;
   getUserPlan(userId: string): UserPlan;
   getUserProvisionedRam(userId: string): number;
+  getUserKeepAliveRam(userId: string): number;
   getUserProvisionedDisk(userId: string): number;
   getUserMonthlyDataUsage(userId: string): number;
   setStripeCustomerId(userId: string, customerId: string): void;

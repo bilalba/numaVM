@@ -69,6 +69,7 @@ export interface VMSummary {
   image: string;
   image_version: number;
   is_public: boolean;
+  keep_alive: boolean;
   region?: string | null;
 }
 
@@ -88,6 +89,8 @@ export interface Quota {
   valid_mem_sizes: number[];
   trial_active: boolean;
   trial_expires_at: string | null;
+  keep_alive_ram_used?: number;
+  keep_alive_ram_max?: number;
   llm_spend?: number;
   llm_budget?: number;
   llm_used_pct?: number;
@@ -119,6 +122,7 @@ export interface VMDetail {
   image: string;
   image_version: number;
   is_public: boolean;
+  keep_alive: boolean;
   vm_ipv6?: string | null;
   host_id?: string | null;
   region?: string | null;
@@ -607,6 +611,12 @@ export const api = {
     apiFetch<{ ok: boolean; is_public: boolean }>(`/vms/${vmId}/public`, {
       method: "POST",
       body: JSON.stringify({ is_public: isPublic }),
+    }),
+
+  setVMKeepAlive: (vmId: string, keepAlive: boolean) =>
+    apiFetch<{ ok: boolean; keep_alive: boolean }>(`/vms/${vmId}/keep-alive`, {
+      method: "POST",
+      body: JSON.stringify({ keep_alive: keepAlive }),
     }),
 
   // Firewall rules

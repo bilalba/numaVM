@@ -50,8 +50,8 @@ async function pollOnce(): Promise<void> {
   const proxy = getReverseProxy();
 
   // Get all running VMs (with owner for data quota checks)
-  const runningVMs = db.raw<{ id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; vm_ip: string; owner_id: string }>(
-    "SELECT v.id, v.vsock_cid, v.app_port, v.ssh_port, v.opencode_port, v.vm_ip, va.user_id as owner_id FROM vms v INNER JOIN vm_access va ON va.vm_id = v.id AND va.role = 'owner' WHERE v.status = 'running'"
+  const runningVMs = db.raw<{ id: string; vsock_cid: number; app_port: number; ssh_port: number; opencode_port: number; vm_ip: string; owner_id: string; keep_alive: number }>(
+    "SELECT v.id, v.vsock_cid, v.app_port, v.ssh_port, v.opencode_port, v.vm_ip, v.keep_alive, va.user_id as owner_id FROM vms v INNER JOIN vm_access va ON va.vm_id = v.id AND va.role = 'owner' WHERE v.status = 'running'"
   );
 
   const now = Date.now();
@@ -82,6 +82,12 @@ async function pollOnce(): Promise<void> {
 
     if (bytesInWindow >= IDLE_THRESHOLD_BYTES) {
       // Enough traffic — reset the window
+      trafficMap.set(vm.id, { windowBytes: currentBytes, windowStart: now });
+      continue;
+    }
+
+    // Skip keep-alive VMs — reset window but don't snapshot
+    if (vm.keep_alive) {
       trafficMap.set(vm.id, { windowBytes: currentBytes, windowStart: now });
       continue;
     }

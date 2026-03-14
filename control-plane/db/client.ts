@@ -160,6 +160,12 @@ if (!vmCols9.some((c) => c.name === "host_id")) {
   db.exec("ALTER TABLE vms ADD COLUMN host_id TEXT");
 }
 
+// Migrate: add keep_alive column to vms
+const vmCols10 = db.pragma("table_info(vms)") as { name: string }[];
+if (!vmCols10.some((c) => c.name === "keep_alive")) {
+  db.exec("ALTER TABLE vms ADD COLUMN keep_alive INTEGER NOT NULL DEFAULT 0");
+}
+
 // Migrate: add unique index on name (for custom VM names as addresses)
 const nameIndexExists = (db.prepare(
   "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_vms_name'"
@@ -315,6 +321,7 @@ export interface VM {
   vm_ipv6: string | null;
   firewall_rules?: string | null;
   host_id?: string | null;
+  keep_alive?: number;
 }
 
 export interface VMWithRole extends VM {
@@ -421,6 +428,24 @@ export function updateVMSnapshotPath(id: string, snapshotPath: string | null): v
 const updateVMPublicStmt = db.prepare("UPDATE vms SET is_public = ? WHERE id = ?");
 export function updateVMPublic(id: string, isPublic: boolean): void {
   updateVMPublicStmt.run(isPublic ? 1 : 0, id);
+}
+
+const updateVMKeepAliveStmt = db.prepare("UPDATE vms SET keep_alive = ? WHERE id = ?");
+export function updateVMKeepAlive(id: string, keepAlive: boolean): void {
+  updateVMKeepAliveStmt.run(keepAlive ? 1 : 0, id);
+}
+
+const getUserKeepAliveRamStmt = db.prepare(`
+  SELECT COALESCE(SUM(v.mem_size_mib), 0) as total_ram
+  FROM vms v
+  INNER JOIN vm_access va ON va.vm_id = v.id
+  WHERE va.user_id = ? AND va.role = 'owner'
+  AND v.keep_alive = 1
+  AND v.status IN ('running', 'creating')
+`);
+export function getUserKeepAliveRam(userId: string): number {
+  const row = getUserKeepAliveRamStmt.get(userId) as { total_ram: number };
+  return row.total_ram;
 }
 
 // --- Firewall rules ---
