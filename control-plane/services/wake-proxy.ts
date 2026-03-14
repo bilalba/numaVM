@@ -17,6 +17,7 @@
  */
 
 import net from "node:net";
+import { execSync } from "node:child_process";
 import { ensureVMRunning } from "./wake.js";
 import { getDatabase } from "../adapters/providers.js";
 import type { FirewallRule } from "../db/client.js";
@@ -117,11 +118,35 @@ function createProxyServer(
 // --- IPv6 proxy ---
 
 /**
+ * Ensure the IPv6 address is assigned to the appropriate host interface so we
+ * can bind a TCP server to it. When a VM is snapshotted, removeIpv6Nat() strips
+ * the address — we must re-add it (without DNAT) so the wake proxy can listen.
+ */
+function ensureIpv6OnInterface(ipv6: string): void {
+  try {
+    // ULA (fd00::) lives on the bridge; global unicast on the external interface
+    const isUla = ipv6.startsWith("fd") || ipv6.startsWith("fc");
+    const iface = isUla
+      ? "br0"
+      : (execSync("ip -6 route show default | awk '{print $5}' | head -1", { stdio: "pipe" }).toString().trim() || "eth0");
+    try { execSync(`ip -6 addr add ${ipv6}/128 dev ${iface}`, { stdio: "pipe" }); } catch { /* already exists */ }
+    // Ensure the local route exists — ip addr add normally creates it, but if
+    // the address survived a del/re-add cycle the route can go missing.
+    try { execSync(`ip -6 route replace local ${ipv6} dev ${iface} table local`, { stdio: "pipe" }); } catch { /* ok */ }
+  } catch (err: any) {
+    console.warn(`[wake-proxy] Failed to add ${ipv6} to interface: ${err.message}`);
+  }
+}
+
+/**
  * Bind wake-proxy listeners for a VM on its public IPv6 address.
  * Safe to call multiple times — unbinds existing listeners first.
  */
 export function bindWakeProxy(vmId: string, publicIpv6: string, rules: FirewallRule[]): void {
   unbindWakeProxy(vmId);
+
+  // Ensure the address is on the interface (may have been removed during snapshot)
+  ensureIpv6OnInterface(publicIpv6);
 
   const ports = collectPorts(rules);
   const servers: net.Server[] = [];

@@ -320,13 +320,25 @@ export function removeIpv6FirewallRules(slug: string, vmIpv6: string | null | un
 
 // --- IPv6 NAT (DNAT/SNAT for pool-based allocation) ---
 
+/** Detect the default network interface (e.g. enp1s0, eth0). */
+function getDefaultInterface(): string {
+  try {
+    return execSync("ip -6 route show default | awk '{print $5}' | head -1", { stdio: "pipe" }).toString().trim()
+      || execSync("ip route show default | awk '{print $5}' | head -1", { stdio: "pipe" }).toString().trim()
+      || "eth0";
+  } catch { return "eth0"; }
+}
+
 /**
  * Add DNAT + SNAT rules to map a public IPv6 address to an internal ULA address.
- * Inbound: packets to publicIpv6 are rewritten to ulaIpv6 (DNAT)
- * Outbound: packets from ulaIpv6 are rewritten to publicIpv6 (SNAT)
- * Uses -C to check first, preventing duplicate rules across restore cycles.
+ * Also adds the public IPv6 as a /128 on the external interface so the host
+ * responds to NDP neighbor solicitations from the upstream router.
  */
 export function addIpv6Nat(publicIpv6: string, ulaIpv6: string): void {
+  // Add public IPv6 to external interface for NDP reachability
+  const extIf = getDefaultInterface();
+  try { execSync(`ip -6 addr add ${publicIpv6}/128 dev ${extIf} 2>/dev/null`, { stdio: "pipe" }); } catch { /* already exists */ }
+
   try {
     execSync(`ip6tables -t nat -C PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6} 2>/dev/null`, { stdio: "pipe" });
   } catch {
@@ -341,14 +353,22 @@ export function addIpv6Nat(publicIpv6: string, ulaIpv6: string): void {
 
 /**
  * Remove ALL DNAT + SNAT rules for a public↔ULA mapping.
+ * When keepAddress is false (default), also removes the public IPv6 from the
+ * external interface. Pass keepAddress=true during snapshot so the wake proxy
+ * can still receive connections on the address while the VM is asleep.
  * Loops to handle duplicates that accumulated from prior restores.
  */
-export function removeIpv6Nat(publicIpv6: string, ulaIpv6: string): void {
+export function removeIpv6Nat(publicIpv6: string, ulaIpv6: string, keepAddress = false): void {
   for (let i = 0; i < 20; i++) {
     try { execSync(`ip6tables -t nat -D PREROUTING -d ${publicIpv6} -j DNAT --to-destination ${ulaIpv6}`, { stdio: "pipe" }); } catch { break; }
   }
   for (let i = 0; i < 20; i++) {
     try { execSync(`ip6tables -t nat -D POSTROUTING -s ${ulaIpv6} -j SNAT --to-source ${publicIpv6}`, { stdio: "pipe" }); } catch { break; }
+  }
+
+  if (!keepAddress) {
+    const extIf = getDefaultInterface();
+    try { execSync(`ip -6 addr del ${publicIpv6}/128 dev ${extIf} 2>/dev/null`, { stdio: "pipe" }); } catch { /* ok */ }
   }
 }
 
@@ -422,22 +442,28 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   progress("Starting Firecracker");
 
   // --- Parallel pre-boot setup ---
-  // rootfs_copy, tap_create, env_write, data_volume_create, and systemd_run
+  // rootfs_copy, tap_create, env_write, and systemd_run
   // are all independent. Run them concurrently to save ~80ms.
 
   const vmRootfs = join(dataDir, "rootfs.ext4");
-  const dataVolume = join(dataDir, "data.ext4");
   const fcLogPath = join(dataDir, "firecracker.log");
 
   const setupTasks: Promise<void>[] = [];
 
-  // Rootfs copy (reflink) — async so it runs in parallel
+  // Rootfs copy (reflink) + expand to user-requested disk size
+  // We add diskSizeGib to the base image size so the user gets that much *free* space.
   if (!existsSync(vmRootfs)) {
     const baseRootfs = resolveRootfsPath(image);
     setupTasks.push(
-      execAsync(`cp --reflink=auto "${baseRootfs}" "${vmRootfs}"`).then(() => {}).catch(() =>
-        execAsync(`cp "${baseRootfs}" "${vmRootfs}"`).then(() => {})
-      )
+      (async () => {
+        try {
+          await execAsync(`cp --reflink=auto "${baseRootfs}" "${vmRootfs}"`);
+        } catch {
+          await execAsync(`cp "${baseRootfs}" "${vmRootfs}"`);
+        }
+        // Expand rootfs: +diskSizeGib adds on top of base image size, then resize2fs fills it
+        await execAsync(`truncate -s +${diskSizeGib}G "${vmRootfs}" && e2fsck -f -y "${vmRootfs}" && resize2fs "${vmRootfs}"`);
+      })()
     );
   }
 
@@ -448,13 +474,6 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
       : `ip link delete "${tapDev}" 2>/dev/null; ip tuntap add dev "${tapDev}" mode tap && ip link set "${tapDev}" master ${process.env.BRIDGE_IF || "br0"} && ip link set "${tapDev}" up`
     } && ip neigh flush dev ${process.env.BRIDGE_IF || "br0"} to ${vmIp} 2>/dev/null; true`
   ).then(() => {}));
-
-  // Data volume (first boot only) — async
-  if (!existsSync(dataVolume)) {
-    setupTasks.push(
-      execAsync(`dd if=/dev/zero of="${dataVolume}" bs=1 count=0 seek=${diskSizeGib}G 2>/dev/null && mkfs.ext4 -F -q "${dataVolume}"`).then(() => {})
-    );
-  }
 
   // Env config file (sync — fast, just a write)
   const envConfig = {
@@ -505,7 +524,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     boot_args: kernelArgs,
   });
 
-  // 3. Rootfs
+  // 3. Rootfs (expanded to user-requested size in parallel_setup)
   await fcApi(socketPath, "PUT", "/drives/rootfs", {
     drive_id: "rootfs",
     path_on_host: vmRootfs,
@@ -513,15 +532,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
     is_read_only: false,
   });
 
-  // 4. Data volume (already created in parallel_setup)
-  await fcApi(socketPath, "PUT", "/drives/data", {
-    drive_id: "data",
-    path_on_host: dataVolume,
-    is_root_device: false,
-    is_read_only: false,
-  });
-
-  // 5. Network
+  // 4. Network
   await fcApi(socketPath, "PUT", "/network-interfaces/eth0", {
     iface_id: "eth0",
     host_dev_name: tapDev,
@@ -757,10 +768,10 @@ export async function snapshotVM(vmId: string): Promise<void> {
       removeDnat(vmRecord.app_port, vm.vmIp, 3000);
       removeDnat(vmRecord.opencode_port, vm.vmIp, 5000);
 
-      // IPv6 NAT + firewall
+      // IPv6 NAT + firewall — keep address on interface so wake-proxy stays reachable
       const ula = cidToVmIpv6(vm.vsockCid);
       if (vmRecord.vm_ipv6 && ula && vmRecord.vm_ipv6 !== ula) {
-        removeIpv6Nat(vmRecord.vm_ipv6, ula);
+        removeIpv6Nat(vmRecord.vm_ipv6, ula, true);
       }
       removeIpv6FirewallRules(vmId, ula || vmRecord.vm_ipv6);
     }
