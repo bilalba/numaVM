@@ -9,6 +9,7 @@ import { bindWakeProxy, unbindWakeProxy, bindAppWakeProxy, unbindAppWakeProxy } 
 import { prepareVMForSnapshot } from "../services/snapshot-cleanup.js";
 import { createAgentSession } from "./agents.js";
 import { validateVMName } from "../utils/validation.js";
+import { trackVM } from "../agents/opencode-status.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
@@ -210,6 +211,9 @@ export function registerVMRoutes(app: FastifyInstance) {
         // VM is booted and SSH-ready (vsock signal confirmed). Set running immediately.
         getDatabase().updateVMStatus(slug, "running");
 
+        // Track OpenCode readiness (boot-time start in init.sh)
+        trackVM(slug, opencodePort, opencodePassword);
+
         // Register Caddy route now that VM is running
         try {
           await getReverseProxy().addRoute(slug, appPort);
@@ -268,8 +272,11 @@ export function registerVMRoutes(app: FastifyInstance) {
         // Roll back DB records so ports/CIDs are freed for retry
         getDatabase().revokeAllAccess(slug);
         getDatabase().deleteVM(slug);
-        const dataDir = process.env.DATA_DIR || "/data/envs";
-        try { rmSync(join(dataDir, slug), { recursive: true, force: true }); } catch { /* ok */ }
+        // Only clean up locally for single-node VMs
+        if (!hostId) {
+          const dataDir = process.env.DATA_DIR || "/data/envs";
+          try { rmSync(join(dataDir, slug), { recursive: true, force: true }); } catch { /* ok */ }
+        }
       }
     })();
   });
@@ -461,10 +468,12 @@ export function registerVMRoutes(app: FastifyInstance) {
     getDatabase().revokeAllAccess(id);
     getDatabase().deleteVM(id);
 
-    // Cleanup data directory (rootfs, snapshots, overlay, etc.)
-    const dataDir = process.env.DATA_DIR || "/data/envs";
-    const vmDataPath = join(dataDir, id);
-    try { rmSync(vmDataPath, { recursive: true, force: true }); } catch { /* best-effort */ }
+    // Cleanup data directory — only for local VMs (multi-node VMs cleaned up by node agent)
+    if (!vm.host_id) {
+      const dataDir = process.env.DATA_DIR || "/data/envs";
+      const vmDataPath = join(dataDir, id);
+      try { rmSync(vmDataPath, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
 
     getDatabase().emitAdminEvent("vm.deleted", id, request.userId);
 
