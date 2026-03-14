@@ -30,6 +30,7 @@ export interface CreateVMParams {
   diskSizeGib?: number;
   image?: string;
   extraKernelArgs?: string[];
+  firewallRules?: { proto: "tcp" | "udp"; port: number; source: string; description?: string }[];
   onProgress?: (detail: string) => void;
 }
 

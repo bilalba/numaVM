@@ -73,14 +73,31 @@ export function registerFirewallRoutes(app: FastifyInstance) {
     getDatabase().updateVMFirewallRules(vm.id, body.rules);
 
     // Apply live if VM is running and has an IPv6 address
-    // Use ULA address for FORWARD chain (post-DNAT destination)
-    const firewallTarget = (vm.vsock_cid ? cidToVmIpv6(vm.vsock_cid) : null) || vm.vm_ipv6;
-    if (firewallTarget && getVMEngine().isVmRunning(vm.id)) {
+    if (vm.host_id) {
+      // Multi-node: proxy to the node agent
       try {
-        applyIpv6FirewallRules(vm.id, firewallTarget, body.rules);
+        // @ts-ignore -- commercial layer import, only used in multi-node mode
+        const { getNodeForVM } = await import("../../../commercial/node-registry.js");
+        // @ts-ignore -- commercial layer import, only used in multi-node mode
+        const { nodeRequest } = await import("../../../commercial/node-request.js");
+        const node = getNodeForVM(vm.id);
+        if (node) {
+          await nodeRequest(node, "POST", `/vms/${vm.id}/firewall`, { rules: body.rules });
+        }
       } catch (err: any) {
-        console.error(`[firewall] Failed to apply ip6tables rules for ${vm.id}:`, err);
-        // Rules are saved to DB — they'll be applied on next start/restore
+        console.error(`[firewall] Failed to proxy firewall rules to node for ${vm.id}:`, err);
+        // Rules are saved to CP DB — they'll be synced on next create/restore
+      }
+    } else {
+      // Single-node (OSS): apply locally
+      const firewallTarget = (vm.vsock_cid ? cidToVmIpv6(vm.vsock_cid) : null) || vm.vm_ipv6;
+      if (firewallTarget && getVMEngine().isVmRunning(vm.id)) {
+        try {
+          applyIpv6FirewallRules(vm.id, firewallTarget, body.rules);
+        } catch (err: any) {
+          console.error(`[firewall] Failed to apply ip6tables rules for ${vm.id}:`, err);
+          // Rules are saved to DB — they'll be applied on next start/restore
+        }
       }
     }
 
