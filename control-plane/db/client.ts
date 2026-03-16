@@ -208,6 +208,69 @@ try { db.exec("ALTER TABLE users ADD COLUMN trial_started_at DATETIME"); } catch
 // Backfill: set trial_started_at for existing base users who don't have it
 db.exec("UPDATE users SET trial_started_at = created_at WHERE trial_started_at IS NULL AND plan = 'base' AND id != 'dev-user'");
 
+// Migrate: replace per-column UNIQUE on ports/CID with composite per-host partial indexes.
+// This allows different nodes to independently allocate the same port numbers.
+{
+  // Check if single-column unique autoindexes still exist on the port/CID columns
+  const autoIdx = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='vms' AND name LIKE 'sqlite_autoindex_vms_%'"
+  ).all() as { name: string }[];
+  if (autoIdx.length > 0) {
+    db.pragma("foreign_keys = OFF");
+    // Read current columns to preserve data
+    const cols = (db.pragma("table_info(vms)") as { name: string }[]).map(c => c.name);
+    const colList = cols.join(", ");
+    db.exec(`
+      CREATE TABLE vms_perhost (
+        id                TEXT PRIMARY KEY,
+        name              TEXT NOT NULL,
+        owner_id          TEXT NOT NULL,
+        gh_repo           TEXT,
+        gh_token          TEXT,
+        container_id      TEXT,
+        vm_ip             TEXT,
+        vsock_cid         INTEGER,
+        vm_pid            INTEGER,
+        snapshot_path     TEXT,
+        app_port          INTEGER,
+        ssh_port          INTEGER,
+        opencode_port     INTEGER,
+        opencode_password TEXT,
+        status            TEXT NOT NULL DEFAULT 'creating'
+                          CHECK(status IN ('creating', 'running', 'stopped', 'paused', 'snapshotted', 'error')),
+        created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+        pages_port        INTEGER,
+        mem_size_mib      INTEGER NOT NULL DEFAULT 512,
+        disk_size_gib     INTEGER NOT NULL DEFAULT 10,
+        vm_ipv6           TEXT,
+        firewall_rules    TEXT DEFAULT '[]',
+        host_id           TEXT,
+        keep_alive        INTEGER NOT NULL DEFAULT 0,
+        status_detail     TEXT,
+        image             TEXT NOT NULL DEFAULT 'alpine',
+        image_version     INTEGER NOT NULL DEFAULT 1,
+        is_public         INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO vms_perhost (${colList}) SELECT ${colList} FROM vms;
+      DROP TABLE vms;
+      ALTER TABLE vms_perhost RENAME TO vms;
+      CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);
+      CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_name ON vms(name);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_app_port_per_host
+        ON vms(COALESCE(host_id, '__local__'), app_port) WHERE status != 'error';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_ssh_port_per_host
+        ON vms(COALESCE(host_id, '__local__'), ssh_port) WHERE status != 'error';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_opencode_port_per_host
+        ON vms(COALESCE(host_id, '__local__'), opencode_port) WHERE status != 'error';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_vsock_cid_per_host
+        ON vms(COALESCE(host_id, '__local__'), vsock_cid) WHERE status != 'error';
+    `);
+    db.pragma("foreign_keys = ON");
+    console.log("[db] Migrated vms table: replaced per-column UNIQUE with per-host composite indexes");
+  }
+}
+
 // Migrate: add stripe_customer_id to users
 try { db.exec("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT"); } catch { /* already exists */ }
 
@@ -420,6 +483,11 @@ export function updateVMInfo(id: string, vmId: string, vmIp: string, vsockCid: n
   updateVMInfoStmt.run(vmId, vmIp, vsockCid, vmPid, id);
 }
 
+const updateVMIpv6Stmt = db.prepare("UPDATE vms SET vm_ipv6 = ? WHERE id = ?");
+export function updateVMIpv6(id: string, vmIpv6: string): void {
+  updateVMIpv6Stmt.run(vmIpv6, id);
+}
+
 const updateVMSnapshotPathStmt = db.prepare("UPDATE vms SET snapshot_path = ? WHERE id = ?");
 export function updateVMSnapshotPath(id: string, snapshotPath: string | null): void {
   updateVMSnapshotPathStmt.run(snapshotPath, id);
@@ -608,6 +676,20 @@ const getUsedPortsStmt = db.prepare(
 );
 export function getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[] {
   return getUsedPortsStmt.all() as { app_port: number; ssh_port: number; opencode_port: number }[];
+}
+
+const getUsedPortsByHostStmt = db.prepare(
+  "SELECT app_port, ssh_port, opencode_port FROM vms WHERE COALESCE(host_id, '__local__') = ? AND status != 'error'"
+);
+export function getUsedPortsByHost(hostId: string): { app_port: number; ssh_port: number; opencode_port: number }[] {
+  return getUsedPortsByHostStmt.all(hostId) as { app_port: number; ssh_port: number; opencode_port: number }[];
+}
+
+const getUsedCidsByHostStmt = db.prepare(
+  "SELECT vsock_cid FROM vms WHERE COALESCE(host_id, '__local__') = ? AND vsock_cid IS NOT NULL AND status != 'error'"
+);
+export function getUsedCidsByHost(hostId: string): number[] {
+  return (getUsedCidsByHostStmt.all(hostId) as { vsock_cid: number }[]).map((r) => r.vsock_cid);
 }
 
 // --- Access control ---

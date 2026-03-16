@@ -39,6 +39,7 @@ export type AgentEvent =
   | { type: "todo.updated"; items: { id: string; content: string; status: string; priority: string }[] }
   | { type: "session.progress"; sessionId: string; step: string; message: string }
   | { type: "session.info"; model?: string; provider?: string }
+  | { type: "vm.status"; status: string; status_detail?: string | null }
   | { type: "opencode.ready" }
   | { type: "error"; message: string; code?: string };
 

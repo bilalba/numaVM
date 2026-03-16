@@ -51,7 +51,9 @@ import {
   deleteAgentSession as _deleteAgentSession,
   deleteAgentSessionsByVM as _deleteAgentSessionsByVM,
   getUsedPorts as _getUsedPorts,
+  getUsedPortsByHost as _getUsedPortsByHost,
   getUsedCids as _getUsedCids,
+  getUsedCidsByHost as _getUsedCidsByHost,
   getUsedIpv6 as _getUsedIpv6,
   insertTrafficRecord as _insertTrafficRecord,
   getTrafficHistory as _getTrafficHistory,
@@ -132,7 +134,9 @@ export class SqliteDatabase implements IDatabase {
 
   // --- IInfraStore ---
   getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[] { return _getUsedPorts(); }
+  getUsedPortsByHost(hostId: string): { app_port: number; ssh_port: number; opencode_port: number }[] { return _getUsedPortsByHost(hostId); }
   getUsedCids(): number[] { return _getUsedCids(); }
+  getUsedCidsByHost(hostId: string): number[] { return _getUsedCidsByHost(hostId); }
   getUsedIpv6(): string[] { return _getUsedIpv6(); }
   insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number, ownerId?: string): void { _insertTrafficRecord(vmId, rxBytes, txBytes, ownerId); }
   getTrafficHistory(vmId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[] { return _getTrafficHistory(vmId, hours); }

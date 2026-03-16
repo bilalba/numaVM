@@ -74,7 +74,9 @@ export interface IAgentStore {
 
 export interface IInfraStore {
   getUsedPorts(): { app_port: number; ssh_port: number; opencode_port: number }[];
+  getUsedPortsByHost(hostId: string): { app_port: number; ssh_port: number; opencode_port: number }[];
   getUsedCids(): number[];
+  getUsedCidsByHost(hostId: string): number[];
   getUsedIpv6(): string[];
   insertTrafficRecord(vmId: string, rxBytes: number, txBytes: number, ownerId?: string): void;
   getTrafficHistory(vmId: string, hours: number): { rx_bytes: number; tx_bytes: number; recorded_at: string }[];

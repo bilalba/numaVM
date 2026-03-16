@@ -7,9 +7,11 @@ import { releaseReservation } from "../services/port-allocator.js";
 import { ensureVMRunning, QuotaExceededError, DataQuotaExceededError, DiskQuotaExceededError } from "../services/wake.js";
 import { bindWakeProxy, unbindWakeProxy, bindAppWakeProxy, unbindAppWakeProxy } from "../services/wake-proxy.js";
 import { prepareVMForSnapshot } from "../services/snapshot-cleanup.js";
-import { createAgentSession } from "./agents.js";
+import { createAgentSession, getRemoteForwarder } from "./agents.js";
 import { validateVMName } from "../utils/validation.js";
 import { trackVM } from "../agents/opencode-status.js";
+import { wsHub } from "../agents/ws-hub.js";
+import { BenchmarkTimer } from "../services/benchmark-timer.js";
 
 const generateSlug = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 6);
 const getBaseDomain = () => process.env.BASE_DOMAIN || "localhost";
@@ -141,7 +143,7 @@ export function registerVMRoutes(app: FastifyInstance) {
       });
     } finally {
       // Release in-flight reservations — DB row now holds the constraint (or insert failed)
-      releaseReservation({ appPort, sshPort, opencodePort, vsockCid });
+      releaseReservation({ appPort, sshPort, opencodePort, vsockCid }, hostId);
     }
 
     // Grant owner access (used by auth verify for subdomain gating)
@@ -154,7 +156,18 @@ export function registerVMRoutes(app: FastifyInstance) {
     bindAppWakeProxy(slug, appPort, opencodePort);
 
     // Return immediately — VM creation happens in the background.
-    // Dashboard polls GET /vms/:id for status + status_detail.
+    // Enriched response: includes all fields so dashboard can skip GET /vms/:id.
+    const forwarder = getRemoteForwarder();
+    let connectToken: string | undefined;
+    let agentWsUrl: string | undefined;
+    if (hostId && forwarder) {
+      try {
+        const tokenResult = await forwarder.issueConnectToken(request.userId, slug);
+        connectToken = tokenResult.token;
+        agentWsUrl = forwarder.getAgentWsUrl(slug) || undefined;
+      } catch { /* best-effort — dashboard falls back to agent-connect-token */ }
+    }
+
     reply.status(201).send({
       id: slug,
       name: body.name,
@@ -162,14 +175,29 @@ export function registerVMRoutes(app: FastifyInstance) {
       ...(repoFullName ? { repo_url: `https://github.com/${repoFullName}` } : {}),
       ssh_command: `ssh ${body.name}@ssh.${getBaseDomain()}`,
       ssh_port: sshPort,
+      app_port: appPort,
+      opencode_port: opencodePort,
       status: "creating",
+      status_detail: null,
+      role: "owner",
+      created_at: new Date().toISOString(),
+      mem_size_mib: memSizeMib,
+      disk_size_gib: diskSizeGib,
+      image,
+      host_id: hostId || null,
+      is_public: false,
+      keep_alive: false,
+      vm_ipv6: vmIpv6 || null,
+      ...(connectToken ? { connectToken, agentWsUrl } : {}),
     });
 
     // Background VM creation with real progress updates
     const userId = request.userId;
     (async () => {
+      const timer = new BenchmarkTimer(slug, "cp_vm_creation");
       try {
         // Call lifecycle hook for extra kernel args (e.g. LiteLLM config injection)
+        timer.step("lifecycle_hook");
         let extraKernelArgs: string[] = [];
         try {
           extraKernelArgs = await getLifecycleHook().getExtraKernelArgs?.({ vmId: slug, userId }) ?? [];
@@ -180,6 +208,7 @@ export function registerVMRoutes(app: FastifyInstance) {
         // Default firewall rules — allow SSH inbound (matches DB default in insertVM)
         const defaultFirewallRules = [{ proto: "tcp" as const, port: 22, source: "::/0", description: "SSH" }];
 
+        timer.step("remote_create");
         const vmId = await getVMEngine().createAndStartVM({
           slug,
           name: body.name,
@@ -204,23 +233,25 @@ export function registerVMRoutes(app: FastifyInstance) {
           firewallRules: defaultFirewallRules,
           onProgress: (detail: string) => {
             getDatabase().updateVMStatusDetail(slug, detail);
+            wsHub.broadcast(slug, "", { type: "vm.status", status: "creating", status_detail: detail });
           },
         });
+        timer.step("db_update");
         getDatabase().updateVMInfo(slug, vmId, vmIp, vsockCid, null);
 
         // VM is booted and SSH-ready (vsock signal confirmed). Set running immediately.
         getDatabase().updateVMStatus(slug, "running");
+        wsHub.broadcast(slug, "", { type: "vm.status", status: "running" });
 
         // Track OpenCode readiness (boot-time start in init.sh)
         trackVM(slug, opencodePort, opencodePassword);
 
-        // Register Caddy route now that VM is running
-        try {
-          await getReverseProxy().addRoute(slug, appPort);
-        } catch (err) {
-          console.error(`[vm] Failed to register Caddy route for ${slug}:`, err);
-        }
+        timer.finish();
 
+        // Register Caddy route in background (non-blocking — VM is already running)
+        getReverseProxy().addRoute(slug, appPort).catch((err) => {
+          console.error(`[vm] Failed to register Caddy route for ${slug}:`, err);
+        });
         getDatabase().emitAdminEvent("vm.created", slug, userId, { name: body.name, mem_size_mib: memSizeMib, disk_size_gib: diskSizeGib, ...(repoFullName ? { repo: repoFullName } : {}) });
 
         // Auto-create OpenCode session with initial prompt if provided

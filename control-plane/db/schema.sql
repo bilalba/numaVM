@@ -6,17 +6,17 @@ CREATE TABLE IF NOT EXISTS vms (
   gh_token          TEXT,
   container_id      TEXT,
   vm_ip             TEXT,
-  vsock_cid         INTEGER UNIQUE,
+  vsock_cid         INTEGER,
   vm_pid            INTEGER,
   snapshot_path     TEXT,
-  app_port          INTEGER UNIQUE,
-  ssh_port          INTEGER UNIQUE,
-  opencode_port     INTEGER UNIQUE,
+  app_port          INTEGER,
+  ssh_port          INTEGER,
+  opencode_port     INTEGER,
   opencode_password TEXT,
   status            TEXT NOT NULL DEFAULT 'creating'
                     CHECK(status IN ('creating', 'running', 'stopped', 'paused', 'snapshotted', 'error')),
   created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
-  pages_port        INTEGER UNIQUE,
+  pages_port        INTEGER,
   mem_size_mib      INTEGER NOT NULL DEFAULT 512,
   disk_size_gib     INTEGER NOT NULL DEFAULT 10,
   vm_ipv6           TEXT,
@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS vms (
 CREATE INDEX IF NOT EXISTS idx_vms_owner ON vms(owner_id);
 CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
 -- idx_vms_name unique index is created by migration in client.ts (deduplicates first)
+-- Per-host uniqueness: ports/CIDs are unique within a host, not globally.
+-- COALESCE(host_id, '__local__') groups legacy NULL-host VMs together.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_app_port_per_host
+  ON vms(COALESCE(host_id, '__local__'), app_port) WHERE status != 'error';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_ssh_port_per_host
+  ON vms(COALESCE(host_id, '__local__'), ssh_port) WHERE status != 'error';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_opencode_port_per_host
+  ON vms(COALESCE(host_id, '__local__'), opencode_port) WHERE status != 'error';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vms_vsock_cid_per_host
+  ON vms(COALESCE(host_id, '__local__'), vsock_cid) WHERE status != 'error';
 
 -- Agent sessions (Codex + OpenCode)
 CREATE TABLE IF NOT EXISTS agent_sessions (

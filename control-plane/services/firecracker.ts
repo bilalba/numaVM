@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, unlinkSync,
 import { createConnection as netCreateConnection } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { BenchmarkTimer } from "./benchmark-timer.js";
 
 const execAsync = promisify(exec);
 
@@ -389,6 +390,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   } = params;
 
   const progress = onProgress || (() => {});
+  const timer = new BenchmarkTimer(slug, "fc_vm_creation");
 
   const socketPath = join(getSocketDir(), `fc-${slug}.sock`);
   const tapDev = `tap-${slug}`;
@@ -397,6 +399,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   const snapshotDir = join(dataDir, "snapshot");
 
   progress("Allocating resources");
+  timer.step("setup");
 
   // Clean up any stale socket
   if (existsSync(socketPath)) unlinkSync(socketPath);
@@ -440,6 +443,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   ].join(" ");
 
   progress("Starting Firecracker");
+  timer.step("parallel_setup");
 
   // --- Parallel pre-boot setup ---
   // rootfs_copy, tap_create, env_write, and systemd_run
@@ -497,6 +501,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   );
 
   await Promise.all(setupTasks);
+  timer.step("get_pid_and_wait_socket");
 
   // Get the PID from systemd
   let fcPid = 0;
@@ -511,6 +516,7 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   await waitForSocket(socketPath, 5000);
 
   progress("Configuring VM");
+  timer.step("fc_config");
 
   // Configure VM via REST API
   // 1. Machine config
@@ -548,11 +554,13 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
 
   // 7. Start the VM
   progress("Booting kernel");
+  timer.step("instance_start");
   await fcApi(socketPath, "PUT", "/actions", {
     action_type: "InstanceStart",
   });
 
   // Set up iptables DNAT for port forwarding (SSH handled by ssh-proxy)
+  timer.step("dnat_and_ipv6");
   addDnat(appPort, vmIp, 3000);    // app port
   addDnat(opencodePort, vmIp, 5000); // OpenCode port
 
@@ -595,8 +603,10 @@ export async function createAndStartVM(params: CreateVMParams): Promise<string> 
   // TCP poll with 50ms timeout + 25ms sleep = 75ms per cycle catches it quickly.
   // ARP is pre-flushed in createTap() so no stale cache delays.
   progress("Waiting for VM");
+  timer.step("wait_ssh");
   await waitForTcpReady(vmIp, 22, 30000);
 
+  timer.finish();
   return slug;
 }
 

@@ -28,6 +28,11 @@ export function setRemoteAgentForwarder(forwarder: RemoteAgentForwarder): void {
   remoteForwarder = forwarder;
 }
 
+/** Get the current remote forwarder (used by vms.ts for enriched POST response). */
+export function getRemoteForwarder(): RemoteAgentForwarder | null {
+  return remoteForwarder;
+}
+
 /** Create an agent session on the correct host (local or remote node). */
 export async function createAgentSession(vmId: string, agentType: AgentType, opts: { cwd?: string; prompt?: string }): Promise<any> {
   if (isRemoteVM(vmId)) {

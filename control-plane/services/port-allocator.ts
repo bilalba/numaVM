@@ -13,14 +13,27 @@ const VSOCK_CID_MAX = 65535;
 // VM IP allocation: 172.16.0.0/16 subnet, .1 is gateway
 const VM_IP_BASE_OCTET = 2; // Start from 172.16.0.2
 
+const LOCAL_HOST_KEY = "__local__";
+
 // In-flight reservations: ports allocated but not yet committed to DB.
 // Prevents concurrent allocateResources() calls from returning the same port.
 // Each entry auto-expires after 60s in case the VM creation fails without cleanup.
 const RESERVATION_TTL_MS = 60_000;
-const inflightApp = new Map<number, number>();    // port → expiry timestamp
-const inflightSsh = new Map<number, number>();
-const inflightOpencode = new Map<number, number>();
-const inflightCids = new Map<number, number>();
+
+// Per-host in-flight maps: outer key = hostId (or "__local__"), inner = port → expiry
+const inflightApp = new Map<string, Map<number, number>>();
+const inflightSsh = new Map<string, Map<number, number>>();
+const inflightOpencode = new Map<string, Map<number, number>>();
+const inflightCids = new Map<string, Map<number, number>>();
+
+function getHostMap(outer: Map<string, Map<number, number>>, hostKey: string): Map<number, number> {
+  let m = outer.get(hostKey);
+  if (!m) {
+    m = new Map();
+    outer.set(hostKey, m);
+  }
+  return m;
+}
 
 function pruneExpired(m: Map<number, number>): void {
   const now = Date.now();
@@ -34,11 +47,12 @@ function reserveInflight(m: Map<number, number>, value: number): void {
 }
 
 /** Release in-flight reservations for a set of ports/CID (called after DB insert or on failure). */
-export function releaseReservation(resources: { appPort: number; sshPort: number; opencodePort: number; vsockCid: number }): void {
-  inflightApp.delete(resources.appPort);
-  inflightSsh.delete(resources.sshPort);
-  inflightOpencode.delete(resources.opencodePort);
-  inflightCids.delete(resources.vsockCid);
+export function releaseReservation(resources: { appPort: number; sshPort: number; opencodePort: number; vsockCid: number }, hostId?: string): void {
+  const hostKey = hostId ?? LOCAL_HOST_KEY;
+  getHostMap(inflightApp, hostKey).delete(resources.appPort);
+  getHostMap(inflightSsh, hostKey).delete(resources.sshPort);
+  getHostMap(inflightOpencode, hostKey).delete(resources.opencodePort);
+  getHostMap(inflightCids, hostKey).delete(resources.vsockCid);
 }
 
 function nextAvailable(used: Set<number>, base: number): number {
@@ -49,39 +63,56 @@ function nextAvailable(used: Set<number>, base: number): number {
   throw new Error(`No available ports in range ${base}-${max}`);
 }
 
-export function allocatePorts(): { appPort: number; sshPort: number; opencodePort: number } {
+export function allocatePorts(hostId?: string): { appPort: number; sshPort: number; opencodePort: number } {
+  const hostKey = hostId ?? LOCAL_HOST_KEY;
+
+  const appMap = getHostMap(inflightApp, hostKey);
+  const sshMap = getHostMap(inflightSsh, hostKey);
+  const ocMap = getHostMap(inflightOpencode, hostKey);
+
   // Prune expired in-flight reservations
-  pruneExpired(inflightApp);
-  pruneExpired(inflightSsh);
-  pruneExpired(inflightOpencode);
+  pruneExpired(appMap);
+  pruneExpired(sshMap);
+  pruneExpired(ocMap);
 
-  const rows = getDatabase().getUsedPorts();
+  // Query DB scoped to this host
+  const rows = hostId
+    ? getDatabase().getUsedPortsByHost(hostId)
+    : getDatabase().getUsedPorts();
 
-  const usedApp = new Set([...rows.map((r) => r.app_port), ...inflightApp.keys()]);
-  const usedSsh = new Set([...rows.map((r) => r.ssh_port), ...inflightSsh.keys()]);
-  const usedOpencode = new Set([...rows.map((r) => r.opencode_port), ...inflightOpencode.keys()]);
+  const usedApp = new Set([...rows.map((r) => r.app_port), ...appMap.keys()]);
+  const usedSsh = new Set([...rows.map((r) => r.ssh_port), ...sshMap.keys()]);
+  const usedOpencode = new Set([...rows.map((r) => r.opencode_port), ...ocMap.keys()]);
 
   const appPort = nextAvailable(usedApp, APP_PORT_BASE);
   const sshPort = nextAvailable(usedSsh, SSH_PORT_BASE);
   const opencodePort = nextAvailable(usedOpencode, OPENCODE_PORT_BASE);
 
   // Reserve so concurrent calls get different ports
-  reserveInflight(inflightApp, appPort);
-  reserveInflight(inflightSsh, sshPort);
-  reserveInflight(inflightOpencode, opencodePort);
+  reserveInflight(appMap, appPort);
+  reserveInflight(sshMap, sshPort);
+  reserveInflight(ocMap, opencodePort);
 
   return { appPort, sshPort, opencodePort };
 }
 
 /**
  * Allocate a vsock CID for a new VM.
+ * When hostId is provided, scopes to that host (different hosts can reuse CIDs).
  */
-export function allocateCid(): number {
-  pruneExpired(inflightCids);
-  const usedCids = new Set([...getDatabase().getUsedCids(), ...inflightCids.keys()]);
+export function allocateCid(hostId?: string): number {
+  const hostKey = hostId ?? LOCAL_HOST_KEY;
+  const cidMap = getHostMap(inflightCids, hostKey);
+  pruneExpired(cidMap);
+
+  const dbCids = hostId
+    ? getDatabase().getUsedCidsByHost(hostId)
+    : getDatabase().getUsedCids();
+  const usedCids = new Set([...dbCids, ...cidMap.keys()]);
+
   for (let cid = VSOCK_CID_START; cid <= VSOCK_CID_MAX; cid++) {
     if (!usedCids.has(cid)) {
-      reserveInflight(inflightCids, cid);
+      reserveInflight(cidMap, cid);
       return cid;
     }
   }
