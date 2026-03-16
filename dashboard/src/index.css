@@ -21,7 +21,7 @@
   --background: #1a1a1a;
   --foreground: #e0e0e0;
   --muted: #888888;
-  --panel-chat: #222222;
+  --panel-chat: #1e1e1e;
   --panel-sidebar: #1e1e1e;
   --white: #2a2a2a;
   --neutral-100: #2a2a2a;
@@ -36,6 +36,7 @@
 @theme {
   --font-sans: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   --font-mono: 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --font-chat: 'Commit Mono', 'Geist Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
@@ -51,6 +52,11 @@
   --color-highlight-bg: var(--highlight-bg);
 }
 
+html, body {
+  overflow: hidden;
+  height: 100dvh;
+}
+
 @keyframes slideIn {
   from { opacity: 0; transform: translateX(-100%); }
   to { opacity: 1; transform: translateX(0); }
@@ -64,4 +70,39 @@
 @keyframes ellipsis {
   0% { width: 0; }
   100% { width: 1.8em; }
+}
+
+/* Markdown content in chat messages */
+.markdown-content p { margin: 0.5em 0; }
+.markdown-content p:first-child { margin-top: 0; }
+.markdown-content p:last-child { margin-bottom: 0; }
+.markdown-content ul, .markdown-content ol { margin: 0.5em 0; padding-left: 1.5em; }
+.markdown-content li { margin: 0.2em 0; }
+.markdown-content pre { background: var(--white); border: 1px solid var(--neutral-200); padding: 0.5rem 0.75rem; margin: 0.5em 0; font-size: 0.75rem; overflow-x: auto; }
+.markdown-content code { background: var(--white); border: 1px solid var(--neutral-100); padding: 0.1rem 0.35rem; font-size: 0.75rem; }
+.markdown-content pre code { background: none; border: none; padding: 0; }
+.markdown-content strong { font-weight: 600; }
+.markdown-content h1, .markdown-content h2, .markdown-content h3 { font-weight: 600; margin: 0.75em 0 0.25em; }
+.markdown-content h1 { font-size: 1.1em; }
+.markdown-content h2 { font-size: 1em; }
+.markdown-content h3 { font-size: 0.95em; }
+.markdown-content blockquote { border-left: 2px solid var(--neutral-300); padding-left: 0.75em; margin: 0.5em 0; color: var(--neutral-500); }
+.markdown-content a { text-decoration: underline; text-underline-offset: 2px; }
+.markdown-content hr { border: none; border-top: 1px solid var(--neutral-200); margin: 0.75em 0; }
+
+/* Agent working wave animation */
+.agent-working-wave {
+  display: inline;
+  letter-spacing: 0;
+}
+
+.agent-wave-char {
+  display: inline-block;
+  color: var(--neutral-400);
+  animation: waveContrast 1.4s ease-in-out infinite;
+}
+
+@keyframes waveContrast {
+  0%, 100% { color: var(--neutral-400); }
+  50% { color: var(--foreground); }
 }

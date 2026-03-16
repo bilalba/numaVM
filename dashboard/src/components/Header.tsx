@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useUser } from "./UserProvider";
 import { ThemeToggle } from "./ThemeToggle";
+import { useVMHeader } from "./VMHeaderContext";
 
 function getLogoutUrl(): string {
   const apiUrl = import.meta.env.VITE_API_URL || "//api.localhost";
@@ -29,11 +30,23 @@ function Avatar({ user }: { user: { email: string; avatar_url?: string; name?: s
   );
 }
 
+const statusColors: Record<string, string> = {
+  running: "bg-green-500",
+  creating: "bg-yellow-500",
+  stopped: "bg-neutral-400",
+  error: "bg-red-500",
+  snapshotted: "bg-blue-500",
+  paused: "bg-blue-500",
+};
+
 export function Header() {
   const { user, loading } = useUser();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const location = useLocation();
+  const isVMDetail = location.pathname.startsWith("/vm/");
+  const { vm: vmHeader } = useVMHeader();
 
   useEffect(() => {
     if (!open) return;
@@ -48,10 +61,48 @@ export function Header() {
 
   return (
     <header className="flex items-center justify-between px-4 py-2 text-xs bg-background">
-      <Link to="/" className="text-foreground hover:underline font-medium">
-        NumaVM
-      </Link>
+      {isVMDetail ? (
+        <>
+          <Link to="/" className="sm:hidden flex items-center gap-2 text-foreground min-w-0">
+            <span className="text-base leading-none shrink-0">&larr;</span>
+            {vmHeader && (
+              <>
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColors[vmHeader.status] || "bg-neutral-400"}`} />
+                <span className="text-sm font-semibold truncate">{vmHeader.name}</span>
+              </>
+            )}
+          </Link>
+          <Link to="/" className="hidden sm:inline text-foreground hover:underline font-medium">NumaVM</Link>
+        </>
+      ) : (
+        <Link to="/" className="text-foreground hover:underline font-medium">NumaVM</Link>
+      )}
       <div className="flex items-center gap-2">
+        {isVMDetail && vmHeader && (
+          <div className="sm:hidden flex items-center gap-1.5 text-neutral-500">
+            <span className="capitalize">{vmHeader.status}</span>
+            <span>&middot;</span>
+            <span>
+              {vmHeader.memSizeMib >= 1024
+                ? `${(vmHeader.memSizeMib / 1024).toFixed(vmHeader.memSizeMib % 1024 ? 2 : 0)} GB`
+                : `${vmHeader.memSizeMib} MB`}
+            </span>
+            {vmHeader.status === "running" && vmHeader.role === "owner" && (
+              <>
+                <span>&middot;</span>
+                <button
+                  onClick={() => {
+                    if (!window.confirm(`Pause "${vmHeader.name}"? The VM will be snapshotted and can be resumed later.`)) return;
+                    navigate("/", { state: { pausingVmId: vmHeader.vmId, pausingVmName: vmHeader.name } });
+                  }}
+                  className="underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
+                >
+                  Pause
+                </button>
+              </>
+            )}
+          </div>
+        )}
         <ThemeToggle />
       {!loading && user && (
         <div ref={ref} className="relative">

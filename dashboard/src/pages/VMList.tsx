@@ -444,6 +444,7 @@ export function VMList() {
           <form
             onSubmit={handleCreate}
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setShowCreate(false); resetRepoState(); } }}
             className="bg-panel-chat border border-neutral-200 p-6 w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto"
           >
             <h2 className="text-sm font-semibold mb-4">New VM</h2>

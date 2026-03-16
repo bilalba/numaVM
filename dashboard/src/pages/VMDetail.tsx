@@ -8,6 +8,7 @@ import { AgentTab } from "../components/AgentTab";
 import { AccessPanel } from "../components/AccessPanel";
 import { FilesTab } from "../components/FilesTab";
 import { FirewallPanel } from "../components/FirewallPanel";
+import { useVMHeader } from "../components/VMHeaderContext";
 
 type TabId = "terminal" | "codex" | "opencode" | "files" | "access" | "firewall";
 
@@ -39,6 +40,11 @@ export function VMDetail() {
   const { user } = useUser();
   const webTerminalEnabled = user?.web_terminal_enabled !== false;
   const nodeRef = useRef<NodeConnection | null>(null);
+  const lastAgentTab = useRef<"opencode" | "codex">("opencode");
+  const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 });
+  const agentDropdownRef = useRef<HTMLDivElement>(null);
+  const { setVM: setVMHeader } = useVMHeader();
 
   useEffect(() => {
     if (!slug) return;
@@ -88,6 +94,24 @@ export function VMDetail() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [slug]);
+
+  // Sync VM name/status to header context
+  useEffect(() => {
+    if (vm) setVMHeader({ name: vm.name, status: vm.status, memSizeMib: vm.mem_size_mib, role: vm.role, vmId: vm.id });
+    return () => setVMHeader(null);
+  }, [vm?.name, vm?.status]);
+
+  // Close agent dropdown on outside click
+  useEffect(() => {
+    if (!agentDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (agentDropdownRef.current && !agentDropdownRef.current.contains(e.target as Node)) {
+        setAgentDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [agentDropdownOpen]);
 
   // Fetch quota for keep-alive RAM info on Access tab
   useEffect(() => {
@@ -152,10 +176,19 @@ export function VMDetail() {
     { id: "firewall", label: "IPv6" },
   ];
 
+  // Mobile tabs — OpenCode/Codex handled by dropdown, Preview is external link
+  const mobileTabs: { id: TabId; label: string }[] = [
+    ...(webTerminalEnabled ? [{ id: "terminal" as TabId, label: "Terminal" }] : []),
+    { id: "files", label: "Files" },
+    { id: "access", label: "Access" },
+    { id: "firewall", label: "IPv6" },
+  ];
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-8 flex flex-col h-[calc(100dvh-33px)]">
-      {/* Header */}
-      <div className="mb-4 sm:mb-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-1 sm:py-8 flex flex-col h-[calc(100dvh-33px)] overflow-hidden">
+
+      {/* Desktop header */}
+      <div className="mb-4 sm:mb-6 hidden sm:block">
         <div className="flex items-center gap-3">
           <Link to="/" className="text-xs text-neutral-500 underline underline-offset-4 transition-opacity hover:opacity-60 shrink-0">
             &larr; VMs
@@ -170,7 +203,7 @@ export function VMDetail() {
             rel="noopener noreferrer"
             className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 shrink-0"
           >
-            Visit
+            Preview
           </a>
           <div className="flex items-center gap-2 text-xs ml-auto shrink-0">
             {vm.repo_url && (
@@ -268,15 +301,89 @@ export function VMDetail() {
         </div>
       )}
 
-      {/* Tab bar — scrollable on mobile */}
-      <div className="flex border-b border-neutral-200 mb-4 sm:mb-6 overflow-x-auto overflow-y-hidden -mx-4 px-4 sm:mx-0 sm:px-0">
+      {/* Desktop tab bar */}
+      <div className="hidden sm:flex border-b border-neutral-200 mb-4 sm:mb-6">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`px-3 sm:px-4 py-2 text-xs transition-opacity cursor-pointer -mb-px whitespace-nowrap shrink-0 ${
+            className={`px-4 py-2 text-xs transition-opacity cursor-pointer -mb-px whitespace-nowrap shrink-0 ${
               activeTab === tab.id
                 ? "font-semibold opacity-100 border-b border-black"
+                : "opacity-60 hover:opacity-80"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Mobile tab bar */}
+      <div className="flex sm:hidden border-b border-neutral-200 mb-1 -mx-4 px-4">
+        {/* OpenCode dropdown */}
+        <div ref={agentDropdownRef} className="relative shrink-0 -mb-px">
+          <button
+            onClick={(e) => {
+              const isAgentTab = activeTab === "opencode" || activeTab === "codex";
+              if (!isAgentTab) {
+                // First click: switch to the last used agent tab
+                setActiveTab(lastAgentTab.current);
+                return;
+              }
+              // Second click (already on agent tab): toggle dropdown
+              if (!agentDropdownOpen) {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setDropdownPos({ top: rect.bottom + 4, left: rect.left });
+              }
+              setAgentDropdownOpen(!agentDropdownOpen);
+            }}
+            className={`px-3 py-2 text-xs transition-opacity cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+              activeTab === "opencode" || activeTab === "codex"
+                ? "font-semibold opacity-100 border-b border-foreground"
+                : "opacity-60 hover:opacity-80"
+            }`}
+          >
+            {activeTab === "codex" ? "Codex" : "OpenCode"}
+            <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          {agentDropdownOpen && (
+            <div
+              className="fixed bg-surface border border-neutral-200 rounded shadow-sm py-1 z-50 min-w-[120px]"
+              style={{ top: dropdownPos.top, left: dropdownPos.left }}
+            >
+              <button
+                onClick={() => { lastAgentTab.current = "opencode"; setActiveTab("opencode"); setAgentDropdownOpen(false); }}
+                className={`w-full text-left px-3 py-1.5 text-xs cursor-pointer hover:bg-neutral-100 ${activeTab === "opencode" ? "font-semibold" : ""}`}
+              >
+                OpenCode
+              </button>
+              <button
+                onClick={() => { lastAgentTab.current = "codex"; setActiveTab("codex"); setAgentDropdownOpen(false); }}
+                className={`w-full text-left px-3 py-1.5 text-xs cursor-pointer hover:bg-neutral-100 ${activeTab === "codex" ? "font-semibold" : ""}`}
+              >
+                Codex
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Preview — opens in new tab, never becomes active */}
+        <button
+          onClick={() => window.open(vm.url, "_blank")}
+          className="px-3 py-2 text-xs transition-opacity cursor-pointer -mb-px whitespace-nowrap opacity-60 hover:opacity-80 flex items-center gap-1"
+        >
+          Preview
+          <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none"><path d="M4 2h6v6M10 2L4.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+
+        {/* Remaining tabs */}
+        {mobileTabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-3 py-2 text-xs transition-opacity cursor-pointer -mb-px whitespace-nowrap ${
+              activeTab === tab.id
+                ? "font-semibold opacity-100 border-b border-foreground"
                 : "opacity-60 hover:opacity-80"
             }`}
           >

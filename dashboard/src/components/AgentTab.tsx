@@ -67,6 +67,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
   const [selectedModel, setSelectedModel] = useState("");
   const [openCodeProviders, setOpenCodeProviders] = useState<OpenCodeProvider[]>([]);
   const [openCodePopular, setOpenCodePopular] = useState<OpenCodePopularProvider[]>([]);
+  const [openCodeDefaults, setOpenCodeDefaults] = useState<Record<string, string>>({});
   const [selectedOpenCodeModel, setSelectedOpenCodeModel] = useState("");
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -77,6 +78,8 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
     return `/home/dev/${safe}`;
   });
   const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [showNewSessionModal, setShowNewSessionModal] = useState(false);
+  const [newSessionExpanded, setNewSessionExpanded] = useState(false);
   const [folderPath, setFolderPath] = useState("/home/dev");
   const [folderEntries, setFolderEntries] = useState<FileEntry[]>([]);
   const [loadingFolders, setLoadingFolders] = useState(false);
@@ -95,6 +98,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
     authError?: string;
   }>({ checked: false, authenticated: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const initTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const { toast } = useToast();
   const { isOpen: paletteOpen, open: openPalette, close: closePalette } = useCommandPalette();
@@ -167,32 +171,56 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
         let pendingText = "";
         let pendingReasoning = "";
         let sawReady = false;
+        let sawContent = false;
+        // Track running tools: started tools minus completed ones
+        const toolMap = new Map<string, { tool: string; partId: string; input: unknown }>();
         for (const evt of result.events) {
           const e = evt.data as any;
           switch (evt.type) {
             case "message.delta":
               pendingText += e.text || "";
+              sawContent = true;
               break;
             case "reasoning.delta":
               pendingReasoning += e.text || "";
+              sawContent = true;
               break;
             case "turn.started":
               setSessionStatus("busy");
+              sawContent = true;
               break;
             case "session.progress":
               if (e.step === "ready") sawReady = true;
+              break;
+            case "tool.started": {
+              const partId = e.partId || "";
+              toolMap.set(partId, { tool: e.tool || "tool", partId, input: e.input });
+              break;
+            }
+            case "tool.updated": {
+              const existing = toolMap.get(e.partId || "");
+              if (existing) existing.input = e.input;
+              break;
+            }
+            case "tool.completed":
+              toolMap.delete(e.partId || "");
               break;
           }
         }
         if (pendingText) setStreamingText(pendingText);
         if (pendingReasoning) setReasoningText(pendingReasoning);
-        // Recover from missed session.progress ready event (WS reconnection race)
-        if (sawReady) {
+        // Restore running tools from event log
+        if (toolMap.size > 0) {
+          setRunningTools(Array.from(toolMap.values()));
+        }
+        // Clear "Initializing..." if we saw content events (turn.started, message.delta, etc.)
+        // or the explicit session.progress "ready" event
+        if (sawReady || sawContent) {
           initTimeoutsRef.current.forEach(clearTimeout);
           initTimeoutsRef.current = [];
           setCreating(false);
           setInitProgress(null);
-          setSessionStatus("idle");
+          if (sawReady) setSessionStatus("idle");
         }
       }
     }).catch(() => {}); // Best effort — WS will deliver live events
@@ -243,6 +271,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
     promise.then((data) => {
       setOpenCodeProviders(data.connected || []);
       setOpenCodePopular(data.popular || []);
+      setOpenCodeDefaults(data.default || {});
     }).catch(() => {});
   }, [vmId, agentType, opencodeReady, nodeReady]);
 
@@ -479,6 +508,12 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
           setRunningTools((prev) => [...prev, { tool: event.tool || "tool", partId: event.partId, input: event.input }]);
           break;
 
+        case "tool.updated":
+          setRunningTools((prev) => prev.map((t) =>
+            t.partId && t.partId === event.partId ? { ...t, input: event.input } : t
+          ));
+          break;
+
         case "tool.completed":
           setRunningTools((prev) => {
             // Remove by partId for precise matching, fall back to tool name
@@ -565,6 +600,54 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
           }
           break;
 
+        case "file.read":
+          setMessages((prev) => [...prev, {
+            id: `file-${Date.now()}`,
+            session_id: activeSessionId || "",
+            role: "tool",
+            content: event.path || "",
+            metadata: JSON.stringify({ tool: "file.read", input: { path: event.path, lineStart: event.lineStart, lineEnd: event.lineEnd, symbolName: event.symbolName } }),
+            created_at: new Date().toISOString(),
+          }]);
+          break;
+
+        case "patch.created":
+          setMessages((prev) => [...prev, {
+            id: `patch-${Date.now()}`,
+            session_id: activeSessionId || "",
+            role: "tool",
+            content: (event.files || []).join("\n"),
+            metadata: JSON.stringify({ tool: "patch", input: { hash: event.hash, fileCount: (event.files || []).length } }),
+            created_at: new Date().toISOString(),
+          }]);
+          break;
+
+        case "snapshot.created":
+          // Git checkpoint hash — no UI value, silently ignore
+          break;
+
+        case "subtask.updated":
+          setMessages((prev) => [...prev, {
+            id: `subtask-${Date.now()}`,
+            session_id: activeSessionId || "",
+            role: "system",
+            content: `Subtask (${event.agent || "agent"}): ${event.description || ""}`,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          }]);
+          break;
+
+        case "agent.updated":
+          setMessages((prev) => [...prev, {
+            id: `agent-${Date.now()}`,
+            session_id: activeSessionId || "",
+            role: "system",
+            content: `Agent: ${event.name || ""}`,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          }]);
+          break;
+
         case "error":
           if (event.code === "init_error") {
             initTimeoutsRef.current.forEach(clearTimeout);
@@ -593,9 +676,15 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText, reasoningText, runningTools, approvals, questions, initProgress]);
 
+  // Focus textarea when switching sessions or opening a new one
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, [activeSessionId]);
+
   const handleCreateSession = async (promptOverride?: string) => {
     setCreating(true);
     setInitProgress("Initializing...");
+    setNewSessionExpanded(false);
     try {
       // Use override prompt (from auto-create) or capture from input
       const prompt = promptOverride?.trim() || inputText.trim() || undefined;
@@ -631,7 +720,14 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
       setQuestions([]);
       setTodoItems([]);
       setSessionStatus("busy");
-      setModelInfo(null);
+      // Set model info immediately from the user's selection instead of waiting for SSE echo
+      if (agentType === "opencode" && (providerID || modelID)) {
+        setModelInfo({ model: modelID, provider: providerID });
+      } else if (agentType === "codex" && selectedModel) {
+        setModelInfo({ model: selectedModel });
+      } else {
+        setModelInfo(null);
+      }
 
       // Connect WS + HTTP: direct to node agent if remote, or CP if local
       if (node) {
@@ -913,8 +1009,25 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
     }
   }
 
+  // Resolve the default model name — prefer litellm provider
+  const defaultOpenCodeModelLabel = (() => {
+    const preferredOrder = ["litellm", ...openCodeProviders.filter((p) => p.id !== "litellm").map((p) => p.id)];
+    for (const pid of preferredOrder) {
+      const provider = openCodeProviders.find((p) => p.id === pid);
+      if (!provider) continue;
+      const defaultModelId = openCodeDefaults[pid];
+      if (defaultModelId) {
+        const model = provider.models.find((m) => m.id === defaultModelId);
+        if (model) return model.name || model.id;
+      }
+    }
+    return "Default";
+  })();
+
   // Get display name for selected OpenCode model
-  const selectedOpenCodeModelLabel = openCodeModelOptions.find((o) => o.value === selectedOpenCodeModel)?.label || "Default";
+  const selectedOpenCodeModelLabel = selectedOpenCodeModel
+    ? openCodeModelOptions.find((o) => o.value === selectedOpenCodeModel)?.label || "Default"
+    : defaultOpenCodeModelLabel;
 
   const modelOptions = agentType === "codex" ? codexModelOptions : [{ value: "", label: "Default" }, ...openCodeModelOptions];
 
@@ -1076,99 +1189,137 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
 
       {/* Session sidebar — hidden on mobile (use History button), vertical sidebar on desktop */}
       <div className="hidden md:flex md:w-56 shrink-0 bg-panel-sidebar border border-neutral-200 flex-col">
-        <div className="p-3 border-b border-neutral-200 flex md:flex-col items-center md:items-stretch gap-2">
-          {agentType === "opencode" ? (
-            <div className="relative min-w-0 flex-1 md:flex-none md:w-full">
-              <button
-                onClick={() => setShowModelPicker(!showModelPicker)}
-                className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground text-left cursor-pointer hover:border-foreground transition-colors truncate"
-              >
-                {selectedOpenCodeModelLabel}
-              </button>
-              {showModelPicker && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowModelPicker(false)} />
-                  <div className="absolute left-0 top-full mt-1 z-50 w-64 bg-surface border border-neutral-200 shadow-lg max-h-80 overflow-y-auto">
-                    {/* Default option */}
-                    <button
-                      onClick={() => { setSelectedOpenCodeModel(""); setShowModelPicker(false); }}
-                      className={`w-full text-left px-3 py-2 text-xs hover:bg-neutral-100 cursor-pointer ${!selectedOpenCodeModel ? "font-semibold" : ""}`}
-                    >
-                      Default
-                    </button>
-                    {/* Connected providers with models */}
-                    {openCodeProviders.map((provider) => (
-                      <div key={provider.id}>
-                        <div className="px-3 pt-3 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider">
-                          {provider.name || provider.id}
-                        </div>
-                        {provider.models.map((model) => {
-                          const val = `${provider.id}:${model.id}`;
-                          return (
-                            <button
-                              key={val}
-                              onClick={() => { setSelectedOpenCodeModel(val); setShowModelPicker(false); }}
-                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 cursor-pointer flex items-center justify-between ${selectedOpenCodeModel === val ? "font-semibold" : ""}`}
-                            >
-                              <span>{model.name || model.id}</span>
-                              {selectedOpenCodeModel === val && <span className="text-neutral-400">&#10003;</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ))}
-                    {/* Popular unconnected providers */}
-                    {openCodePopular.length > 0 && (
-                      <>
-                        <div className="px-3 pt-4 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider border-t border-neutral-100 mt-2">
-                          Add provider
-                        </div>
-                        {openCodePopular.map((p) => (
-                          <div
-                            key={p.id}
-                            className="px-3 py-1.5 text-xs text-neutral-400 flex items-center justify-between"
-                            title={`Set ${p.env[0] || "API key"} in the VM terminal`}
-                          >
-                            <span>{p.name}</span>
-                            <span className="text-[10px]">{p.env[0]?.replace(/_API_KEY|_TOKEN/, "")}</span>
+        <div className="p-3 border-b border-neutral-200">
+          {newSessionExpanded ? (
+            <div className="border border-neutral-200 bg-surface p-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] text-neutral-500 uppercase tracking-wider">Model</label>
+                <button
+                  onClick={() => setNewSessionExpanded(false)}
+                  className="text-neutral-400 cursor-pointer hover:text-foreground transition-colors"
+                  title="Collapse"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+              {agentType === "opencode" ? (
+                <div className="relative min-w-0 w-full">
+                  <button
+                    onClick={() => setShowModelPicker(!showModelPicker)}
+                    className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground text-left cursor-pointer hover:border-foreground transition-colors truncate"
+                  >
+                    {selectedOpenCodeModelLabel}
+                  </button>
+                  {showModelPicker && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setShowModelPicker(false)} />
+                      <div className="absolute left-0 top-full mt-1 z-50 w-64 bg-surface border border-neutral-200 shadow-lg max-h-80 overflow-y-auto">
+                        <button
+                          onClick={() => { setSelectedOpenCodeModel(""); setShowModelPicker(false); }}
+                          className={`w-full text-left px-3 py-2 text-xs hover:bg-neutral-100 cursor-pointer flex items-center justify-between ${!selectedOpenCodeModel ? "font-semibold" : ""}`}
+                        >
+                          <span>{defaultOpenCodeModelLabel}</span>
+                          {!selectedOpenCodeModel && <span className="text-neutral-400">&#10003;</span>}
+                        </button>
+                        {openCodeProviders.map((provider) => (
+                          <div key={provider.id}>
+                            <div className="px-3 pt-3 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider">
+                              {provider.name || provider.id}
+                            </div>
+                            {provider.models.map((model) => {
+                              const val = `${provider.id}:${model.id}`;
+                              return (
+                                <button
+                                  key={val}
+                                  onClick={() => { setSelectedOpenCodeModel(val); setShowModelPicker(false); }}
+                                  className={`w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 cursor-pointer flex items-center justify-between ${selectedOpenCodeModel === val ? "font-semibold" : ""}`}
+                                >
+                                  <span>{model.name || model.id}</span>
+                                  {selectedOpenCodeModel === val && <span className="text-neutral-400">&#10003;</span>}
+                                </button>
+                              );
+                            })}
                           </div>
                         ))}
-                        <p className="px-3 py-2 text-[10px] text-neutral-400 border-t border-neutral-100 mt-1">
-                          Set API keys in terminal to connect
-                        </p>
-                      </>
-                    )}
-                  </div>
-                </>
-              )}
+                        {openCodePopular.length > 0 && (
+                          <>
+                            <div className="px-3 pt-4 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider border-t border-neutral-100 mt-2">
+                              Add provider
+                            </div>
+                            {openCodePopular.map((p) => (
+                              <div
+                                key={p.id}
+                                className="px-3 py-1.5 text-xs text-neutral-400 flex items-center justify-between"
+                                title={`Set ${p.env[0] || "API key"} in the VM terminal`}
+                              >
+                                <span>{p.name}</span>
+                                <span className="text-[10px]">{p.env[0]?.replace(/_API_KEY|_TOKEN/, "")}</span>
+                              </div>
+                            ))}
+                            <p className="px-3 py-2 text-[10px] text-neutral-400 border-t border-neutral-100 mt-1">
+                              Set API keys in terminal to connect
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : modelOptions.length > 1 ? (
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground focus:border-foreground focus:outline-none cursor-pointer"
+                >
+                  {modelOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <div>
+                <label className="text-[10px] text-neutral-500 uppercase tracking-wider">Folder</label>
+                <button
+                  onClick={openFolderPicker}
+                  className="w-full text-xs text-foreground truncate py-1 cursor-pointer hover:opacity-70 transition-opacity text-left"
+                  title={`Working directory: ${sessionCwd}`}
+                >
+                  {sessionCwd.replace("/home/dev/", "~/")}
+                </button>
+              </div>
+              <button
+                onClick={() => handleCreateSession()}
+                disabled={creating || (agentType === "opencode" && !opencodeReady)}
+                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1"
+              >
+                {creating ? `Initializing ${agentLabel}...` : "New Session"}
+              </button>
             </div>
-          ) : modelOptions.length > 1 ? (
-            <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground focus:border-foreground focus:outline-none cursor-pointer min-w-0 flex-1 md:flex-none md:w-full"
-            >
-              {modelOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          <button
-            onClick={openFolderPicker}
-            className="text-[10px] text-neutral-500 truncate py-0.5 cursor-pointer hover:text-foreground transition-colors text-left hidden md:block"
-            title={`Working directory: ${sessionCwd}`}
-          >
-            cwd: {sessionCwd.replace("/home/dev/", "~/")}
-          </button>
-          <button
-            onClick={() => handleCreateSession()}
-            disabled={creating || (agentType === "opencode" && !opencodeReady)}
-            className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1 whitespace-nowrap shrink-0 md:w-full"
-          >
-            {creating ? `Initializing ${agentLabel}...` : "New Session"}
-          </button>
+          ) : (
+            <div className="flex items-center justify-between">
+              <button
+                onClick={() => handleCreateSession()}
+                disabled={creating || (agentType === "opencode" && !opencodeReady)}
+                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1"
+              >
+                {creating ? `Initializing ${agentLabel}...` : "New Session"}
+              </button>
+              <button
+                onClick={() => setNewSessionExpanded(true)}
+                className="text-neutral-400 cursor-pointer hover:text-foreground transition-colors p-1"
+                title="Session settings"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </svg>
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex-col flex-1 overflow-y-auto">
           {sessions.length === 0 ? (
@@ -1217,145 +1368,138 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
         </div>
       </div>
 
-      {/* Mobile controls — New Session + History buttons */}
-      <div className="flex md:hidden items-center gap-2 p-2 bg-panel-sidebar border border-neutral-200">
-        {agentType === "opencode" ? (
-          <div className="relative min-w-0 flex-1">
-            <button
-              onClick={() => setShowModelPicker(!showModelPicker)}
-              className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground text-left cursor-pointer hover:border-foreground transition-colors truncate"
-            >
-              {selectedOpenCodeModelLabel}
-            </button>
-            {showModelPicker && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setShowModelPicker(false)} />
-                <div className="absolute left-0 top-full mt-1 z-50 w-64 bg-surface border border-neutral-200 shadow-lg max-h-80 overflow-y-auto">
-                  <button
-                    onClick={() => { setSelectedOpenCodeModel(""); setShowModelPicker(false); }}
-                    className={`w-full text-left px-3 py-2 text-xs hover:bg-neutral-100 cursor-pointer ${!selectedOpenCodeModel ? "font-semibold" : ""}`}
-                  >
-                    Default
-                  </button>
-                  {openCodeProviders.map((provider) => (
-                    <div key={provider.id}>
-                      <div className="px-3 pt-3 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider">
-                        {provider.name || provider.id}
-                      </div>
-                      {provider.models.map((model) => {
-                        const val = `${provider.id}:${model.id}`;
-                        return (
-                          <button
-                            key={val}
-                            onClick={() => { setSelectedOpenCodeModel(val); setShowModelPicker(false); }}
-                            className={`w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 cursor-pointer flex items-center justify-between ${selectedOpenCodeModel === val ? "font-semibold" : ""}`}
-                          >
-                            <span>{model.name || model.id}</span>
-                            {selectedOpenCodeModel === val && <span className="text-neutral-400">&#10003;</span>}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ))}
-                  {openCodePopular.length > 0 && (
-                    <>
-                      <div className="px-3 pt-4 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider border-t border-neutral-100 mt-2">
-                        Add provider
-                      </div>
-                      {openCodePopular.map((p) => (
-                        <div
-                          key={p.id}
-                          className="px-3 py-1.5 text-xs text-neutral-400 flex items-center justify-between"
-                          title={`Set ${p.env[0] || "API key"} in the VM terminal`}
-                        >
-                          <span>{p.name}</span>
-                          <span className="text-[10px]">{p.env[0]?.replace(/_API_KEY|_TOKEN/, "")}</span>
-                        </div>
-                      ))}
-                      <p className="px-3 py-2 text-[10px] text-neutral-400 border-t border-neutral-100 mt-1">
-                        Set API keys in terminal to connect
-                      </p>
-                    </>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        ) : modelOptions.length > 1 ? (
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground focus:border-foreground focus:outline-none cursor-pointer min-w-0 flex-1"
-          >
-            {modelOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        ) : <div className="flex-1" />}
-        <button
-          onClick={() => handleCreateSession()}
-          disabled={creating || (agentType === "opencode" && !opencodeReady)}
-          className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1 whitespace-nowrap shrink-0"
-        >
-          {creating ? "Creating..." : "New Session"}
-        </button>
+      {/* Mobile controls — History (left) + New Session (right) */}
+      <div className="flex md:hidden items-center justify-between p-2 bg-panel-sidebar border border-neutral-200">
         <button
           onClick={() => setShowHistory(true)}
           className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer py-1 whitespace-nowrap shrink-0"
         >
           History
         </button>
+        <button
+          onClick={() => setShowNewSessionModal(true)}
+          disabled={creating || (agentType === "opencode" && !opencodeReady)}
+          className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1 whitespace-nowrap shrink-0"
+        >
+          {creating ? "Creating..." : "New Session"}
+        </button>
       </div>
+
+      {/* Mobile new session modal */}
+      {showNewSessionModal && (
+        <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center md:hidden" onClick={() => setShowNewSessionModal(false)}>
+          <div className="bg-surface border border-neutral-200 shadow-lg w-[90%] max-w-sm p-4 flex flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold">New Session</h3>
+            <div>
+              <label className="text-[10px] text-neutral-500 uppercase tracking-wider">Model</label>
+              {agentType === "opencode" ? (
+                <div className="relative min-w-0 w-full">
+                  <button
+                    onClick={() => setShowModelPicker(!showModelPicker)}
+                    className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground text-left cursor-pointer hover:border-foreground transition-colors truncate"
+                  >
+                    {selectedOpenCodeModelLabel}
+                  </button>
+                  {showModelPicker && (
+                    <>
+                      <div className="fixed inset-0 z-[60]" onClick={() => setShowModelPicker(false)} />
+                      <div className="absolute left-0 top-full mt-1 z-[70] w-64 bg-surface border border-neutral-200 shadow-lg max-h-80 overflow-y-auto">
+                        <button
+                          onClick={() => { setSelectedOpenCodeModel(""); setShowModelPicker(false); }}
+                          className={`w-full text-left px-3 py-2 text-xs hover:bg-neutral-100 cursor-pointer flex items-center justify-between ${!selectedOpenCodeModel ? "font-semibold" : ""}`}
+                        >
+                          <span>{defaultOpenCodeModelLabel}</span>
+                          {!selectedOpenCodeModel && <span className="text-neutral-400">&#10003;</span>}
+                        </button>
+                        {openCodeProviders.map((provider) => (
+                          <div key={provider.id}>
+                            <div className="px-3 pt-3 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider">
+                              {provider.name || provider.id}
+                            </div>
+                            {provider.models.map((model) => {
+                              const val = `${provider.id}:${model.id}`;
+                              return (
+                                <button
+                                  key={val}
+                                  onClick={() => { setSelectedOpenCodeModel(val); setShowModelPicker(false); }}
+                                  className={`w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 cursor-pointer flex items-center justify-between ${selectedOpenCodeModel === val ? "font-semibold" : ""}`}
+                                >
+                                  <span>{model.name || model.id}</span>
+                                  {selectedOpenCodeModel === val && <span className="text-neutral-400">&#10003;</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ))}
+                        {openCodePopular.length > 0 && (
+                          <>
+                            <div className="px-3 pt-4 pb-1 text-[10px] text-neutral-400 uppercase tracking-wider border-t border-neutral-100 mt-2">
+                              Add provider
+                            </div>
+                            {openCodePopular.map((p) => (
+                              <div
+                                key={p.id}
+                                className="px-3 py-1.5 text-xs text-neutral-400 flex items-center justify-between"
+                                title={`Set ${p.env[0] || "API key"} in the VM terminal`}
+                              >
+                                <span>{p.name}</span>
+                                <span className="text-[10px]">{p.env[0]?.replace(/_API_KEY|_TOKEN/, "")}</span>
+                              </div>
+                            ))}
+                            <p className="px-3 py-2 text-[10px] text-neutral-400 border-t border-neutral-100 mt-1">
+                              Set API keys in terminal to connect
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : modelOptions.length > 1 ? (
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="w-full border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-xs text-foreground focus:border-foreground focus:outline-none cursor-pointer"
+                >
+                  {modelOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
+            <div>
+              <label className="text-[10px] text-neutral-500 uppercase tracking-wider">Folder</label>
+              <button
+                onClick={openFolderPicker}
+                className="w-full text-xs text-foreground truncate py-1 cursor-pointer hover:opacity-70 transition-opacity text-left"
+                title={`Working directory: ${sessionCwd}`}
+              >
+                {sessionCwd.replace("/home/dev/", "~/")}
+              </button>
+            </div>
+            <div className="flex gap-4 mt-1">
+              <button
+                onClick={() => setShowNewSessionModal(false)}
+                className="text-xs underline underline-offset-4 opacity-60 transition-opacity hover:opacity-80 cursor-pointer py-1"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { setShowNewSessionModal(false); handleCreateSession(); }}
+                disabled={creating || (agentType === "opencode" && !opencodeReady)}
+                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 disabled:opacity-30 cursor-pointer py-1"
+              >
+                New Session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Chat area */}
       <div className="flex-1 flex flex-col bg-panel-chat border border-neutral-200 overflow-hidden min-h-0">
-        {/* Header */}
-        <div className="px-3 sm:px-4 py-2 border-b border-neutral-200 flex items-center justify-between">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs font-semibold">{agentLabel}</span>
-            <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                sessionStatus === "busy"
-                  ? "bg-yellow-500 animate-[pulseDot_1s_ease-in-out_infinite]"
-                  : sessionStatus === "error"
-                    ? "bg-red-500"
-                    : (agentType === "opencode" && !opencodeReady)
-                      ? "bg-neutral-400 animate-pulse"
-                      : connected
-                        ? "bg-green-500"
-                        : "bg-neutral-400"
-              }`}
-            />
-            <span className="text-xs text-neutral-500 hidden sm:inline">{agentType === "opencode" && !opencodeReady ? "Waiting for OpenCode..." : initProgress || sessionStatus}</span>
-            {modelInfo?.model && (
-              <span className="text-xs text-neutral-500 ml-2 hidden sm:inline">{modelInfo.model}</span>
-            )}
-            {sessionCwd && (
-              <span className="text-xs text-neutral-400 ml-2 hidden sm:inline truncate max-w-[200px]" title={sessionCwd}>
-                {sessionCwd.replace(/^\/home\/dev\/?/, "~/")}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <button
-              onClick={openPalette}
-              className="text-[10px] text-neutral-400 border border-neutral-200 px-1.5 py-0.5 hover:border-neutral-400 hover:text-neutral-600 cursor-pointer transition-colors hidden sm:inline-flex items-center gap-1"
-              title="Command palette"
-            >
-              <kbd className="text-[9px]">{navigator.platform?.includes("Mac") ? "\u2318" : "Ctrl+"}K</kbd>
-            </button>
-            {sessionStatus === "busy" && (
-              <button
-                onClick={handleStop}
-                className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
-              >
-                Stop
-              </button>
-            )}
-          </div>
-        </div>
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-3 sm:py-4">
@@ -1445,16 +1589,36 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
           </div>
         )}
 
+        {/* Agent working indicator + stop — above input */}
+        {sessionStatus === "busy" && (
+          <div className="px-3 sm:px-4 py-1.5 border-t border-neutral-200 flex items-center justify-between">
+            <span className="text-xs font-medium agent-working-wave">
+              {"Agent working...".split("").map((char, i) => (
+                <span key={i} style={{ animationDelay: `${i * 0.07}s` }} className="agent-wave-char">
+                  {char === " " ? "\u00A0" : char}
+                </span>
+              ))}
+            </span>
+            <button
+              onClick={handleStop}
+              className="text-xs underline underline-offset-4 transition-opacity hover:opacity-60 cursor-pointer"
+            >
+              Stop
+            </button>
+          </div>
+        )}
+
         {/* Input — always visible so users can type a prompt before creating a session */}
         <div className="px-3 sm:px-4 py-2 sm:py-3 border-t border-neutral-200">
           <div className="flex gap-2 sm:gap-3 items-end">
             <textarea
+              ref={textareaRef}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={activeSessionId ? `Message ${agentLabel}...` : `Start a new ${agentLabel} session...`}
               rows={1}
-              className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-base sm:text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none resize-none min-h-[28px] max-h-32"
+              className="flex-1 border-0 border-b border-neutral-300 bg-transparent px-0 py-1 text-sm text-foreground placeholder:text-neutral-500 focus:border-foreground focus:outline-none resize-none min-h-[28px] max-h-32"
             />
             <button
               onClick={activeSessionId ? handleSend : () => handleCreateSession()}
@@ -1465,9 +1629,6 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
             </button>
           </div>
           <div className="flex items-center gap-3 mt-1.5">
-            <p className="text-[10px] text-neutral-500 hidden sm:block">
-              {activeSessionId ? "Shift+Enter for new line" : "Enter to create session with prompt"}
-            </p>
             {agentType === "opencode" && (
               <select
                 value={selectedAgent}
@@ -1479,8 +1640,16 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
                 <option value="general">general</option>
               </select>
             )}
+            {modelInfo?.model && (
+              <span className="text-[10px] text-neutral-400">{modelInfo.model}</span>
+            )}
             {agentType === "codex" && selectedEffort && (
               <span className="text-[10px] text-neutral-400">effort: {selectedEffort}</span>
+            )}
+            {sessionCwd && (
+              <span className="text-[10px] text-neutral-400 truncate max-w-[150px]" title={sessionCwd}>
+                {sessionCwd.replace(/^\/home\/dev\/?/, "~/")}
+              </span>
             )}
           </div>
         </div>

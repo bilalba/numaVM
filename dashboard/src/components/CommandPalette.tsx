@@ -295,7 +295,7 @@ export function CommandPalette({
                 onClick={item.action}
                 onMouseEnter={() => setSelectedIndex(i)}
                 className={`w-full text-left px-3 py-2 flex items-center justify-between cursor-pointer transition-colors ${
-                  i === selectedIndex ? "bg-neutral-100" : "hover:bg-neutral-100"
+                  i === selectedIndex ? "bg-neutral-200" : "hover:bg-neutral-100"
                 }`}
               >
                 <div className="min-w-0">
