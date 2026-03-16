@@ -19,6 +19,7 @@ const statusColors: Record<string, string> = {
   snapshotted: "bg-blue-500",
   paused: "bg-blue-500",
   pausing: "bg-yellow-500",
+  deleting: "bg-red-500",
 };
 
 function VMCardMenu({
@@ -163,6 +164,7 @@ export function VMList() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [ramQuota, setRamQuota] = useState<RamQuota | null>(null);
   const [pausingIds, setPausingIds] = useState<Set<string>>(new Set());
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [githubBannerDismissed, setGithubBannerDismissed] = useState(() => {
     try { return sessionStorage.getItem("github-banner-dismissed") === "1"; } catch { return false; }
   });
@@ -303,6 +305,7 @@ export function VMList() {
   };
 
   const handleDelete = async (vm: VMSummary) => {
+    setDeletingIds((prev) => new Set(prev).add(vm.id));
     try {
       await api.deleteVM(vm.id);
       toast(`Deleted ${vm.name}`, "success");
@@ -310,6 +313,8 @@ export function VMList() {
       loadQuota();
     } catch (err: any) {
       toast(err.message, "error");
+    } finally {
+      setDeletingIds((prev) => { const next = new Set(prev); next.delete(vm.id); return next; });
     }
   };
 
@@ -379,7 +384,7 @@ export function VMList() {
       setInitialPrompt("");
       setShowCreate(false);
       resetRepoState();
-      navigate(`/vm/${newVM.id}?tab=opencode`, { state: { pendingSession: !!prompt } });
+      navigate(`/vm/${newVM.id}?tab=opencode`, { state: { pendingSession: !!prompt, vmData: newVM } });
     } catch (err: any) {
       setError(err.message);
       toast(err.message, "error");
@@ -755,16 +760,17 @@ export function VMList() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {vms.map((vm) => {
             const isPausing = pausingIds.has(vm.id);
-            const displayStatus = isPausing ? "pausing" : vm.status;
+            const isDeleting = deletingIds.has(vm.id);
+            const isBusy = isPausing || isDeleting;
             return (
             <div
               key={vm.id}
-              onClick={() => !isPausing && navigate(`/vm/${vm.id}`)}
-              className={`bg-panel-chat border border-neutral-200 p-5 transition-opacity cursor-pointer ${isPausing ? "opacity-60" : "hover:opacity-80"}`}
+              onClick={() => !isBusy && navigate(`/vm/${vm.id}`)}
+              className={`bg-panel-chat border border-neutral-200 p-5 transition-opacity cursor-pointer ${isBusy ? "opacity-60" : "hover:opacity-80"}`}
             >
               <div className="flex items-center gap-2 mb-2">
                 <span
-                  className={`w-1.5 h-1.5 rounded-full ${isPausing ? "bg-yellow-500 animate-pulse" : statusColors[vm.status] || "bg-neutral-400"}`}
+                  className={`w-1.5 h-1.5 rounded-full ${isDeleting ? "bg-red-500 animate-pulse" : isPausing ? "bg-yellow-500 animate-pulse" : statusColors[vm.status] || "bg-neutral-400"}`}
                 />
                 <span className="text-sm font-semibold truncate flex-1">{vm.name}</span>
                 <VMCardMenu
@@ -776,7 +782,7 @@ export function VMList() {
               </div>
               <p className="text-xs text-neutral-500 mb-3 truncate">{new URL(vm.url).hostname}</p>
               <div className="flex items-center justify-between text-xs text-neutral-500">
-                <span className="capitalize">{isPausing ? "Pausing..." : vm.role}</span>
+                <span className="capitalize">{isDeleting ? "Deleting..." : isPausing ? "Pausing..." : vm.role}</span>
                 <span>
                   {vm.region && <>{vm.region} &middot; </>}
                   {vm.image !== "alpine" && <>{vm.image} &middot; </>}

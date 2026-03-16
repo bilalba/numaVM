@@ -350,7 +350,13 @@ export const api = {
   getVM: (id: string) => apiFetch<VMDetail>(`/vms/${id}`),
 
   createVM: (body: { name: string; gh_repo?: string; mem_size_mib?: number; disk_size_gib?: number; image?: string; initial_prompt?: string }) =>
-    apiFetch<{ id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string }>(
+    apiFetch<{
+      id: string; name: string; url: string; repo_url?: string; ssh_command: string; ssh_port: number; status: string;
+      status_detail: string | null; app_port: number; opencode_port: number; role: string; created_at: string;
+      mem_size_mib: number; disk_size_gib: number; image: string; host_id: string | null;
+      is_public: boolean; keep_alive: boolean; vm_ipv6: string | null;
+      connectToken?: string; agentWsUrl?: string;
+    }>(
       "/vms",
       { method: "POST", body: JSON.stringify(body) }
     ),
@@ -392,8 +398,9 @@ export const api = {
     ),
 
   // Agent session APIs
-  createAgentSession: (vmId: string, agentType: "codex" | "opencode", opts?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy; prompt?: string }) =>
-    apiFetch<AgentSession>(`/vms/${vmId}/agents/${agentType}/sessions`, {
+  createAgentSession: (vmId: string, agentType: "codex" | "opencode", opts?: { model?: string; providerID?: string; modelID?: string; cwd?: string; effort?: ReasoningEffort; approvalPolicy?: ApprovalPolicy; sandboxPolicy?: SandboxPolicy; prompt?: string }, node?: NodeConnection) => {
+    const path = `/vms/${vmId}/agents/${agentType}/sessions`;
+    const init = {
       method: "POST",
       body: JSON.stringify({
         ...(opts?.model ? { model: opts.model } : {}),
@@ -404,7 +411,9 @@ export const api = {
         ...(opts?.sandboxPolicy ? { sandboxPolicy: opts.sandboxPolicy } : {}),
         ...(opts?.prompt ? { prompt: opts.prompt } : {}),
       }),
-    }),
+    };
+    return node ? nodeFetch<AgentSession>(node, path, init) : apiFetch<AgentSession>(path, init);
+  },
 
   listAgentSessions: (vmId: string, agentType: "codex" | "opencode") =>
     apiFetch<{ sessions: AgentSession[] }>(`/vms/${vmId}/agents/${agentType}/sessions`),
@@ -550,7 +559,7 @@ export const api = {
 
   // VM status directly from node (avoids CP round-trip for polling)
   getNodeVMStatus: (node: NodeConnection, vmId: string) =>
-    nodeFetch<{ id: string; status: string; status_detail: string | null }>(node, `/vms/${vmId}/status`),
+    nodeFetch<{ id: string; status: string; status_detail: string | null; vm_ipv6?: string | null }>(node, `/vms/${vmId}/status`),
 
   // Codex models + threads
   getCodexModels: (vmId: string, includeHidden = false) =>

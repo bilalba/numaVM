@@ -166,6 +166,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
       if (result.events.length > 0) {
         let pendingText = "";
         let pendingReasoning = "";
+        let sawReady = false;
         for (const evt of result.events) {
           const e = evt.data as any;
           switch (evt.type) {
@@ -178,10 +179,21 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
             case "turn.started":
               setSessionStatus("busy");
               break;
+            case "session.progress":
+              if (e.step === "ready") sawReady = true;
+              break;
           }
         }
         if (pendingText) setStreamingText(pendingText);
         if (pendingReasoning) setReasoningText(pendingReasoning);
+        // Recover from missed session.progress ready event (WS reconnection race)
+        if (sawReady) {
+          initTimeoutsRef.current.forEach(clearTimeout);
+          initTimeoutsRef.current = [];
+          setCreating(false);
+          setInitProgress(null);
+          setSessionStatus("idle");
+        }
       }
     }).catch(() => {}); // Best effort — WS will deliver live events
   }, []);
@@ -357,6 +369,8 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
       if (!newSessionId) return;
       // Skip if this session was already created by the client (handleCreateSession)
       if (clientCreatedSessionsRef.current.has(newSessionId)) return;
+      // If we're receiving session events, the agent server must be ready
+      if (agentType === "opencode") setOpencodeReady(true);
       setSessions((prev) => [{
         id: newSessionId,
         vm_id: vmId,
@@ -398,7 +412,22 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
         return;
       }
 
+      // Any session event implies the agent server is running (covers missed opencode.ready)
+      if (event.sessionId && agentType === "opencode") setOpencodeReady(true);
+
       if (event.sessionId !== activeSessionId) return;
+
+      // Any content event means initialization is done (covers missed session.progress ready)
+      if (event.type === "turn.started" || event.type === "message.delta" || event.type === "message.completed") {
+        setCreating((prev) => {
+          if (prev) {
+            initTimeoutsRef.current.forEach(clearTimeout);
+            initTimeoutsRef.current = [];
+            setInitProgress(null);
+          }
+          return false;
+        });
+      }
 
       switch (event.type) {
         case "message.delta":
@@ -580,6 +609,8 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
         providerID = p;
         modelID = m.join(":");
       }
+      // Use existing node connection when available (avoids CP round-trip and WS reconnection race)
+      const node = getNode();
       const session = await api.createAgentSession(vmId, agentType, {
         model: selectedModel || undefined,
         providerID,
@@ -589,7 +620,7 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
         approvalPolicy: agentType === "codex" ? approvalPolicy : undefined,
         sandboxPolicy: agentType === "codex" ? sandboxPolicy : undefined,
         prompt,
-      });
+      }, node || undefined);
       clientCreatedSessionsRef.current.add(session.id);
       setSessions((prev) => [session, ...prev]);
       setActiveSessionId(session.id);
@@ -603,9 +634,15 @@ export function AgentTab({ vmId, agentType, vmName, vmStatus, pendingSession, ho
       setModelInfo(null);
 
       // Connect WS + HTTP: direct to node agent if remote, or CP if local
-      if (session.connectToken && session.agentWsUrl && session.connectTokenExpiresAt) {
+      if (node) {
+        // Already connected to node — WS is live, no reconnection needed.
+        // Events (session.progress, turn.*, message.*) will arrive on the existing WS.
+      } else if (session.connectToken && session.agentWsUrl && session.connectTokenExpiresAt) {
         nodeRef.current = { httpUrl: wsUrlToHttp(session.agentWsUrl), token: session.connectToken };
         reconnectToNode(session.agentWsUrl, session.connectToken, session.connectTokenExpiresAt);
+        // Catch up from event log after WS connects — recovers session.progress events
+        // that may have fired during the WS reconnection gap
+        catchUpFromEventLog(nodeRef.current, vmId, session.id);
       } else {
         nodeRef.current = null;
         connectToCP();

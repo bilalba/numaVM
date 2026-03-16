@@ -42,6 +42,38 @@ export function VMDetail() {
 
   useEffect(() => {
     if (!slug) return;
+    const state = location.state as { vmData?: any } | null;
+
+    // If navigating from create, use vmData from state (skip GET /vms/:id)
+    if (state?.vmData) {
+      const d = state.vmData;
+      const vmDetail: VMDetailType = {
+        id: d.id, name: d.name, status: d.status, status_detail: d.status_detail ?? null,
+        url: d.url, ...(d.repo_url ? { repo_url: d.repo_url } : {}),
+        ssh_command: d.ssh_command, ssh_port: d.ssh_port, app_port: d.app_port, opencode_port: d.opencode_port,
+        vm_status: null, role: d.role || "owner", created_at: d.created_at,
+        mem_size_mib: d.mem_size_mib, image: d.image, image_version: d.image_version ?? 1,
+        is_public: !!d.is_public, keep_alive: !!d.keep_alive,
+        vm_ipv6: d.vm_ipv6 || null, host_id: d.host_id || null,
+      };
+      setVM(vmDetail);
+      setLoading(false);
+
+      // Set nodeRef from connect token (skip agent-connect-token call)
+      if (d.connectToken && d.agentWsUrl) {
+        nodeRef.current = { httpUrl: wsUrlToHttp(d.agentWsUrl), token: d.connectToken };
+      } else if (d.host_id) {
+        api.refreshConnectToken(d.id).then((data) => {
+          nodeRef.current = { httpUrl: wsUrlToHttp(data.agentWsUrl), token: data.connectToken };
+        }).catch(() => {});
+      }
+
+      // Clear state so back/forward doesn't reuse stale data
+      window.history.replaceState({ ...state, vmData: undefined }, "");
+      return;
+    }
+
+    // Normal load (page refresh / direct URL)
     api
       .getVM(slug)
       .then((vmData) => {
@@ -69,12 +101,13 @@ export function VMDetail() {
     if (vm.quota_error || vm.disk_quota_error || vm.data_quota_error) return; // Don't poll if quota exceeded — wake won't proceed
     if (vm.status !== "snapshotted" && vm.status !== "paused" && vm.status !== "creating") return;
 
+    const pollMs = vm.status === "creating" ? 1000 : 3000;
     const interval = setInterval(() => {
       const node = nodeRef.current;
       if (node) {
         // Poll status directly from node (avoids CP round-trip)
         api.getNodeVMStatus(node, vm.id).then((status) => {
-          setVM((prev) => prev ? { ...prev, status: status.status, status_detail: status.status_detail } : prev);
+          setVM((prev) => prev ? { ...prev, status: status.status, status_detail: status.status_detail, ...(status.vm_ipv6 ? { vm_ipv6: status.vm_ipv6 } : {}) } : prev);
           if (status.status === "running") clearInterval(interval);
         }).catch(() => {});
       } else {
@@ -84,7 +117,7 @@ export function VMDetail() {
           if (updated.status === "running" || updated.quota_error || updated.disk_quota_error || updated.data_quota_error) clearInterval(interval);
         }).catch(() => {});
       }
-    }, 3000);
+    }, pollMs);
 
     return () => clearInterval(interval);
   }, [slug, vm?.status]);
