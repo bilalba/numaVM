@@ -1,4 +1,16 @@
+import { useMemo } from "react";
+import { marked } from "marked";
 import type { AgentMessage } from "../lib/api";
+
+// Configure marked for safe, minimal output
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+});
+
+function renderMarkdown(text: string): string {
+  return marked.parse(text, { async: false }) as string;
+}
 
 interface ChatMessageProps {
   message: AgentMessage;
@@ -20,6 +32,36 @@ export function ChatMessage({ message }: ChatMessageProps) {
   if (message.role === "tool") {
     const toolInput = metadata?.input;
     const toolName = metadata?.tool || "unknown";
+
+    // Compact inline display for file.read events
+    if (toolName === "file.read") {
+      const path = toolInput?.path || message.content;
+      const lineRange = toolInput?.lineStart ? `:${toolInput.lineStart}${toolInput.lineEnd ? `-${toolInput.lineEnd}` : ""}` : "";
+      const symbol = toolInput?.symbolName ? ` (${toolInput.symbolName})` : "";
+      return (
+        <div className="mb-2 ml-2 px-3 py-1.5 text-xs text-neutral-400">
+          Read <span className="text-neutral-500 font-mono">{path}{lineRange}</span>{symbol}
+        </div>
+      );
+    }
+
+    // Collapsible display for patch events
+    if (toolName === "patch") {
+      const fileCount = toolInput?.fileCount || message.content.split("\n").filter(Boolean).length;
+      return (
+        <div className="mb-3 ml-2">
+          <details className="border border-neutral-200 overflow-hidden">
+            <summary className="px-3 py-2 text-xs text-neutral-500 cursor-pointer transition-opacity hover:opacity-60">
+              Modified {fileCount} file{fileCount !== 1 ? "s" : ""}
+            </summary>
+            <pre className="px-3 py-2 text-xs text-neutral-600 overflow-x-auto whitespace-pre-wrap border-t border-neutral-100 max-h-48 bg-surface">
+              {message.content}
+            </pre>
+          </details>
+        </div>
+      );
+    }
+
     // Extract a human-readable summary of the tool input (e.g. bash command)
     const inputSummary = toolInput
       ? (toolInput.command || toolInput.pattern || toolInput.file_path || toolInput.path || toolInput.query || (typeof toolInput === "string" ? toolInput : null))
@@ -64,45 +106,17 @@ export function ChatMessage({ message }: ChatMessageProps) {
 
   // assistant
   return (
-    <div className="flex justify-start mb-3">
-      <div className="max-w-[80%] border border-neutral-100 bg-panel-sidebar px-4 py-2.5 text-sm whitespace-pre-wrap">
-        <AssistantContent content={message.content} />
+    <div className="mb-3">
+      <div className="px-1 py-1 text-sm font-chat">
+        <MarkdownContent content={message.content} />
       </div>
     </div>
   );
 }
 
-function AssistantContent({ content }: { content: string }) {
-  // Basic rendering: preserve code blocks, render inline code
-  const parts = content.split(/(```[\s\S]*?```|`[^`]+`)/g);
-
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part.startsWith("```") && part.endsWith("```")) {
-          const inner = part.slice(3, -3);
-          const newlineIdx = inner.indexOf("\n");
-          const code = newlineIdx >= 0 ? inner.slice(newlineIdx + 1) : inner;
-          return (
-            <pre
-              key={i}
-              className="bg-surface border border-neutral-200 px-3 py-2 my-2 text-xs overflow-x-auto"
-            >
-              {code}
-            </pre>
-          );
-        }
-        if (part.startsWith("`") && part.endsWith("`")) {
-          return (
-            <code key={i} className="bg-surface border border-neutral-100 px-1.5 py-0.5 text-xs">
-              {part.slice(1, -1)}
-            </code>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
-  );
+function MarkdownContent({ content }: { content: string }) {
+  const html = useMemo(() => renderMarkdown(content), [content]);
+  return <div className="markdown-content" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 interface StreamingMessageProps {
@@ -111,11 +125,12 @@ interface StreamingMessageProps {
 
 export function StreamingMessage({ text }: StreamingMessageProps) {
   if (!text) return null;
+  const html = useMemo(() => renderMarkdown(text), [text]);
 
   return (
-    <div className="flex justify-start mb-3">
-      <div className="max-w-[80%] border border-neutral-100 bg-panel-sidebar px-4 py-2.5 text-sm whitespace-pre-wrap">
-        {text}
+    <div className="mb-3">
+      <div className="px-1 py-1 text-sm font-chat">
+        <div className="markdown-content" dangerouslySetInnerHTML={{ __html: html }} />
         <span className="inline-block w-1.5 h-3.5 bg-foreground ml-0.5 animate-[pulseDot_1s_ease-in-out_infinite]" />
       </div>
     </div>
