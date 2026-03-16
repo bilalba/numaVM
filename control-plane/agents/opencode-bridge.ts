@@ -566,7 +566,7 @@ export class OpenCodeBridge implements AgentBridge {
               result: state.error || "Tool error",
             });
           } else {
-            // pending or running — only emit tool.started once per part
+            // pending or running — emit tool.started once, then tool.updated if input arrives later
             if (!this.startedToolParts.has(partId)) {
               this.startedToolParts.add(partId);
               this.emit({
@@ -574,6 +574,14 @@ export class OpenCodeBridge implements AgentBridge {
                 tool: state.title || toolName,
                 partId,
                 input: state.input || {},
+              });
+            } else if (state.input && Object.keys(state.input).length > 0) {
+              // Input arrived in a subsequent update (e.g. bash command now available)
+              this.emit({
+                type: "tool.updated",
+                tool: state.title || toolName,
+                partId,
+                input: state.input,
               });
             }
           }
@@ -587,7 +595,53 @@ export class OpenCodeBridge implements AgentBridge {
             });
           }
         }
-        // Ignore: step-start, subtask, file, snapshot, patch, agent, retry, compaction
+        if (partType === "file") {
+          // FilePart: file reads with path + optional line range
+          const source = part.source || {};
+          const filePath = source.path || part.filename || "";
+          if (filePath) {
+            this.emit({
+              type: "file.read",
+              path: filePath,
+              lineStart: source.text?.start,
+              lineEnd: source.text?.end,
+              symbolName: source.type === "symbol" ? source.symbol : undefined,
+            });
+          }
+        } else if (partType === "patch") {
+          // PatchPart: modified files list + hash
+          const hash = part.hash || "";
+          const files: string[] = Array.isArray(part.files) ? part.files.map((f: any) => typeof f === "string" ? f : f.path || f.name || "") : [];
+          this.emit({ type: "patch.created", hash, files });
+        } else if (partType === "snapshot") {
+          // SnapshotPart: git checkpoint hash
+          const hash = part.snapshot || part.hash || "";
+          if (hash) {
+            this.emit({ type: "snapshot.created", hash });
+          }
+        } else if (partType === "subtask") {
+          // SubtaskPart: sub-agent delegation
+          this.emit({
+            type: "subtask.updated",
+            partId: part.id || "",
+            description: part.description || part.summary || "",
+            agent: part.agent || "",
+          });
+        } else if (partType === "agent") {
+          // AgentPart: sub-agent invocation
+          this.emit({
+            type: "agent.updated",
+            partId: part.id || "",
+            name: part.name || part.agent || "",
+          });
+        } else if (partType === "step-start") {
+          // step-start may carry a snapshot hash
+          const snapshot = part.snapshot || "";
+          if (snapshot) {
+            this.emit({ type: "snapshot.created", hash: snapshot });
+          }
+        }
+        // retry and compaction: no-op (retry handled at session.status level, compaction has no UI value)
         break;
       }
 

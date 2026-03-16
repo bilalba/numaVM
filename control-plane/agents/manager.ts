@@ -428,6 +428,26 @@ class AgentManager {
         });
         break;
 
+      case "file.read":
+        getDatabase().insertAgentMessage({
+          id: nanoid(),
+          session_id: sessionId,
+          role: "tool",
+          content: event.path,
+          metadata: JSON.stringify({ tool: "file.read", input: { path: event.path, lineStart: event.lineStart, lineEnd: event.lineEnd, symbolName: event.symbolName } }),
+        });
+        break;
+
+      case "patch.created":
+        getDatabase().insertAgentMessage({
+          id: nanoid(),
+          session_id: sessionId,
+          role: "tool",
+          content: event.files.join("\n"),
+          metadata: JSON.stringify({ tool: "patch", input: { hash: event.hash, fileCount: event.files.length } }),
+        });
+        break;
+
       case "turn.completed": {
         // If we have accumulated delta text without a message.completed, persist it
         if (active.pendingText) {

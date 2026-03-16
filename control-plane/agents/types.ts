@@ -30,6 +30,7 @@ export type AgentEvent =
   | { type: "reasoning.delta"; text: string }
   | { type: "reasoning.completed"; text: string }
   | { type: "tool.started"; tool: string; partId?: string; input: unknown }
+  | { type: "tool.updated"; tool: string; partId?: string; input: unknown }
   | { type: "tool.output.delta"; text: string }
   | { type: "tool.completed"; tool: string; partId?: string; input: unknown; result: unknown }
   | { type: "file.changed"; path: string; diff: string }
@@ -37,6 +38,11 @@ export type AgentEvent =
   | { type: "question.asked"; id: string; questions: QuestionInfo[] }
   | { type: "plan.updated"; steps: { text: string; done: boolean }[] }
   | { type: "todo.updated"; items: { id: string; content: string; status: string; priority: string }[] }
+  | { type: "file.read"; path: string; lineStart?: number; lineEnd?: number; symbolName?: string }
+  | { type: "patch.created"; hash: string; files: string[] }
+  | { type: "snapshot.created"; hash: string }
+  | { type: "subtask.updated"; partId: string; description: string; agent: string }
+  | { type: "agent.updated"; partId: string; name: string }
   | { type: "session.progress"; sessionId: string; step: string; message: string }
   | { type: "session.info"; model?: string; provider?: string }
   | { type: "vm.status"; status: string; status_detail?: string | null }

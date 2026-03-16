@@ -23,6 +23,18 @@ export interface AgentEvent {
   model?: string;
   provider?: string;
   step?: string;
+  // file.read
+  lineStart?: number;
+  lineEnd?: number;
+  symbolName?: string;
+  // patch.created
+  hash?: string;
+  files?: string[];
+  // subtask.updated
+  description?: string;
+  agent?: string;
+  // agent.updated
+  name?: string;
 }
 
 /** Token refresh threshold — refresh when less than this many ms remain. */
